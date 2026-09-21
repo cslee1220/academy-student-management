@@ -10,6 +10,7 @@
   - `web/src/lib/supabase/server.ts`
   - `web/src/lib/auth/authorization.ts`
   - `web/package.json`, `web/package-lock.json`
+  - `web/supabase/tests/database/academy_foundation.test.sql`
 - 핵심 내용: 문서에 정의된 핵심 학원·계정·학생·수업·기록·보호자·공개·수정요청·감사로그 표의 초안, RLS 정책, 역할·학원·활성계정·교사 배정 서버 검증 기반
 - 실제 Supabase 프로젝트, 키, 로그인, 실제 개인정보는 아직 연결하지 않음
 - 현재 환경에는 Docker가 없어 `npx supabase@latest db lint --local`을 실행하지 못함
@@ -17,6 +18,7 @@
 - 이번 실행에서도 `docker --version`과 `npx supabase@latest status`가 Docker/Podman 미설치로 중단됨
 - 현재 운영체제는 Windows 10 Home 1909, 빌드 18363이며 Docker Desktop·Podman WSL2의 최소 빌드보다 낮음
 - WSL 명령도 설치되어 있지 않으므로 이 실행에서는 컨테이너 설치를 진행하지 않음
+- pgTAP 구조·RLS 테스트 파일을 추가했으며, `db lint --local`과 `test db --local`은 Docker 미실행으로 127.0.0.1:54322 연결 거부됨
 - `note/key info`는 기존 사용자 파일이므로 열거나 스테이징하지 않음
 
 ## 다음 작업
