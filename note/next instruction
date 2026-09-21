@@ -14,14 +14,17 @@
 - 실제 Supabase 프로젝트, 키, 로그인, 실제 개인정보는 아직 연결하지 않음
 - 현재 환경에는 Docker가 없어 `npx supabase@latest db lint --local`을 실행하지 못함
 - 마지막 웹 검증: `npm run lint`, `npm run build` 성공
+- 이번 실행에서도 `docker --version`과 `npx supabase@latest status`가 Docker/Podman 미설치로 중단됨
 - `note/key info`는 기존 사용자 파일이므로 열거나 스테이징하지 않음
 
 ## 다음 작업
 
-1. Supabase 로컬 실행에 필요한 Docker 설치 여부와 `npx supabase@latest` 명령을 확인한다.
-2. 로컬 Supabase를 사용할 수 있으면 migration을 적용하고 SQL/RLS 오류를 수정한다.
-3. 로컬 실행이 불가능하면 SQL 정적 점검만 수행하고, 원격 프로젝트 키를 요구하지 않는다.
-4. 이후 별도 기능 묶음으로 교사 수업기록 흐름을 구현한다.
+1. Docker Desktop 또는 Podman을 설치한 뒤 터미널을 다시 열고 `docker --version`을 확인한다.
+2. `web` 폴더에서 `npx supabase@latest start`를 실행한다.
+3. `npx supabase@latest db lint --local`으로 migration을 검사한다.
+4. `npx supabase@latest db reset`으로 migration을 적용하고, `npx supabase@latest test db --local`으로 pgTAP RLS 테스트를 실행한다.
+5. 오류가 있으면 현재 migration만 수정하고 lint/test를 다시 실행한다.
+6. 검증이 끝난 뒤 별도 기능 묶음으로 교사 수업기록 흐름을 구현한다.
 
 ## quota 20% 남았을 때의 마무리 규칙
 
