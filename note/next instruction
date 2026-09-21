@@ -15,16 +15,20 @@
 - 현재 환경에는 Docker가 없어 `npx supabase@latest db lint --local`을 실행하지 못함
 - 마지막 웹 검증: `npm run lint`, `npm run build` 성공
 - 이번 실행에서도 `docker --version`과 `npx supabase@latest status`가 Docker/Podman 미설치로 중단됨
+- 현재 운영체제는 Windows 10 Home 1909, 빌드 18363이며 Docker Desktop·Podman WSL2의 최소 빌드보다 낮음
+- WSL 명령도 설치되어 있지 않으므로 이 실행에서는 컨테이너 설치를 진행하지 않음
 - `note/key info`는 기존 사용자 파일이므로 열거나 스테이징하지 않음
 
 ## 다음 작업
 
-1. Docker Desktop 또는 Podman을 설치한 뒤 터미널을 다시 열고 `docker --version`을 확인한다.
-2. `web` 폴더에서 `npx supabase@latest start`를 실행한다.
-3. `npx supabase@latest db lint --local`으로 migration을 검사한다.
-4. `npx supabase@latest db reset`으로 migration을 적용하고, `npx supabase@latest test db --local`으로 pgTAP RLS 테스트를 실행한다.
-5. 오류가 있으면 현재 migration만 수정하고 lint/test를 다시 실행한다.
-6. 검증이 끝난 뒤 별도 기능 묶음으로 교사 수업기록 흐름을 구현한다.
+1. Windows Update로 Windows 10 22H2(빌드 19045) 이상 또는 Windows 11로 업그레이드한다.
+2. 재부팅 후 Docker Desktop을 WSL2 방식으로 설치하고 실행한다. Podman을 선택하면 WSL2를 먼저 준비한다.
+3. 새 터미널에서 `docker --version`과 `docker info`를 확인한다.
+4. `web` 폴더에서 `npx supabase@latest start`를 실행한다.
+5. `npx supabase@latest db lint --local`으로 migration을 검사한다.
+6. `npx supabase@latest db reset`으로 migration을 적용하고, `npx supabase@latest test db --local`으로 pgTAP RLS 테스트를 실행한다.
+7. 오류가 있으면 현재 migration만 수정하고 lint/test를 다시 실행한다.
+8. 검증이 끝난 뒤 별도 기능 묶음으로 교사 수업기록 흐름을 구현한다.
 
 ## quota 20% 남았을 때의 마무리 규칙
 
