@@ -1,0 +1,54 @@
+# 다음 Codex 실행 지침
+
+## 현재 작업 상태
+
+- 작업공간: `E:\Coding_basic\academy-student management`
+- 현재 기능 묶음: 데이터베이스·권한 기반 준비
+- 완료한 파일:
+  - `web/supabase/migrations/20260921123925_academy_foundation.sql`
+  - `web/supabase/config.toml`
+  - `web/src/lib/supabase/server.ts`
+  - `web/src/lib/auth/authorization.ts`
+  - `web/package.json`, `web/package-lock.json`
+- 핵심 내용: 문서에 정의된 핵심 학원·계정·학생·수업·기록·보호자·공개·수정요청·감사로그 표의 초안, RLS 정책, 역할·학원·활성계정·교사 배정 서버 검증 기반
+- 실제 Supabase 프로젝트, 키, 로그인, 실제 개인정보는 아직 연결하지 않음
+- 현재 환경에는 Docker가 없어 `npx supabase@latest db lint --local`을 실행하지 못함
+- 마지막 웹 검증: `npm run lint`, `npm run build` 성공
+- `note/key info`는 기존 사용자 파일이므로 열거나 스테이징하지 않음
+
+## 다음 작업
+
+1. Supabase 로컬 실행에 필요한 Docker 설치 여부와 `npx supabase@latest` 명령을 확인한다.
+2. 로컬 Supabase를 사용할 수 있으면 migration을 적용하고 SQL/RLS 오류를 수정한다.
+3. 로컬 실행이 불가능하면 SQL 정적 점검만 수행하고, 원격 프로젝트 키를 요구하지 않는다.
+4. 이후 별도 기능 묶음으로 교사 수업기록 흐름을 구현한다.
+
+## quota 20% 남았을 때의 마무리 규칙
+
+- 새 기능을 시작하지 말고 현재 파일 또는 현재 검증 단계만 완료한다.
+- 가능한 경우 `npm run lint`와 `npm run build`를 `web` 폴더에서 실행한다.
+- 이 파일의 `현재 작업 상태`와 `다음 작업`을 갱신한다.
+- 관련 변경만 스테이징하고 자동 커밋한다. 기존 사용자 파일은 포함하지 않는다.
+
+```powershell
+git add web "note/next instruction"
+git commit -m "데이터베이스 권한 기반 준비 진행"
+git status --short
+```
+
+- 커밋 후 이 파일을 다음 Codex 실행의 첫 지침으로 사용한다.
+- Codex가 실행 한도의 정확한 20% 시점을 외부에서 예약하거나 새 실행을 자동 시작할 수는 없으므로, 한도에 도달하기 전에 위 규칙을 수행하고 사용자가 다음 명령을 실행한다.
+
+## 다음 Codex 실행 명령
+
+같은 대화를 이어가려면 공식 OpenAI 문서의 재개 명령을 사용한다.
+
+```powershell
+codex resume
+```
+
+새 실행에서 이 파일을 기준으로 이어가려면 작업공간을 지정한다.
+
+```powershell
+codex -C "E:\Coding_basic\academy-student management" "note/next instruction 파일과 루트 AGENTS.md, docs 폴더의 모든 Markdown 문서를 읽고 현재 작업 상태에서 이어서 진행하라. 한 번에 하나의 기능 묶음만 구현하고, quota가 20% 남으면 현재 최소 작업을 마무리하고 lint/build, 관련 파일 커밋, note/next instruction 갱신 후 중단하라."
+```
