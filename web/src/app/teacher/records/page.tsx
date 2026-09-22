@@ -77,6 +77,18 @@ export default function TeacherRecordsPage() {
   const selectedClass = classOptions.find((item) => item.id === selectedClassId);
   const selectedSession = sessionOptions.find((item) => item.id === selectedSessionId);
   const selectedSubject = subjectOptions.find((item) => item.id === selectedSubjectId);
+  const configuredTestDefinitions = testDefinitions.filter(
+    (definition) => definition.name.trim() !== "" || definition.maxScore.trim() !== "",
+  );
+  const hasIncompleteTestDefinition =
+    configuredTestDefinitions.length === 0 ||
+    configuredTestDefinitions.some(
+      (definition) =>
+        definition.name.trim() === "" ||
+        definition.maxScore.trim() === "" ||
+        Number(definition.maxScore) <= 0,
+    );
+  const canEnterStudentRecords = !hasIncompleteTestDefinition;
 
   function updateRecord(id: string, key: keyof StudentRecord, value: string) {
     setRecords((currentRecords) =>
@@ -131,15 +143,6 @@ export default function TeacherRecordsPage() {
   }
 
   function handleFinalSave() {
-    const configuredTestDefinitions = testDefinitions.filter(
-      (definition) => definition.name.trim() !== "" || definition.maxScore.trim() !== "",
-    );
-    const hasIncompleteTestDefinition = configuredTestDefinitions.some(
-      (definition) =>
-        definition.name.trim() === "" ||
-        definition.maxScore.trim() === "" ||
-        Number(definition.maxScore) <= 0,
-    );
     const hasInvalidTestScore = configuredTestDefinitions.some((definition, definitionIndex) =>
       records.some((record) => {
         const value = record.testScores[definitionIndex]?.trim() ?? "";
@@ -163,6 +166,11 @@ export default function TeacherRecordsPage() {
         record.attendance === "present" &&
         (!record.homeworkScore || !record.understandingScore || !record.participationScore),
     );
+
+    if (!canEnterStudentRecords) {
+      setMessage("학생별 과목기록을 입력하려면 테스트 항목 1개 이상을 이름과 최고점까지 설정해 주세요.");
+      return;
+    }
 
     if (hasMissingHomework) {
       setMessage("공통 숙제를 입력하거나 ‘숙제 없음’을 선택해 주세요.");
@@ -359,6 +367,17 @@ export default function TeacherRecordsPage() {
               </div>
             </div>
 
+            {!canEnterStudentRecords ? (
+              <div className="mt-8 border-t border-slate-200 pt-8">
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+                  <p className="text-sm font-bold text-amber-800">학생별 과목기록 입력 잠금</p>
+                  <h2 className="mt-1 text-xl font-bold text-amber-950">테스트 항목을 먼저 설정해 주세요.</h2>
+                  <p className="mt-2 text-sm leading-6 text-amber-900">
+                    테스트 1~3 중 최소 1개를 선택해 테스트 이름과 최고점을 모두 입력하면 학생별 과목기록 입력 화면이 열립니다.
+                  </p>
+                </div>
+              </div>
+            ) : (
             <div className="mt-8 border-t border-slate-200 pt-8">
               <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                 <div>
@@ -468,6 +487,7 @@ export default function TeacherRecordsPage() {
                 </table>
               </div>
             </div>
+            )}
           </section>
 
           <section className="mt-6 rounded-2xl border border-indigo-100 bg-indigo-50 p-6 sm:p-8">
