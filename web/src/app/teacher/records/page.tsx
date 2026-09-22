@@ -77,12 +77,15 @@ export default function TeacherRecordsPage() {
   const selectedClass = classOptions.find((item) => item.id === selectedClassId);
   const selectedSession = sessionOptions.find((item) => item.id === selectedSessionId);
   const selectedSubject = subjectOptions.find((item) => item.id === selectedSubjectId);
-  const configuredTestDefinitions = testDefinitions.filter(
-    (definition) => definition.name.trim() !== "" || definition.maxScore.trim() !== "",
+  const enteredTestDefinitions = testDefinitions
+    .map((definition, index) => ({ ...definition, index }))
+    .filter((definition) => definition.name.trim() !== "" || definition.maxScore.trim() !== "");
+  const configuredTestDefinitions = enteredTestDefinitions.filter(
+    (definition) => definition.name.trim() !== "" && definition.maxScore.trim() !== "",
   );
   const hasIncompleteTestDefinition =
-    configuredTestDefinitions.length === 0 ||
-    configuredTestDefinitions.some(
+    enteredTestDefinitions.length === 0 ||
+    enteredTestDefinitions.some(
       (definition) =>
         definition.name.trim() === "" ||
         definition.maxScore.trim() === "" ||
@@ -143,9 +146,9 @@ export default function TeacherRecordsPage() {
   }
 
   function handleFinalSave() {
-    const hasInvalidTestScore = configuredTestDefinitions.some((definition, definitionIndex) =>
+    const hasInvalidTestScore = configuredTestDefinitions.some((definition) =>
       records.some((record) => {
-        const value = record.testScores[definitionIndex]?.trim() ?? "";
+        const value = record.testScores[definition.index]?.trim() ?? "";
         const numericScore = Number(value);
         return (
           record.attendance === "present" &&
@@ -155,9 +158,9 @@ export default function TeacherRecordsPage() {
         );
       }),
     );
-    const hasMissingTestResult = configuredTestDefinitions.some((_, definitionIndex) =>
+    const hasMissingTestResult = configuredTestDefinitions.some((definition) =>
       records.some(
-        (record) => record.attendance === "present" && (record.testScores[definitionIndex]?.trim() ?? "") === "",
+        (record) => record.attendance === "present" && (record.testScores[definition.index]?.trim() ?? "") === "",
       ),
     );
     const hasMissingHomework = !noHomework && homework.trim() === "";
@@ -387,11 +390,11 @@ export default function TeacherRecordsPage() {
                     <tr>
                       <th className="whitespace-nowrap px-3 py-3 font-semibold">학생</th>
                       <th className="whitespace-nowrap px-3 py-3 font-semibold">출결</th>
-                      {testDefinitions.map((definition, index) => (
-                        <th key={testSlotLabels[index]} className="whitespace-nowrap px-3 py-3 font-semibold">
-                          {definition.name.trim() || testSlotLabels[index]}
+                      {configuredTestDefinitions.map((definition) => (
+                        <th key={testSlotLabels[definition.index]} className="whitespace-nowrap px-3 py-3 font-semibold">
+                          {definition.name.trim()}
                           <span className="ml-1 text-xs font-normal">
-                            {definition.maxScore.trim() ? `(최고 ${definition.maxScore})` : ""}
+                            {`(최고 ${definition.maxScore})`}
                           </span>
                         </th>
                       ))}
@@ -420,15 +423,14 @@ export default function TeacherRecordsPage() {
                               <option value="unexcused_absent">무단결석</option>
                             </select>
                           </td>
-                          {testDefinitions.map((definition, index) => (
-                            <td key={testSlotLabels[index]} className="px-3 py-3">
+                          {configuredTestDefinitions.map((definition) => (
+                            <td key={testSlotLabels[definition.index]} className="px-3 py-3">
                               <input
                                 type="text"
-                                value={record.testScores[index]}
-                                onChange={(event) => updateTestScore(record.id, index, event.target.value)}
-                                disabled={isAbsent || !definition.name.trim() || !definition.maxScore.trim()}
+                                value={record.testScores[definition.index]}
+                                onChange={(event) => updateTestScore(record.id, definition.index, event.target.value)}
                                 placeholder="점수/미응시"
-                                aria-label={`${record.name} ${testSlotLabels[index]} 점수 또는 미응시 사유`}
+                                aria-label={`${record.name} ${testSlotLabels[definition.index]} 점수 또는 미응시 사유`}
                                 className="h-9 w-28 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                               />
                             </td>
