@@ -46,3 +46,11 @@
   ```
 
 - `note/key info`는 사용자가 관리하는 파일이므로 staging하지 않습니다.
+## Teacher records API implementation
+
+- Added `web/src/app/api/teacher/records/route.ts` for authenticated teacher GET/POST access.
+- The route rechecks academy membership, current subject assignment, expected roster membership, and lead-teacher permission for attendance/common homework.
+- The route validates draft/final input, test definitions and scores, absent/unexcused-absent restrictions, required values, optimistic versions, and the 10-day lock.
+- The route writes multiple tables sequentially after validation. A database RPC transaction has not been added yet; atomic multi-table writes require a separate design decision.
+- The current `/teacher/records` page remains a no-login, no-database demo and is not sent synthetic UUIDs. Connecting the page to the route requires an authenticated academy/session context.
+- `npm run lint` and `npm run build` passed after the API changes.

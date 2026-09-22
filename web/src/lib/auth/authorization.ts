@@ -101,5 +101,5 @@ export async function requireTeacherAssignment(input: {
     }
   }
 
-  return { membership, assignment };
+  return { supabase, membership, assignment };
 }
