@@ -50,10 +50,13 @@ type SubjectRecordInput = {
 };
 
 type TestResultInput = {
-  testDefinitionId: string;
+  testDefinitionId: string | null;
+  testDefinitionSequenceNo?: number;
   score: number | null;
   nonAttemptReason: string | null;
 };
+
+type ResolvedTestResultInput = Omit<TestResultInput, "testDefinitionId"> & { testDefinitionId: string };
 
 type TestDefinitionInput = {
   sequenceNo: number;
@@ -241,12 +244,32 @@ function parseTestResults(value: unknown): TestResultInput[] {
 
   return value.map((item, index) => {
     const input = asObject(item, `testResults[${index}]`);
-    const testDefinitionId = parseUuid(input.testDefinitionId, `testResults[${index}].testDefinitionId`);
+    const testDefinitionId =
+      input.testDefinitionId === undefined || input.testDefinitionId === null || input.testDefinitionId === ""
+        ? null
+        : parseUuid(input.testDefinitionId, `testResults[${index}].testDefinitionId`);
+    const testDefinitionSequenceNo =
+      input.testDefinitionSequenceNo === undefined || input.testDefinitionSequenceNo === null
+        ? undefined
+        : Number(input.testDefinitionSequenceNo);
     const score = parseOptionalNumber(input.score, `testResults[${index}].score`);
     const nonAttemptReason = parseOptionalText(
       input.nonAttemptReason,
       `testResults[${index}].nonAttemptReason`,
     );
+
+    const hasValidSequence =
+      typeof testDefinitionSequenceNo === "number" &&
+      Number.isInteger(testDefinitionSequenceNo) &&
+      testDefinitionSequenceNo >= 1 &&
+      testDefinitionSequenceNo <= 3;
+    if (!testDefinitionId && !hasValidSequence) {
+      throw new HttpError({
+        status: 400,
+        code: "invalid_request",
+        message: "테스트 결과에는 테스트 ID 또는 순번이 필요합니다.",
+      });
+    }
 
     if ((score === null) === (nonAttemptReason === null)) {
       throw new HttpError({
@@ -264,7 +287,7 @@ function parseTestResults(value: unknown): TestResultInput[] {
       });
     }
 
-    return { testDefinitionId, score, nonAttemptReason };
+    return { testDefinitionId, testDefinitionSequenceNo, score, nonAttemptReason };
   });
 }
 
@@ -645,9 +668,33 @@ async function saveTestDefinitions(
   return data;
 }
 
-function validateTestResults(
+function resolveTestResults(
   definitions: Record<string, unknown>[],
   results: TestResultInput[],
+): ResolvedTestResultInput[] {
+  const definitionsBySequence = new Map(
+    definitions.map((definition) => [Number(definition.sequence_no), String(definition.id)]),
+  );
+  return results.map((result) => {
+    const testDefinitionId =
+      result.testDefinitionId ??
+      (result.testDefinitionSequenceNo === undefined
+        ? undefined
+        : definitionsBySequence.get(result.testDefinitionSequenceNo));
+    if (!testDefinitionId) {
+      throw new HttpError({
+        status: 422,
+        code: "invalid_test_results",
+        message: "테스트 결과와 테스트 항목을 연결할 수 없습니다.",
+      });
+    }
+    return { ...result, testDefinitionId };
+  });
+}
+
+function validateTestResults(
+  definitions: Record<string, unknown>[],
+  results: ResolvedTestResultInput[],
   attendanceStatus: AttendanceStatus,
   action: SaveAction,
 ) {
@@ -705,7 +752,7 @@ function validateTestResults(
 async function saveTestResults(
   supabase: Awaited<ReturnType<typeof requireTeacherAssignment>>["supabase"],
   request: SaveRequest,
-  results: TestResultInput[],
+  results: ResolvedTestResultInput[],
 ) {
   if (results.length === 0) {
     return [];
@@ -940,18 +987,18 @@ export async function POST(request: NextRequest) {
     const existingHomework = (homeworkResult.data ?? null) as Record<string, unknown> | null;
     const existingSubject = (subjectResult.data ?? null) as Record<string, unknown> | null;
 
-    if (input.attendance) {
-      await saveAttendance(supabase, input, input.attendance, existingAttendance);
-    }
-    if (input.commonHomework) {
-      await saveCommonHomework(
-        supabase,
-        input,
-        session.class_id,
-        input.commonHomework,
-        existingHomework,
-      );
-    }
+    const savedAttendanceRow = input.attendance
+      ? await saveAttendance(supabase, input, input.attendance, existingAttendance)
+      : existingAttendance;
+    const savedHomeworkRow = input.commonHomework
+      ? await saveCommonHomework(
+          supabase,
+          input,
+          session.class_id,
+          input.commonHomework,
+          existingHomework,
+        )
+      : existingHomework;
 
     const savedAttendance = input.attendance
       ? input.attendance
@@ -1008,8 +1055,8 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         data: {
-          attendance: input.attendance ?? existingAttendance,
-          commonHomework: input.commonHomework ?? existingHomework,
+          attendance: savedAttendanceRow,
+          commonHomework: savedHomeworkRow,
           subjectRecord: null,
           testResults: [],
           status: input.action,
@@ -1040,7 +1087,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    validateTestResults(definitions, input.testResults, savedAttendance.status, input.action);
+    const resolvedTestResults = resolveTestResults(definitions, input.testResults);
+    validateTestResults(definitions, resolvedTestResults, savedAttendance.status, input.action);
     const savedSubject = await saveSubjectRecord(
       supabase,
       input,
@@ -1048,12 +1096,12 @@ export async function POST(request: NextRequest) {
       input.subjectRecord,
       existingSubject,
     );
-    const savedTests = await saveTestResults(supabase, input, input.testResults);
+    const savedTests = await saveTestResults(supabase, input, resolvedTestResults);
 
     return NextResponse.json({
       data: {
-        attendance: input.attendance ?? existingAttendance,
-        commonHomework: input.commonHomework ?? existingHomework,
+        attendance: savedAttendanceRow,
+        commonHomework: savedHomeworkRow,
         subjectRecord: savedSubject,
         testResults: savedTests,
         testDefinitions: definitions,
