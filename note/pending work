@@ -59,6 +59,17 @@
 - `note/key info`는 사용자가 관리하는 파일이므로 staging하지 않습니다.
 ## Teacher records API implementation
 
+## Guardian publication flow implementation (2026-09-22)
+
+- Added `web/supabase/migrations/20260922080006_guardian_publication_flow.sql` for guardian invites, guardian devices, password setup flags, public snapshot values, and RLS policies.
+- Added admin guardian invite API/page: `/api/admin/guardians`, `/admin/guardians`.
+- Added guardian activation API/page: `/api/guardian/activate`, `/invite`. Password setup uses an 8-digit invite code; no SMS, email, KakaoTalk, real keys, or real personal data are used.
+- Added publication preparation and approval API/page: `/api/admin/publications`, `/api/admin/publications/prepare`, `/admin/publications`.
+- Added guardian-only published snapshot API/page: `/api/guardian/home`, `/parent`, plus logout.
+- Updated `academy_foundation.test.sql` from 25 to 30 pgTAP checks.
+- `npm run lint` passed and `npm run build` passed.
+- Local Supabase DB checks remain pending: Docker/Podman is unavailable and `127.0.0.1:54322` refuses the connection.
+
 - Added `web/src/app/api/teacher/records/route.ts` for authenticated teacher GET/POST access.
 - The route rechecks academy membership, current subject assignment, expected roster membership, and lead-teacher permission for attendance/common homework.
 - The route validates draft/final input, test definitions and scores, absent/unexcused-absent restrictions, required values, optimistic versions, and the 10-day lock.

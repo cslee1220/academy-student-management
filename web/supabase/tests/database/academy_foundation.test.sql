@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(25);
+select plan(30);
 
 select has_table('public', 'academies', '학원 테이블이 존재한다');
 select has_table('public', 'teacher_subject_records', '교사 과목기록 테이블이 존재한다');
@@ -45,6 +45,15 @@ select policies_are(
   'student_test_results',
   array['student_test_results_select', 'student_test_results_insert', 'student_test_results_update'],
   '학생별 테스트 결과 정책이 조회·입력·수정으로 구성되어 있다'
+);
+
+select has_table('public', 'guardian_invites', 'guardian_invites table exists');
+select has_table('public', 'guardian_devices', 'guardian_devices table exists');
+select has_column('public', 'guardians', 'password_setup_required', 'guardians password setup flag exists');
+select has_column('public', 'publication_snapshots', 'value_json', 'publication snapshot value exists');
+select ok(
+  (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'guardian_devices'),
+  'guardian_devices has RLS enabled'
 );
 
 insert into auth.users (id, email)

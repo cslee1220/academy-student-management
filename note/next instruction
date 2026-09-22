@@ -87,6 +87,32 @@ codex resume
 
 ```powershell
 codex -C "E:\Coding_basic\academy-student management" "note/next instruction과 note/pending work 파일, 루트 AGENTS.md, docs 폴더의 모든 Markdown 문서를 읽고 현재 작업 상태에서 이어서 진행하라. 한 번에 하나의 기능 묶음만 구현하고, quota가 20% 남으면 현재 최소 작업을 마무리하고 lint/build, 관련 파일 커밋, note/next instruction 갱신 후 중단하라."
+
+## Current implementation: guardian publication flow (2026-09-22)
+
+- Implemented the document-based guardian flow under `web`.
+- Added guardian invites, device registration, password setup flags, public snapshot values, and RLS in `web/supabase/migrations/20260922080006_guardian_publication_flow.sql`.
+- Added admin guardian invite API/page: `/api/admin/guardians`, `/admin/guardians`.
+- Added guardian activation API/page: `/api/guardian/activate`, `/invite`.
+- Added publication preparation and approval API/page: `/api/admin/publications`, `/api/admin/publications/prepare`, `/admin/publications`.
+- Added guardian-only published snapshot API/page: `/api/guardian/home`, `/parent`, plus logout.
+- Updated `academy_foundation.test.sql` from 25 to 30 pgTAP checks.
+- `npm run lint` passed.
+- `npm run build` passed.
+- Local DB checks are pending because Docker/Podman is unavailable and `127.0.0.1:54322` refuses the connection.
+
+## Next work
+
+1. Upgrade Windows or install Docker Desktop/WSL2 as described in `note/pending work`.
+2. Run Supabase local start, migration lint, reset, and pgTAP tests.
+3. Fix SQL/RLS errors found by the local database tests.
+4. Run a synthetic end-to-end test: admin creates guardian invite -> guardian activates -> teacher finalizes records -> admin prepares/approves publication -> guardian sees only published snapshots.
+5. Add invite-code rate limiting and guardian invite reissue/revocation before production use.
+
+## Next Codex command
+
+```powershell
+codex -C "E:\Coding_basic\academy-student management" "Read note/next instruction, note/pending work, root AGENTS.md, and every Markdown file in docs. Continue from the current guardian publication flow. First check Docker/Podman/WSL and run Supabase local start, db lint, db reset, and pgTAP tests. Fix only failing migration/RLS files, then run npm run lint and npm run build in web. Do not touch root protected files or note/key info."
 ```
 ## 다음 Codex 실행 시 첫 작업
 
