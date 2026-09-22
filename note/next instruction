@@ -146,3 +146,36 @@ codex -C "E:\Coding_basic\academy-student management" "2026-09-22 작업 중단 
 
 - Added `web/src/app/api/teacher/records/route.ts`.
 루트 `AGENTS.md`, `docs` 폴더의 모든 Markdown, 이 파일, `note/pending work`를 읽습니다. 먼저 Docker/Podman 및 로컬 Supabase 상태를 확인하고 migration·pgTAP 검증을 재시도합니다. 검증이 통과하면 테스트용 계정으로 교사 등록·일회용 코드 활성화·로그인·재설정 흐름을 확인합니다. 이후 별도 기능 묶음으로 `/teacher/records`를 실제 인증 세션·학원 선택·수업 회차 조회와 연결합니다. 실제 학생 개인정보·실제 비밀값·문자·카카오·Push는 사용하지 않습니다. 변경은 `web` 및 필요한 두 note 파일에만 하고, `web`에서 `npm run lint`, `npm run build`를 실행한 뒤 관련 파일만 커밋합니다. `note/key info`는 절대 스테이징하지 않습니다.
+
+## Latest resume attempt (2026-09-22)
+
+- The machine is now Windows 11 Home 10.0.26200, but WSL is not installed and Docker Desktop/Podman are unavailable.
+- `winget` can find WSL 2.7.13 and Docker Desktop 4.91.0, but the WSL installation attempt failed with `0x80073d28` because administrator privileges are required.
+- Supabase CLI 2.117.0 was checked. `start`, `db lint --local`, `db reset`, and `test db --local` were retried and remain blocked by the missing container runtime/local Postgres.
+- `npm run lint` and `npm run build` passed. No web or SQL files were changed in this attempt.
+
+## Next required action
+
+An administrator must install WSL and Docker Desktop, restart if Windows requests it, and start Docker Desktop. Then continue in `web` with:
+
+```powershell
+npx supabase@latest start
+npx supabase@latest db lint --local
+npx supabase@latest db reset
+npx supabase@latest test db --local
+```
+
+Do not add a new feature until local migration/RLS verification is complete. Do not modify or stage `note/key info`.
+
+## Environment installation result (2026-09-22)
+
+- WSL 2.7.13 and Docker Desktop 4.91.0 were installed with administrator elevation.
+- WSL and `VirtualMachinePlatform` Windows features were enabled, but Docker Desktop cannot start because firmware virtualization is disabled (`VirtualizationFirmwareEnabled=False`).
+- Next action: enable AMD SVM/AMD-V in BIOS/UEFI, restart Windows, start Docker Desktop, and then rerun the four Supabase commands above.
+- Do not add a new feature or modify `note/key info` until local migration/RLS verification is complete.
+
+## Git installation result (2026-09-22)
+
+- Git for Windows 2.55.0.windows.3 is installed and the repository safe-directory check is configured.
+- The current worktree contains changes only in `note/pending work` and `note/next instruction`, plus the pre-existing untracked `note/key info`.
+- Keep `note/key info` out of staging and commits.

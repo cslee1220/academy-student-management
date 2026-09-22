@@ -85,3 +85,38 @@
 - The route writes multiple tables sequentially after validation. A database RPC transaction has not been added yet; atomic multi-table writes require a separate design decision.
 - The current `/teacher/records` page remains a no-login, no-database demo and is not sent synthetic UUIDs. Connecting the page to the route requires an authenticated academy/session context.
 - `npm run lint` and `npm run build` passed after the API changes.
+
+## Local validation retry (2026-09-22)
+
+- The current machine is Windows 11 Home 10.0.26200, so the former Windows 10 build limitation is resolved.
+- `wsl --status` and `wsl --list --verbose` report that WSL is not installed. Docker Desktop and Podman are also not installed or available on `PATH`.
+- `winget` is available. `Docker.DockerDesktop` 4.91.0 and `Microsoft.WSL` 2.7.13 are available from the `winget` source.
+- Installing `Microsoft.WSL` was attempted, but Windows returned `0x80073d28`; administrator privileges are required.
+- Supabase CLI 2.117.0 is available, but `npx supabase@latest start` stops because Docker/Podman is missing. `db lint --local`, `db reset`, and `test db --local` remain blocked (`127.0.0.1:54322` or local service inspection failure).
+- No application or migration files were changed during this retry. `npm run lint` and `npm run build` both passed.
+
+## Required external step before the next retry
+
+Run the following from an administrator PowerShell, install/restart WSL and Docker Desktop if prompted, then start Docker Desktop:
+
+```powershell
+winget install --id Microsoft.WSL --exact --source winget --accept-source-agreements --accept-package-agreements
+winget install --id Docker.DockerDesktop --exact --source winget --accept-source-agreements --accept-package-agreements
+```
+
+After Docker Desktop is running, return to `web` and run `npx supabase@latest start`, `npx supabase@latest db lint --local`, `npx supabase@latest db reset`, and `npx supabase@latest test db --local`.
+
+## Environment installation retry (2026-09-22)
+
+- With administrator elevation, WSL 2.7.13 installation completed successfully.
+- With administrator elevation, Docker Desktop 4.91.0 installation completed successfully.
+- The WSL and `VirtualMachinePlatform` Windows features were enabled successfully; a restart may be required.
+- Docker Desktop was launched but reported that it was unable to start.
+- The processor reports `VirtualizationFirmwareEnabled=False`. AMD SVM/AMD-V must be enabled in BIOS/UEFI before Docker Desktop and WSL2 can run. This cannot be changed from the current Windows session.
+- No application or SQL files were changed.
+
+## Git installation (2026-09-22)
+
+- Git for Windows 2.55.0.windows.3 was installed with administrator elevation.
+- The repository was registered as a Git `safe.directory` because its Windows owner SID differs from the current user SID.
+- `note/key info` remains untracked and must not be staged.
