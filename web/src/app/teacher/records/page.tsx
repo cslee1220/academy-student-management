@@ -252,117 +252,93 @@ export default function TeacherRecordsPage() {
               />
             </div>
 
-            <div className="mt-6 overflow-x-auto">
-              <table className="w-full min-w-[560px] border-collapse text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500">
-                    <th className="px-3 py-3 font-semibold">학생</th>
-                    <th className="px-3 py-3 font-semibold">출결</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.map((record) => (
-                    <tr key={record.id} className="border-b border-slate-100 last:border-0">
-                      <td className="px-3 py-4 font-semibold text-slate-800">{record.name}</td>
-                      <td className="px-3 py-4">
-                        <select
-                          value={record.attendance}
-                          onChange={(event) => updateRecord(record.id, "attendance", event.target.value)}
-                          className="rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-500"
-                        >
-                          <option value="present">출석</option>
-                          <option value="absent">결석</option>
-                          <option value="unexcused_absent">무단결석</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
             <div className="mt-8 border-t border-slate-200 pt-8">
-            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-              <div>
-                <p className="text-sm font-bold text-indigo-600">학생별 기록</p>
-                <h2 className="mt-1 text-xl font-bold">학생별 과목 기록</h2>
+              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                <div>
+                  <p className="text-sm font-bold text-indigo-600">학생별 기록</p>
+                  <h2 className="mt-1 text-xl font-bold">학생별 과목 기록</h2>
+                </div>
+                <p className="text-sm text-slate-500">학생 1명당 한 행으로 입력합니다.</p>
               </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                학생 + 회차 + 과목 + 담당교사
-              </span>
-            </div>
 
-            <div className="mt-6 space-y-5">
-              {records.map((record) => {
-                const isAbsent = record.attendance !== "present";
+              <div className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                결석·무단결석 학생은 과목 점수와 나머지/보충 학습을 입력할 수 없습니다.
+              </div>
 
-                return (
-                  <article key={record.id} className="rounded-2xl border border-slate-200 p-5">
-                    <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-                      <div>
-                        <h3 className="text-lg font-bold text-slate-900">{record.name}</h3>
-                        <p className="mt-1 text-sm text-slate-500">
-                          현재 출결: {record.attendance === "present" ? "출석" : record.attendance === "absent" ? "결석" : "무단결석"}
-                        </p>
-                      </div>
-                      {isAbsent && (
-                        <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
-                          과목 점수 입력 제외
-                        </span>
-                      )}
-                    </div>
+              <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full min-w-[1060px] border-collapse text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">학생</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">출결</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">숙제 점수</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">이해도</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">참여도</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">나머지/보충</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-semibold">공개용 수업 메모</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {records.map((record) => {
+                      const isAbsent = record.attendance !== "present";
 
-                    <div className="mt-5 grid gap-4 sm:grid-cols-3">
-                      {(
-                        [
-                          ["homeworkScore", "숙제 점수"],
-                          ["understandingScore", "이해도"],
-                          ["participationScore", "참여도"],
-                        ] as const
-                      ).map(([key, label]) => (
-                        <label key={key} className="text-sm font-semibold text-slate-700">
-                          {label}
-                          <select
-                            value={record[key]}
-                            onChange={(event) => updateRecord(record.id, key, event.target.value)}
-                            disabled={isAbsent}
-                            className="mt-2 h-11 w-full rounded-lg border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
-                          >
-                            <option value="">점수 선택</option>
-                            {scoreOptions.map((score) => (
-                              <option key={score} value={score}>
-                                {score}점
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      ))}
-                    </div>
-
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <label className="flex min-h-24 items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-semibold text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={record.isSupplementary}
-                          onChange={(event) => updateSupplementary(record.id, event.target.checked)}
-                          className="h-4 w-4 accent-indigo-600"
-                        />
-                        나머지/보충 학생으로 표시
-                      </label>
-                      <label className="text-sm font-semibold text-slate-700">
-                        공개용 수업 메모
-                        <textarea
-                          value={record.publicNote}
-                          onChange={(event) => updateRecord(record.id, "publicNote", event.target.value)}
-                          disabled={isAbsent}
-                          placeholder="공개 조건을 통과한 경우 보호자에게 보일 수 있는 내용"
-                          className="mt-2 min-h-24 w-full rounded-lg border border-slate-300 px-3 py-2 font-normal outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
-                        />
-                      </label>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+                      return (
+                        <tr key={record.id} className="border-t border-slate-100 align-middle">
+                          <td className="whitespace-nowrap px-3 py-3 font-semibold text-slate-800">{record.name}</td>
+                          <td className="px-3 py-3">
+                            <select
+                              value={record.attendance}
+                              onChange={(event) => updateRecord(record.id, "attendance", event.target.value)}
+                              className="h-9 w-24 rounded-lg border border-slate-300 bg-white px-2 outline-none focus:border-indigo-500"
+                            >
+                              <option value="present">출석</option>
+                              <option value="absent">결석</option>
+                              <option value="unexcused_absent">무단결석</option>
+                            </select>
+                          </td>
+                          {(["homeworkScore", "understandingScore", "participationScore"] as const).map((key) => (
+                            <td key={key} className="px-3 py-3">
+                              <select
+                                value={record[key]}
+                                onChange={(event) => updateRecord(record.id, key, event.target.value)}
+                                disabled={isAbsent}
+                                className="h-9 w-24 rounded-lg border border-slate-300 bg-white px-2 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                              >
+                                <option value="">선택</option>
+                                {scoreOptions.map((score) => (
+                                  <option key={score} value={score}>
+                                    {score}점
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                          ))}
+                          <td className="px-3 py-3 text-center">
+                            <input
+                              type="checkbox"
+                              aria-label={`${record.name} 나머지/보충 학습`}
+                              checked={record.isSupplementary}
+                              onChange={(event) => updateSupplementary(record.id, event.target.checked)}
+                              disabled={isAbsent}
+                              className="h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed"
+                            />
+                          </td>
+                          <td className="px-3 py-3">
+                            <input
+                              type="text"
+                              value={record.publicNote}
+                              onChange={(event) => updateRecord(record.id, "publicNote", event.target.value)}
+                              disabled={isAbsent}
+                              placeholder="수업 메모"
+                              className="h-9 w-56 rounded-lg border border-slate-300 px-3 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 
