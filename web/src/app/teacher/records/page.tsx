@@ -377,7 +377,7 @@ export default function TeacherRecordsPage() {
                   <p className="text-sm font-bold text-indigo-600">학생별 기록</p>
                   <h2 className="mt-1 text-xl font-bold">학생별 과목 기록</h2>
                 </div>
-                <p className="text-sm text-slate-500">학생 1명당 한 행으로 입력합니다.</p>
+                <p className="text-sm text-slate-500">학생 1명당 한 행으로 입력합니다. 최대 15명까지 한 화면에 표시됩니다.</p>
               </div>
 
               <div className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -385,24 +385,25 @@ export default function TeacherRecordsPage() {
               </div>
 
               <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full min-w-[1540px] border-collapse text-left text-sm">
-                  <thead className="bg-slate-50 text-slate-500">
+                <div className="max-h-[700px] overflow-y-auto">
+                <table className="w-full min-w-[980px] border-collapse text-left text-xs">
+                  <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500">
                     <tr>
-                      <th className="whitespace-nowrap px-3 py-3 font-semibold">학생</th>
-                      <th className="whitespace-nowrap px-3 py-3 font-semibold">출결</th>
+                      <th className="whitespace-nowrap px-2 py-2 font-semibold">학생</th>
+                      <th className="whitespace-nowrap px-2 py-2 font-semibold">출결</th>
                       {configuredTestDefinitions.map((definition) => (
-                        <th key={testSlotLabels[definition.index]} className="whitespace-nowrap px-3 py-3 font-semibold">
+                        <th key={testSlotLabels[definition.index]} className="whitespace-nowrap px-2 py-2 font-semibold">
                           {definition.name.trim()}
                           <span className="ml-1 text-xs font-normal">
                             {`(최고 ${definition.maxScore})`}
                           </span>
                         </th>
                       ))}
-                      <th className="whitespace-nowrap px-3 py-3 font-semibold">숙제 점수</th>
-                      <th className="whitespace-nowrap px-3 py-3 font-semibold">이해도</th>
-                      <th className="whitespace-nowrap px-3 py-3 font-semibold">참여도</th>
-                      <th className="whitespace-nowrap px-3 py-3 font-semibold">나머지/보충</th>
-                      <th className="whitespace-nowrap px-3 py-3 font-semibold">공개용 수업 메모</th>
+                      <th className="whitespace-nowrap px-2 py-2 font-semibold">숙제 점수</th>
+                      <th className="whitespace-nowrap px-2 py-2 font-semibold">이해도</th>
+                      <th className="whitespace-nowrap px-2 py-2 font-semibold">참여도</th>
+                      <th className="whitespace-nowrap px-2 py-2 font-semibold">나머지/보충</th>
+                      <th className="whitespace-nowrap px-2 py-2 font-semibold">공개용 수업 메모</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -411,12 +412,12 @@ export default function TeacherRecordsPage() {
 
                       return (
                         <tr key={record.id} className="border-t border-slate-100 align-middle">
-                          <td className="whitespace-nowrap px-3 py-3 font-semibold text-slate-800">{record.name}</td>
-                          <td className="px-3 py-3">
+                          <td className="whitespace-nowrap px-2 py-1.5 font-semibold text-slate-800">{record.name}</td>
+                          <td className="px-2 py-1.5">
                             <select
                               value={record.attendance}
                               onChange={(event) => updateRecord(record.id, "attendance", event.target.value)}
-                              className="h-9 w-24 rounded-lg border border-slate-300 bg-white px-2 outline-none focus:border-indigo-500"
+                              className="h-8 w-20 rounded-lg border border-slate-300 bg-white px-1.5 text-xs outline-none focus:border-indigo-500"
                             >
                               <option value="present">출석</option>
                               <option value="absent">결석</option>
@@ -424,24 +425,24 @@ export default function TeacherRecordsPage() {
                             </select>
                           </td>
                           {configuredTestDefinitions.map((definition) => (
-                            <td key={testSlotLabels[definition.index]} className="px-3 py-3">
+                            <td key={testSlotLabels[definition.index]} className="px-2 py-1.5">
                               <input
                                 type="text"
                                 value={record.testScores[definition.index]}
                                 onChange={(event) => updateTestScore(record.id, definition.index, event.target.value)}
                                 placeholder="점수/미응시"
                                 aria-label={`${record.name} ${testSlotLabels[definition.index]} 점수 또는 미응시 사유`}
-                                className="h-9 w-28 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                className="h-8 w-20 rounded-lg border border-slate-300 bg-white px-1.5 text-xs outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                               />
                             </td>
                           ))}
                           {(["homeworkScore", "understandingScore", "participationScore"] as const).map((key) => (
-                            <td key={key} className="px-3 py-3">
+                            <td key={key} className="px-2 py-1.5">
                               <select
                                 value={record[key]}
                                 onChange={(event) => updateRecord(record.id, key, event.target.value)}
                                 disabled={isAbsent}
-                                className="h-9 w-24 rounded-lg border border-slate-300 bg-white px-2 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                className="h-8 w-16 rounded-lg border border-slate-300 bg-white px-1.5 text-xs outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                               >
                                 <option value="">선택</option>
                                 {scoreOptions.map((score) => (
@@ -452,7 +453,7 @@ export default function TeacherRecordsPage() {
                               </select>
                             </td>
                           ))}
-                          <td className="px-3 py-3 text-center">
+                          <td className="px-2 py-1.5 text-center">
                             <input
                               type="checkbox"
                               aria-label={`${record.name} 나머지/보충 학습`}
@@ -462,14 +463,14 @@ export default function TeacherRecordsPage() {
                               className="h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed"
                             />
                           </td>
-                          <td className="px-3 py-3">
+                          <td className="px-2 py-1.5">
                             <input
                               type="text"
                               value={record.publicNote}
                               onChange={(event) => updateRecord(record.id, "publicNote", event.target.value)}
                               disabled={isAbsent}
                               placeholder="수업 메모"
-                              className="h-9 w-56 rounded-lg border border-slate-300 px-3 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                              className="h-8 w-32 rounded-lg border border-slate-300 px-1.5 text-xs outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                             />
                           </td>
                         </tr>
@@ -477,6 +478,7 @@ export default function TeacherRecordsPage() {
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             </div>
             )}
