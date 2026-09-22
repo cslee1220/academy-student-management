@@ -3,7 +3,7 @@
 ## 현재 작업 상태
 
 - 작업공간: `E:\Coding_basic\academy-student management`
-- 현재 기능 묶음: 데이터베이스·권한 기반 준비
+- 현재 기능 묶음: 교사 수업기록 입력 흐름 화면
 - 완료한 파일:
   - `web/supabase/migrations/20260921123925_academy_foundation.sql`
   - `web/supabase/config.toml`
@@ -11,10 +11,15 @@
   - `web/src/lib/auth/authorization.ts`
   - `web/package.json`, `web/package-lock.json`
   - `web/supabase/tests/database/academy_foundation.test.sql`
+- 추가 완료 파일:
+  - `web/src/app/teacher/page.tsx`
+  - `web/src/app/teacher/records/page.tsx`
 - 핵심 내용: 문서에 정의된 핵심 학원·계정·학생·수업·기록·보호자·공개·수정요청·감사로그 표의 초안, RLS 정책, 역할·학원·활성계정·교사 배정 서버 검증 기반
+- 교사 화면 내용: `/teacher/records`에서 합성 학생 A/B/C를 대상으로 반·수업 회차·과목 선택, 출결, 공통 숙제, 과목별 점수·메모, 임시저장·최종저장 검증 흐름을 확인할 수 있음
+- 교사 화면은 실제 로그인·개인정보·Supabase 저장 없이 브라우저 임시 상태만 사용함
 - 실제 Supabase 프로젝트, 키, 로그인, 실제 개인정보는 아직 연결하지 않음
 - 현재 환경에는 Docker가 없어 `npx supabase@latest db lint --local`을 실행하지 못함
-- 마지막 웹 검증: `npm run lint`, `npm run build` 성공
+- 마지막 웹 검증: `npm run lint`, `npm run build` 성공. `/teacher/records` 정적 라우트 생성 확인
 - 이번 실행에서도 `docker --version`과 `npx supabase@latest status`가 Docker/Podman 미설치로 중단됨
 - 현재 운영체제는 Windows 10 Home 1909, 빌드 18363이며 Docker Desktop·Podman WSL2의 최소 빌드보다 낮음
 - WSL 명령도 설치되어 있지 않으므로 이 실행에서는 컨테이너 설치를 진행하지 않음
@@ -30,7 +35,7 @@
 5. `npx supabase@latest db lint --local`으로 migration을 검사한다.
 6. `npx supabase@latest db reset`으로 migration을 적용하고, `npx supabase@latest test db --local`으로 pgTAP RLS 테스트를 실행한다.
 7. 오류가 있으면 현재 migration만 수정하고 lint/test를 다시 실행한다.
-8. 검증이 끝난 뒤 별도 기능 묶음으로 교사 수업기록 흐름을 구현한다.
+8. 로컬 검증이 끝난 뒤 별도 기능 묶음으로 교사 화면의 Supabase 조회·저장 Route Handler 또는 서버 액션을 연결한다. 실제 로그인과 개인정보 연결 전에는 테스트 데이터만 사용한다.
 
 ## quota 20% 남았을 때의 마무리 규칙
 
@@ -40,8 +45,8 @@
 - 관련 변경만 스테이징하고 자동 커밋한다. 기존 사용자 파일은 포함하지 않는다.
 
 ```powershell
-git add web "note/next instruction"
-git commit -m "데이터베이스 권한 기반 준비 진행"
+  git add web "note/next instruction" "note/pending work"
+  git commit -m "교사 수업기록 입력 흐름 추가"
 git status --short
 ```
 
@@ -59,5 +64,5 @@ codex resume
 새 실행에서 이 파일을 기준으로 이어가려면 작업공간을 지정한다.
 
 ```powershell
-codex -C "E:\Coding_basic\academy-student management" "note/next instruction 파일과 루트 AGENTS.md, docs 폴더의 모든 Markdown 문서를 읽고 현재 작업 상태에서 이어서 진행하라. 한 번에 하나의 기능 묶음만 구현하고, quota가 20% 남으면 현재 최소 작업을 마무리하고 lint/build, 관련 파일 커밋, note/next instruction 갱신 후 중단하라."
+codex -C "E:\Coding_basic\academy-student management" "note/next instruction과 note/pending work 파일, 루트 AGENTS.md, docs 폴더의 모든 Markdown 문서를 읽고 현재 작업 상태에서 이어서 진행하라. 한 번에 하나의 기능 묶음만 구현하고, quota가 20% 남으면 현재 최소 작업을 마무리하고 lint/build, 관련 파일 커밋, note/next instruction 갱신 후 중단하라."
 ```

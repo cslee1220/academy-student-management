@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const fields = ["반 선택", "수업 회차 선택", "과목 선택"];
 
 export default function TeacherPage() {
@@ -9,7 +11,7 @@ export default function TeacherPage() {
           <h1 className="mt-2 text-4xl font-bold tracking-tight">교사 수업기록</h1>
           <p className="mt-3 text-slate-600">반과 수업 회차를 선택한 뒤 학생별 기록을 입력하는 화면의 빈 틀입니다.</p>
         </div>
-        <span className="rounded-full bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-800">입력 기능 준비 중</span>
+          <span className="rounded-full bg-emerald-100 px-4 py-2 text-sm font-semibold text-emerald-800">입력 흐름 데모 제공</span>
       </div>
 
       <section className="mt-10 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
@@ -31,13 +33,18 @@ export default function TeacherPage() {
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
           <div>
             <h2 className="text-xl font-bold">학생별 기록</h2>
-            <p className="mt-2 text-sm text-slate-500">출결과 과목별 학습기록이 이 영역에 표시됩니다.</p>
+            <p className="mt-2 text-sm text-slate-500">선택 화면과 학생별 기록 입력은 다음 화면에서 확인할 수 있습니다.</p>
           </div>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">저장 기능 없음</span>
+          <Link
+            href="/teacher/records"
+            className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-indigo-700"
+          >
+            수업기록 입력 화면 열기
+          </Link>
         </div>
         <div className="mt-7 rounded-xl border border-dashed border-slate-300 px-5 py-16 text-center">
-          <p className="font-semibold text-slate-600">수업을 선택하면 학생별 입력 영역이 표시됩니다.</p>
-          <p className="mt-2 text-sm text-slate-500">현재는 실제 학생 정보와 연결되어 있지 않습니다.</p>
+          <p className="font-semibold text-slate-600">반·수업 회차·과목을 선택하면 학생별 입력 영역이 표시됩니다.</p>
+          <p className="mt-2 text-sm text-slate-500">실제 학생 정보와 연결하지 않은 화면 흐름 데모입니다.</p>
         </div>
       </section>
 
