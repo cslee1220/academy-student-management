@@ -1,0 +1,45 @@
+# 보류 작업
+
+## 보류 사유
+
+- 로컬 Supabase migration/RLS 실행 검증이 미완료입니다.
+- 현재 Windows 10 Home 1909, 빌드 18363입니다.
+- Docker Desktop 공식 요구 최소 버전인 Windows 10 22H2, 빌드 19045 이상에 미달합니다.
+- Podman의 WSL2 실행에 필요한 Windows 10 빌드 19043 이상에도 미달합니다.
+- Docker, Podman, WSL, winget이 현재 설치되어 있지 않습니다.
+- 따라서 현재 OS에서 Docker Desktop 또는 Podman을 설치해 Supabase 로컬 컨테이너를 실행할 수 없어 설치를 진행하지 않았습니다.
+- 원격 Supabase 프로젝트는 작업 대상이 명시되지 않아 임의로 migration을 적용하지 않았습니다.
+
+## 재개 조건
+
+1. Windows Update로 Windows 10 22H2, 빌드 19045 이상 또는 Windows 11로 업그레이드합니다.
+2. 재부팅 후 Docker Desktop(권장, WSL2 기반)을 설치하고 실행합니다. Podman을 선택하는 경우에는 WSL2를 먼저 준비합니다.
+3. 새 PowerShell에서 `docker --version`, `docker info`, `wsl --version`을 확인합니다.
+4. `web` 폴더에서 다음 명령을 실행합니다.
+
+   ```powershell
+   npx supabase@latest start
+   npx supabase@latest db lint --local
+   npx supabase@latest db reset
+   npx supabase@latest test db --local
+   ```
+
+5. 오류가 있으면 `web/supabase/migrations/20260921123925_academy_foundation.sql`만 수정하고 lint/test를 다시 실행합니다.
+6. 검증이 통과한 뒤 별도 기능 묶음으로 교사 수업기록 흐름을 구현합니다.
+
+## 관련 파일
+
+- `web/supabase/migrations/20260921123925_academy_foundation.sql`
+- `web/supabase/tests/database/academy_foundation.test.sql`
+- `note/next instruction`
+
+## 저장 규칙
+
+- 이 파일의 보류 상태가 해소되거나 변경되면 다음 파일만 선택적으로 커밋합니다.
+
+  ```powershell
+  git add web "note/pending work" "note/next instruction"
+  git commit -m "보류 작업 상태 갱신"
+  ```
+
+- `note/key info`는 사용자가 관리하는 파일이므로 staging하지 않습니다.
