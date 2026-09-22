@@ -8,13 +8,10 @@ type StudentRecord = {
   id: string;
   name: string;
   attendance: AttendanceStatus;
-  absenceNote: string;
+  isSupplementary: boolean;
   homeworkScore: string;
   understandingScore: string;
   participationScore: string;
-  remedialType: string;
-  remedialNote: string;
-  personalHomework: string;
   publicNote: string;
 };
 
@@ -43,13 +40,10 @@ function createInitialRecords(): StudentRecord[] {
     id: `student-${index + 1}`,
     name,
     attendance: "present",
-    absenceNote: "",
+    isSupplementary: false,
     homeworkScore: "",
     understandingScore: "",
     participationScore: "",
-    remedialType: "없음",
-    remedialNote: "",
-    personalHomework: "",
     publicNote: "",
   }));
 }
@@ -80,6 +74,13 @@ export default function TeacherRecordsPage() {
     setMessage("");
   }
 
+  function updateSupplementary(id: string, checked: boolean) {
+    setRecords((currentRecords) =>
+      currentRecords.map((record) => (record.id === id ? { ...record, isSupplementary: checked } : record)),
+    );
+    setMessage("");
+  }
+
   function handleClassChange(value: string) {
     setSelectedClassId(value);
     setSelectedSessionId("");
@@ -99,20 +100,12 @@ export default function TeacherRecordsPage() {
   }
 
   function handleFinalSave() {
-    const hasMissingAttendanceNote = records.some(
-      (record) => record.attendance !== "present" && record.absenceNote.trim() === "",
-    );
     const hasMissingHomework = !noHomework && homework.trim() === "";
     const hasMissingScore = records.some(
       (record) =>
         record.attendance === "present" &&
         (!record.homeworkScore || !record.understandingScore || !record.participationScore),
     );
-
-    if (hasMissingAttendanceNote) {
-      setMessage("결석 또는 무단결석 학생의 사유를 먼저 입력해 주세요.");
-      return;
-    }
 
     if (hasMissingHomework) {
       setMessage("공통 숙제를 입력하거나 ‘숙제 없음’을 선택해 주세요.");
@@ -224,10 +217,10 @@ export default function TeacherRecordsPage() {
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
               <div>
                 <p className="text-sm font-bold text-indigo-600">2단계</p>
-                <h2 className="mt-1 text-xl font-bold">출결 및 공통 숙제</h2>
+                <h2 className="mt-1 text-xl font-bold">출결·공통 숙제·학생별 기록</h2>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                수업 회차당 1건
+                한 화면에서 입력
               </span>
             </div>
 
@@ -260,12 +253,11 @@ export default function TeacherRecordsPage() {
             </div>
 
             <div className="mt-6 overflow-x-auto">
-              <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+              <table className="w-full min-w-[560px] border-collapse text-left text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-slate-500">
                     <th className="px-3 py-3 font-semibold">학생</th>
                     <th className="px-3 py-3 font-semibold">출결</th>
-                    <th className="px-3 py-3 font-semibold">결석 사유</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -283,26 +275,15 @@ export default function TeacherRecordsPage() {
                           <option value="unexcused_absent">무단결석</option>
                         </select>
                       </td>
-                      <td className="px-3 py-4">
-                        <input
-                          value={record.absenceNote}
-                          onChange={(event) => updateRecord(record.id, "absenceNote", event.target.value)}
-                          disabled={record.attendance === "present"}
-                          placeholder="결석 사유 입력"
-                          className="w-full min-w-52 rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
-                        />
-                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </section>
-
-          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+            <div className="mt-8 border-t border-slate-200 pt-8">
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
               <div>
-                <p className="text-sm font-bold text-indigo-600">3단계</p>
+                <p className="text-sm font-bold text-indigo-600">학생별 기록</p>
                 <h2 className="mt-1 text-xl font-bold">학생별 과목 기록</h2>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
@@ -325,7 +306,7 @@ export default function TeacherRecordsPage() {
                       </div>
                       {isAbsent && (
                         <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
-                          출결 사유만 입력
+                          과목 점수 입력 제외
                         </span>
                       )}
                     </div>
@@ -358,42 +339,15 @@ export default function TeacherRecordsPage() {
                     </div>
 
                     <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <label className="text-sm font-semibold text-slate-700">
-                        보충 지도 유형
-                        <select
-                          value={record.remedialType}
-                          onChange={(event) => updateRecord(record.id, "remedialType", event.target.value)}
-                          disabled={isAbsent}
-                          className="mt-2 h-11 w-full rounded-lg border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
-                        >
-                          <option value="없음">없음</option>
-                          <option value="개별 설명">개별 설명</option>
-                          <option value="추가 문제">추가 문제</option>
-                          <option value="재수업 안내">재수업 안내</option>
-                        </select>
-                      </label>
-                      <label className="text-sm font-semibold text-slate-700">
-                        개인 숙제
+                      <label className="flex min-h-24 items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm font-semibold text-slate-700">
                         <input
-                          value={record.personalHomework}
-                          onChange={(event) => updateRecord(record.id, "personalHomework", event.target.value)}
+                          type="checkbox"
+                          checked={record.isSupplementary}
+                          onChange={(event) => updateSupplementary(record.id, event.target.checked)}
                           disabled={isAbsent}
-                          placeholder="개별 숙제가 있을 때 입력"
-                          className="mt-2 h-11 w-full rounded-lg border border-slate-300 px-3 font-normal outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                          className="h-4 w-4 accent-indigo-600"
                         />
-                      </label>
-                    </div>
-
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <label className="text-sm font-semibold text-slate-700">
-                        보충 지도 메모
-                        <textarea
-                          value={record.remedialNote}
-                          onChange={(event) => updateRecord(record.id, "remedialNote", event.target.value)}
-                          disabled={isAbsent}
-                          placeholder="교사 내부 기록용 메모"
-                          className="mt-2 min-h-24 w-full rounded-lg border border-slate-300 px-3 py-2 font-normal outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
-                        />
+                        나머지/보충 학생으로 표시
                       </label>
                       <label className="text-sm font-semibold text-slate-700">
                         공개용 수업 메모
@@ -410,12 +364,13 @@ export default function TeacherRecordsPage() {
                 );
               })}
             </div>
+            </div>
           </section>
 
           <section className="mt-6 rounded-2xl border border-indigo-100 bg-indigo-50 p-6 sm:p-8">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
               <div>
-                <p className="text-sm font-bold text-indigo-700">4단계</p>
+                <p className="text-sm font-bold text-indigo-700">3단계</p>
                 <h2 className="mt-1 text-xl font-bold text-indigo-950">저장 상태</h2>
                 <p className="mt-2 text-sm leading-6 text-indigo-900">
                   실제 서비스에서는 서버가 권한·필수입력·출결·잠금 조건을 검사한 뒤 상태를 변경합니다.
