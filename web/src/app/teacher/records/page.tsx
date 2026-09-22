@@ -367,17 +367,7 @@ export default function TeacherRecordsPage() {
               </div>
             </div>
 
-            {!canEnterStudentRecords ? (
-              <div className="mt-8 border-t border-slate-200 pt-8">
-                <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
-                  <p className="text-sm font-bold text-amber-800">학생별 과목기록 입력 잠금</p>
-                  <h2 className="mt-1 text-xl font-bold text-amber-950">테스트 항목을 먼저 설정해 주세요.</h2>
-                  <p className="mt-2 text-sm leading-6 text-amber-900">
-                    테스트 1~3 중 최소 1개를 선택해 테스트 이름과 최고점을 모두 입력하면 학생별 과목기록 입력 화면이 열립니다.
-                  </p>
-                </div>
-              </div>
-            ) : (
+            {canEnterStudentRecords && (
             <div className="mt-8 border-t border-slate-200 pt-8">
               <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                 <div>
