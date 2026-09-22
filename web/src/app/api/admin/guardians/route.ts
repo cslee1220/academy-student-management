@@ -66,7 +66,7 @@ export async function GET(request: NextRequest) {
     await requireAcademyAdmin(academyId);
     const admin = createSupabaseAdminClient();
 
-    const [{ data: students, error: studentsError }, { data: links, error: linksError }, { data: guardians, error: guardiansError }] =
+    const [{ data: students, error: studentsError }, { data: links, error: linksError }, { data: guardians, error: guardiansError }, { data: invites, error: invitesError }] =
       await Promise.all([
         admin
           .from("students")
@@ -82,19 +82,29 @@ export async function GET(request: NextRequest) {
           .from("guardians")
           .select("id, display_name, password_setup_required, is_login_active")
           .eq("academy_id", academyId),
+        admin
+          .from("guardian_invites")
+          .select("id, guardian_id, expires_at, used_at, revoked_at, attempt_count, locked_until, created_at")
+          .eq("academy_id", academyId)
+          .order("created_at", { ascending: false }),
       ]);
 
-    if (studentsError || linksError || guardiansError) {
+    if (studentsError || linksError || guardiansError || invitesError) {
       throw new HttpError(500, "database_error", "학생·보호자 목록을 불러오지 못했습니다.");
     }
 
     const guardianMap = new Map((guardians ?? []).map((guardian) => [guardian.id, guardian]));
+    const latestInviteMap = new Map<string, NonNullable<typeof invites>[number]>();
+    for (const invite of invites ?? []) {
+      if (!latestInviteMap.has(invite.guardian_id)) latestInviteMap.set(invite.guardian_id, invite);
+    }
     return NextResponse.json({
       data: {
         students: students ?? [],
         guardians: (links ?? []).map((link) => ({
           ...link,
           guardian: guardianMap.get(link.guardian_id) ?? null,
+          invite: latestInviteMap.get(link.guardian_id) ?? null,
         })),
       },
     });

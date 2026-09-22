@@ -22,6 +22,10 @@ class HttpError extends Error {
   }
 }
 
+const MAX_AUTH_CODE_ATTEMPTS = 5;
+const LOCK_DURATION_MS = 15 * 60 * 1000;
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+
 function parseText(value: unknown, fieldName: string, minLength: number, maxLength: number): string {
   if (typeof value !== "string") {
     throw new HttpError(400, "invalid_request", `${fieldName}을(를) 입력해 주세요.`);
@@ -74,7 +78,9 @@ export async function POST(request: NextRequest) {
     const admin = createSupabaseAdminClient();
     const { data: invite, error: inviteError } = await admin
       .from("guardian_invites")
-      .select("id, academy_id, student_id, guardian_id, auth_code_hash, expires_at, used_at, revoked_at")
+      .select(
+        "id, academy_id, student_id, guardian_id, auth_code_hash, expires_at, used_at, revoked_at, attempt_count, last_attempt_at, locked_until",
+      )
       .eq("invite_token_hash", hashGuardianInviteToken(token))
       .maybeSingle();
     if (inviteError || !invite) {
@@ -82,6 +88,34 @@ export async function POST(request: NextRequest) {
     }
     if (invite.used_at || invite.revoked_at || isGuardianInviteExpired(invite.expires_at)) {
       throw new HttpError(410, "invite_expired", "초대 링크가 만료되었거나 이미 사용되었습니다.");
+    }
+    const now = Date.now();
+    if (invite.locked_until && new Date(invite.locked_until).getTime() > now) {
+      throw new HttpError(429, "invite_locked", "인증번호를 여러 번 틀려 15분 동안 잠겼습니다.");
+    }
+    if (!matchesGuardianAuthCode(authCode, invite.auth_code_hash)) {
+      const lastAttemptAt = invite.last_attempt_at ? new Date(invite.last_attempt_at).getTime() : 0;
+      const isNewAttemptWindow = !lastAttemptAt || now - lastAttemptAt >= ATTEMPT_WINDOW_MS;
+      const attemptCount = isNewAttemptWindow ? 1 : Number(invite.attempt_count ?? 0) + 1;
+      const lockedUntil = attemptCount >= MAX_AUTH_CODE_ATTEMPTS
+        ? new Date(now + LOCK_DURATION_MS).toISOString()
+        : null;
+      const { error: attemptUpdateError } = await admin
+        .from("guardian_invites")
+        .update({
+          attempt_count: Math.min(attemptCount, MAX_AUTH_CODE_ATTEMPTS),
+          last_attempt_at: new Date(now).toISOString(),
+          locked_until: lockedUntil,
+        })
+        .eq("id", invite.id)
+        .is("used_at", null)
+        .is("revoked_at", null);
+      if (attemptUpdateError) {
+        throw new HttpError(500, "attempt_update_failed", "인증 시도 상태를 저장하지 못했습니다.");
+      }
+      if (attemptCount >= MAX_AUTH_CODE_ATTEMPTS) {
+        throw new HttpError(429, "invite_locked", "인증번호를 5회 틀려 15분 동안 잠겼습니다.");
+      }
     }
     if (!matchesGuardianAuthCode(authCode, invite.auth_code_hash)) {
       throw new HttpError(401, "invalid_auth_code", "초대 인증번호가 일치하지 않습니다.");
@@ -162,7 +196,7 @@ export async function POST(request: NextRequest) {
 
     const { error: inviteUpdateError } = await admin
       .from("guardian_invites")
-      .update({ used_at: new Date().toISOString() })
+      .update({ used_at: new Date().toISOString(), attempt_count: 0, last_attempt_at: null, locked_until: null })
       .eq("id", invite.id)
       .is("used_at", null);
     if (inviteUpdateError) {

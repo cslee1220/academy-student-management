@@ -21,6 +21,14 @@ type GuardianLink = {
     password_setup_required: boolean;
     is_login_active: boolean;
   } | null;
+  invite: {
+    id: string;
+    expires_at: string;
+    used_at: string | null;
+    revoked_at: string | null;
+    attempt_count: number;
+    locked_until: string | null;
+  } | null;
 };
 
 type ApiResult = {
@@ -32,6 +40,7 @@ type ApiResult = {
     inviteUrl?: string;
     authCode?: string;
     expiresAt?: string;
+    guardianName?: string;
     message?: string;
   };
 };
@@ -96,6 +105,56 @@ export default function GuardiansPage() {
       await loadData();
     } catch {
       setError("보호자 초대 요청을 처리하지 못했습니다.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function reissueInvite(link: GuardianLink) {
+    setError("");
+    setMessage("");
+    setIssuedInvite(null);
+    setIsLoading(true);
+    try {
+      const response = await fetch("/api/admin/guardians/reissue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ academyId, guardianId: link.guardian_id, studentId: link.student_id }),
+      });
+      const result = await readResult(response);
+      if (!response.ok || !result?.data?.inviteUrl || !result.data.authCode || !result.data.expiresAt) {
+        setError(result?.error?.message ?? "보호자 초대를 재발급하지 못했습니다.");
+        return;
+      }
+      setIssuedInvite(result.data);
+      setMessage("기존 미사용 초대를 취소하고 새 초대를 발급했습니다.");
+      await loadData();
+    } catch {
+      setError("보호자 초대 재발급 요청을 처리하지 못했습니다.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function revokeInvite(link: GuardianLink) {
+    setError("");
+    setMessage("");
+    setIsLoading(true);
+    try {
+      const response = await fetch("/api/admin/guardians/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ academyId, guardianId: link.guardian_id, studentId: link.student_id }),
+      });
+      const result = await readResult(response);
+      if (!response.ok) {
+        setError(result?.error?.message ?? "보호자 초대를 취소하지 못했습니다.");
+        return;
+      }
+      setMessage("보호자 초대를 취소했습니다.");
+      await loadData();
+    } catch {
+      setError("보호자 초대 취소 요청을 처리하지 못했습니다.");
     } finally {
       setIsLoading(false);
     }
@@ -219,6 +278,7 @@ export default function GuardiansPage() {
                 <th className="px-3 py-3 font-semibold">보호자</th>
                 <th className="px-3 py-3 font-semibold">관계</th>
                 <th className="px-3 py-3 font-semibold">계정 상태</th>
+                <th className="px-3 py-3 font-semibold">초대 관리</th>
               </tr>
             </thead>
             <tbody>
@@ -230,9 +290,17 @@ export default function GuardiansPage() {
                     <td className="px-3 py-4">{link.guardian?.display_name ?? "보호자 정보 없음"}</td>
                     <td className="px-3 py-4">{link.relationship ?? "-"}</td>
                     <td className="px-3 py-4">{link.guardian?.password_setup_required ? "비밀번호 설정 대기" : "사용 중"}</td>
+                    <td className="px-3 py-4">
+                      {link.invite && !link.invite.used_at && !link.invite.revoked_at ? (
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" onClick={() => reissueInvite(link)} disabled={isLoading} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">재발급</button>
+                          <button type="button" onClick={() => revokeInvite(link)} disabled={isLoading} className="rounded-lg border border-rose-300 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50">취소</button>
+                        </div>
+                      ) : link.invite?.used_at ? "사용 완료" : link.invite?.revoked_at ? "취소됨" : "초대 없음"}
+                    </td>
                   </tr>
                 );
-              }) : <tr><td colSpan={4} className="px-3 py-12 text-center text-slate-500">현재 연결된 보호자가 없습니다.</td></tr>}
+              }) : <tr><td colSpan={5} className="px-3 py-12 text-center text-slate-500">현재 연결된 보호자가 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>

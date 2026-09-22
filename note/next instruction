@@ -114,6 +114,21 @@ codex -C "E:\Coding_basic\academy-student management" "note/next instruction과 
 ```powershell
 codex -C "E:\Coding_basic\academy-student management" "Read note/next instruction, note/pending work, root AGENTS.md, and every Markdown file in docs. Continue from the current guardian publication flow. First check Docker/Podman/WSL and run Supabase local start, db lint, db reset, and pgTAP tests. Fix only failing migration/RLS files, then run npm run lint and npm run build in web. Do not touch root protected files or note/key info."
 ```
+
+## Current implementation: invite controls (2026-09-22)
+
+- Added `web/supabase/migrations/20260922082255_guardian_invite_controls.sql`.
+- Added five-attempt guardian authentication-code lockout for 15 minutes.
+- Added admin invite reissue and revocation APIs: `/api/admin/guardians/reissue`, `/api/admin/guardians/revoke`.
+- Added reissue and cancel controls to `/admin/guardians`.
+- Updated the pgTAP plan from 30 to 32 checks.
+- `npm run lint` passed.
+- `npm run build` passed.
+- `npx supabase@latest db lint --local` remains blocked by Docker/Podman: `ECONNREFUSED 127.0.0.1:54322`.
+
+## Next required step
+
+The next step is local Supabase migration/RLS validation. It cannot run until Docker Desktop, Podman, or WSL2 provides the local Postgres container. After the OS/tooling is available, run `supabase start`, `db lint --local`, `db reset`, and `test db --local`, then run the synthetic guardian end-to-end test.
 ## 다음 Codex 실행 시 첫 작업
 
 - Added `web/src/app/api/teacher/records/route.ts`.

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(30);
+select plan(32);
 
 select has_table('public', 'academies', '학원 테이블이 존재한다');
 select has_table('public', 'teacher_subject_records', '교사 과목기록 테이블이 존재한다');
@@ -51,6 +51,8 @@ select has_table('public', 'guardian_invites', 'guardian_invites table exists');
 select has_table('public', 'guardian_devices', 'guardian_devices table exists');
 select has_column('public', 'guardians', 'password_setup_required', 'guardians password setup flag exists');
 select has_column('public', 'publication_snapshots', 'value_json', 'publication snapshot value exists');
+select has_column('public', 'guardian_invites', 'attempt_count', 'guardian invite attempt count exists');
+select has_column('public', 'guardian_invites', 'locked_until', 'guardian invite lock timestamp exists');
 select ok(
   (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'guardian_devices'),
   'guardian_devices has RLS enabled'

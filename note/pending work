@@ -70,6 +70,15 @@
 - `npm run lint` passed and `npm run build` passed.
 - Local Supabase DB checks remain pending: Docker/Podman is unavailable and `127.0.0.1:54322` refuses the connection.
 
+## Guardian invite controls (2026-09-22)
+
+- Added `web/supabase/migrations/20260922082255_guardian_invite_controls.sql`.
+- Added authentication-code failure tracking: five failures lock the invite for 15 minutes.
+- Added admin invite reissue and revocation APIs and controls on `/admin/guardians`.
+- `npm run lint` and `npm run build` passed.
+- `npx supabase@latest db lint --local` is still blocked by the unavailable local Postgres container (`ECONNREFUSED 127.0.0.1:54322`).
+- The next validation step requires Docker Desktop, Podman, or WSL2. No further SQL/RLS validation can be completed until one is available.
+
 - Added `web/src/app/api/teacher/records/route.ts` for authenticated teacher GET/POST access.
 - The route rechecks academy membership, current subject assignment, expected roster membership, and lead-teacher permission for attendance/common homework.
 - The route validates draft/final input, test definitions and scores, absent/unexcused-absent restrictions, required values, optimistic versions, and the 10-day lock.
