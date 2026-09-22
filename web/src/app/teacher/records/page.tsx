@@ -386,7 +386,7 @@ export default function TeacherRecordsPage() {
 
               <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200">
                 <div className="max-h-[700px] overflow-y-auto">
-                <table className="w-full min-w-[980px] border-collapse text-left text-xs">
+                <table className="w-full min-w-[1020px] border-collapse text-left text-xs">
                   <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500">
                     <tr>
                       <th className="whitespace-nowrap px-2 py-2 font-semibold">학생</th>
@@ -403,7 +403,7 @@ export default function TeacherRecordsPage() {
                       <th className="whitespace-nowrap px-2 py-2 font-semibold">이해도</th>
                       <th className="whitespace-nowrap px-2 py-2 font-semibold">참여도</th>
                       <th className="whitespace-nowrap px-2 py-2 font-semibold">나머지/보충</th>
-                      <th className="whitespace-nowrap px-2 py-2 font-semibold">공개용 수업 메모</th>
+                      <th className="min-w-[280px] whitespace-nowrap px-2 py-2 font-semibold">공개용 수업 메모</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -470,7 +470,7 @@ export default function TeacherRecordsPage() {
                               onChange={(event) => updateRecord(record.id, "publicNote", event.target.value)}
                               disabled={isAbsent}
                               placeholder="수업 메모"
-                              className="h-8 w-32 rounded-lg border border-slate-300 px-1.5 text-xs outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                              className="h-8 w-full min-w-[280px] rounded-lg border border-slate-300 px-1.5 text-xs outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                             />
                           </td>
                         </tr>
