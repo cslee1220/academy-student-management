@@ -2,19 +2,42 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(8);
+select plan(21);
 
 select has_table('public', 'academies', '학원 테이블이 존재한다');
 select has_table('public', 'teacher_subject_records', '교사 과목기록 테이블이 존재한다');
+select has_column('public', 'teacher_subject_records', 'is_supplementary', '교사 과목기록에 나머지·보충 플래그가 존재한다');
+select has_table('public', 'test_definitions', '테스트 정의 테이블이 존재한다');
+select has_table('public', 'student_test_results', '학생별 테스트 결과 테이블이 존재한다');
 select ok(
   (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'students'),
   'students 테이블에 RLS가 활성화되어 있다'
+);
+select ok(
+  (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'test_definitions'),
+  'test_definitions 테이블에 RLS가 활성화되어 있다'
+);
+select ok(
+  (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'student_test_results'),
+  'student_test_results 테이블에 RLS가 활성화되어 있다'
 );
 select policies_are(
   'public',
   'teacher_subject_records',
   array['subject_records_select', 'subject_records_insert', 'subject_records_update'],
   '교사 과목기록 정책이 예상된 세 가지로 구성되어 있다'
+);
+select policies_are(
+  'public',
+  'test_definitions',
+  array['test_definitions_access'],
+  '테스트 정의 정책이 교사·운영자 접근으로 구성되어 있다'
+);
+select policies_are(
+  'public',
+  'student_test_results',
+  array['student_test_results_select', 'student_test_results_insert', 'student_test_results_update'],
+  '학생별 테스트 결과 정책이 조회·입력·수정으로 구성되어 있다'
 );
 
 insert into auth.users (id, email)
@@ -80,6 +103,40 @@ values ('80000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-0000000
 insert into public.private_records (academy_id, student_id, record_type, content, author_profile_id)
 values ('20000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', 'risk_note', '테스트 비공개 기록', '30000000-0000-0000-0000-000000000002');
 
+insert into public.test_definitions (
+  id,
+  academy_id,
+  session_id,
+  subject_id,
+  teacher_id,
+  sequence_no,
+  name,
+  max_score
+)
+values (
+  '90000000-0000-0000-0000-000000000001',
+  '20000000-0000-0000-0000-000000000001',
+  '60000000-0000-0000-0000-000000000001',
+  '40000000-0000-0000-0000-000000000004',
+  '30000000-0000-0000-0000-000000000002',
+  1,
+  '단어 테스트',
+  20
+);
+
+insert into public.student_test_results (
+  academy_id,
+  student_id,
+  test_definition_id,
+  score
+)
+values (
+  '20000000-0000-0000-0000-000000000001',
+  '50000000-0000-0000-0000-000000000001',
+  '90000000-0000-0000-0000-000000000001',
+  18
+);
+
 set local role authenticated;
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000002';
 
@@ -87,6 +144,32 @@ select is(
   (select count(*)::integer from public.students),
   1,
   '교사는 현재 배정된 학생 한 명만 조회한다'
+);
+
+select is(
+  (select count(*)::integer from public.test_definitions),
+  1,
+  '담당 교사는 본인이 담당한 테스트 정의만 조회한다'
+);
+
+select is(
+  (select count(*)::integer from public.student_test_results),
+  1,
+  '담당 교사는 배정 학생의 테스트 결과만 조회한다'
+);
+
+set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000003';
+
+select is(
+  (select count(*)::integer from public.test_definitions),
+  0,
+  '다른 교사는 테스트 정의를 조회하지 못한다'
+);
+
+select is(
+  (select count(*)::integer from public.student_test_results),
+  0,
+  '다른 교사는 테스트 결과를 조회하지 못한다'
 );
 
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000004';
@@ -109,6 +192,18 @@ select is(
   (select count(*)::integer from public.students),
   0,
   '시스템 관리자는 학습기록 본문을 조회하지 못한다'
+);
+
+select is(
+  (select count(*)::integer from public.test_definitions),
+  0,
+  '시스템 관리자는 테스트 정의를 조회하지 못한다'
+);
+
+select is(
+  (select count(*)::integer from public.student_test_results),
+  0,
+  '시스템 관리자는 테스트 결과를 조회하지 못한다'
 );
 
 select * from finish();

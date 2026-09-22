@@ -9,10 +9,16 @@ type StudentRecord = {
   name: string;
   attendance: AttendanceStatus;
   isSupplementary: boolean;
+  testScores: string[];
   homeworkScore: string;
   understandingScore: string;
   participationScore: string;
   publicNote: string;
+};
+
+type TestDefinition = {
+  name: string;
+  maxScore: string;
 };
 
 const classOptions = [
@@ -34,6 +40,7 @@ const subjectOptions = [
 ];
 
 const studentNames = ["학생 A", "학생 B", "학생 C"];
+const testSlotLabels = ["테스트 1", "테스트 2", "테스트 3"];
 
 function createInitialRecords(): StudentRecord[] {
   return studentNames.map((name, index) => ({
@@ -41,6 +48,7 @@ function createInitialRecords(): StudentRecord[] {
     name,
     attendance: "present",
     isSupplementary: false,
+    testScores: ["", "", ""],
     homeworkScore: "",
     understandingScore: "",
     participationScore: "",
@@ -55,6 +63,9 @@ export default function TeacherRecordsPage() {
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [records, setRecords] = useState<StudentRecord[]>(createInitialRecords);
+  const [testDefinitions, setTestDefinitions] = useState<TestDefinition[]>(
+    testSlotLabels.map(() => ({ name: "", maxScore: "" })),
+  );
   const [homework, setHomework] = useState("");
   const [noHomework, setNoHomework] = useState(false);
   const [savedStatus, setSavedStatus] = useState<"draft" | "final" | null>(null);
@@ -81,6 +92,26 @@ export default function TeacherRecordsPage() {
     setMessage("");
   }
 
+  function updateTestDefinition(index: number, key: keyof TestDefinition, value: string) {
+    setTestDefinitions((currentDefinitions) =>
+      currentDefinitions.map((definition, definitionIndex) =>
+        definitionIndex === index ? { ...definition, [key]: value } : definition,
+      ),
+    );
+    setMessage("");
+  }
+
+  function updateTestScore(id: string, index: number, value: string) {
+    setRecords((currentRecords) =>
+      currentRecords.map((record) =>
+        record.id === id
+          ? { ...record, testScores: record.testScores.map((score, scoreIndex) => (scoreIndex === index ? value : score)) }
+          : record,
+      ),
+    );
+    setMessage("");
+  }
+
   function handleClassChange(value: string) {
     setSelectedClassId(value);
     setSelectedSessionId("");
@@ -100,6 +131,32 @@ export default function TeacherRecordsPage() {
   }
 
   function handleFinalSave() {
+    const configuredTestDefinitions = testDefinitions.filter(
+      (definition) => definition.name.trim() !== "" || definition.maxScore.trim() !== "",
+    );
+    const hasIncompleteTestDefinition = configuredTestDefinitions.some(
+      (definition) =>
+        definition.name.trim() === "" ||
+        definition.maxScore.trim() === "" ||
+        Number(definition.maxScore) <= 0,
+    );
+    const hasInvalidTestScore = configuredTestDefinitions.some((definition, definitionIndex) =>
+      records.some((record) => {
+        const value = record.testScores[definitionIndex]?.trim() ?? "";
+        const numericScore = Number(value);
+        return (
+          record.attendance === "present" &&
+          value !== "" &&
+          !Number.isNaN(numericScore) &&
+          (numericScore < 0 || numericScore > Number(definition.maxScore))
+        );
+      }),
+    );
+    const hasMissingTestResult = configuredTestDefinitions.some((_, definitionIndex) =>
+      records.some(
+        (record) => record.attendance === "present" && (record.testScores[definitionIndex]?.trim() ?? "") === "",
+      ),
+    );
     const hasMissingHomework = !noHomework && homework.trim() === "";
     const hasMissingScore = records.some(
       (record) =>
@@ -109,6 +166,21 @@ export default function TeacherRecordsPage() {
 
     if (hasMissingHomework) {
       setMessage("공통 숙제를 입력하거나 ‘숙제 없음’을 선택해 주세요.");
+      return;
+    }
+
+    if (hasIncompleteTestDefinition) {
+      setMessage("입력한 테스트는 이름과 최고점을 모두 입력해 주세요.");
+      return;
+    }
+
+    if (hasInvalidTestScore) {
+      setMessage("테스트 점수는 0점 이상이며 해당 테스트 최고점 이하여야 합니다.");
+      return;
+    }
+
+    if (hasMissingTestResult) {
+      setMessage("출석 학생의 테스트 점수 또는 미응시 사유를 입력해 주세요.");
       return;
     }
 
@@ -252,6 +324,41 @@ export default function TeacherRecordsPage() {
               />
             </div>
 
+            <div className="mt-6 rounded-xl border border-slate-200 p-4">
+              <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+                <div>
+                  <h3 className="font-bold text-slate-800">테스트 항목 설정</h3>
+                  <p className="mt-1 text-xs text-slate-500">최대 3개까지 이름과 최고점을 입력합니다.</p>
+                </div>
+                <span className="text-xs text-slate-500">테스트 정의</span>
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                {testDefinitions.map((definition, index) => (
+                  <fieldset key={testSlotLabels[index]} className="rounded-lg bg-slate-50 p-3">
+                    <legend className="text-sm font-semibold text-slate-700">{testSlotLabels[index]}</legend>
+                    <div className="mt-2 grid grid-cols-[minmax(0,1fr)_84px] gap-2">
+                      <input
+                        value={definition.name}
+                        onChange={(event) => updateTestDefinition(index, "name", event.target.value)}
+                        placeholder="테스트 이름"
+                        className="h-9 min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-indigo-500"
+                      />
+                      <input
+                        type="number"
+                        min="1"
+                        step="0.01"
+                        value={definition.maxScore}
+                        onChange={(event) => updateTestDefinition(index, "maxScore", event.target.value)}
+                        placeholder="최고점"
+                        aria-label={`${testSlotLabels[index]} 최고점`}
+                        className="h-9 w-full rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </fieldset>
+                ))}
+              </div>
+            </div>
+
             <div className="mt-8 border-t border-slate-200 pt-8">
               <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                 <div>
@@ -262,15 +369,23 @@ export default function TeacherRecordsPage() {
               </div>
 
               <div className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                결석·무단결석 학생은 과목 점수와 나머지/보충 학습을 입력할 수 없습니다.
+                결석·무단결석 학생은 테스트·과목 점수와 나머지/보충 학습을 입력할 수 없습니다.
               </div>
 
               <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full min-w-[1060px] border-collapse text-left text-sm">
+                <table className="w-full min-w-[1540px] border-collapse text-left text-sm">
                   <thead className="bg-slate-50 text-slate-500">
                     <tr>
                       <th className="whitespace-nowrap px-3 py-3 font-semibold">학생</th>
                       <th className="whitespace-nowrap px-3 py-3 font-semibold">출결</th>
+                      {testDefinitions.map((definition, index) => (
+                        <th key={testSlotLabels[index]} className="whitespace-nowrap px-3 py-3 font-semibold">
+                          {definition.name.trim() || testSlotLabels[index]}
+                          <span className="ml-1 text-xs font-normal">
+                            {definition.maxScore.trim() ? `(최고 ${definition.maxScore})` : ""}
+                          </span>
+                        </th>
+                      ))}
                       <th className="whitespace-nowrap px-3 py-3 font-semibold">숙제 점수</th>
                       <th className="whitespace-nowrap px-3 py-3 font-semibold">이해도</th>
                       <th className="whitespace-nowrap px-3 py-3 font-semibold">참여도</th>
@@ -296,6 +411,19 @@ export default function TeacherRecordsPage() {
                               <option value="unexcused_absent">무단결석</option>
                             </select>
                           </td>
+                          {testDefinitions.map((definition, index) => (
+                            <td key={testSlotLabels[index]} className="px-3 py-3">
+                              <input
+                                type="text"
+                                value={record.testScores[index]}
+                                onChange={(event) => updateTestScore(record.id, index, event.target.value)}
+                                disabled={isAbsent || !definition.name.trim() || !definition.maxScore.trim()}
+                                placeholder="점수/미응시"
+                                aria-label={`${record.name} ${testSlotLabels[index]} 점수 또는 미응시 사유`}
+                                className="h-9 w-28 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                              />
+                            </td>
+                          ))}
                           {(["homeworkScore", "understandingScore", "participationScore"] as const).map((key) => (
                             <td key={key} className="px-3 py-3">
                               <select
