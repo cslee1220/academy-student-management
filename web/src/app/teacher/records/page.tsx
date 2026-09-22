@@ -344,7 +344,6 @@ export default function TeacherRecordsPage() {
                           type="checkbox"
                           checked={record.isSupplementary}
                           onChange={(event) => updateSupplementary(record.id, event.target.checked)}
-                          disabled={isAbsent}
                           className="h-4 w-4 accent-indigo-600"
                         />
                         나머지/보충 학생으로 표시
