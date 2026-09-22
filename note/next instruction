@@ -129,6 +129,19 @@ codex -C "E:\Coding_basic\academy-student management" "Read note/next instructio
 ## Next required step
 
 The next step is local Supabase migration/RLS validation. It cannot run until Docker Desktop, Podman, or WSL2 provides the local Postgres container. After the OS/tooling is available, run `supabase start`, `db lint --local`, `db reset`, and `test db --local`, then run the synthetic guardian end-to-end test.
+
+## Work paused (2026-09-22)
+
+- The requested work pause was recorded on 2026-09-22.
+- Current implementation is saved through commit `2eecad0` (`보호자 초대 제어 보강`).
+- `note/key info` remains untracked and must not be staged or committed.
+- No GitHub remote is configured in this workspace, so a GitHub push requires the repository URL.
+
+## Next Codex command (resume after environment preparation)
+
+```powershell
+codex -C "E:\Coding_basic\academy-student management" "2026-09-22 작업 중단 상태에서 재개하라. 먼저 note/next instruction, note/pending work, 루트 AGENTS.md, docs 폴더의 모든 Markdown 문서를 읽어라. Docker, Podman, WSL2 중 사용 가능한 환경을 확인하고, 가능하면 web에서 npx supabase@latest start, npx supabase@latest db lint --local, npx supabase@latest db reset, npx supabase@latest test db --local을 실행하라. 환경이 없으면 추가 기능을 구현하지 말고 그 사실을 보고하라. note/key info와 루트 보호 파일은 변경·스테이징하지 마라."
+```
 ## 다음 Codex 실행 시 첫 작업
 
 - Added `web/src/app/api/teacher/records/route.ts`.
