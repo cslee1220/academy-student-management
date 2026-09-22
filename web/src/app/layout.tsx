@@ -30,6 +30,9 @@ export default function RootLayout({
               <Link className="rounded-full px-3 py-2 text-slate-600 hover:bg-slate-100" href="/parent">
                 학부모
               </Link>
+              <Link className="rounded-full px-3 py-2 text-indigo-600 hover:bg-indigo-50" href="/login">
+                로그인
+              </Link>
             </nav>
           </div>
         </header>

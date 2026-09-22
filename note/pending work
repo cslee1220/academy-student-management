@@ -10,6 +10,8 @@
 - 따라서 현재 OS에서 Docker Desktop 또는 Podman을 설치해 Supabase 로컬 컨테이너를 실행할 수 없어 설치를 진행하지 않았습니다.
 - 원격 Supabase 프로젝트는 작업 대상이 명시되지 않아 임의로 migration을 적용하지 않았습니다.
 - 테스트 정의·학생별 테스트 결과 migration과 pgTAP 권한 검증 파일은 작성했지만, 로컬 데이터베이스가 실행되지 않아 실제 SQL 적용 검증은 미완료입니다.
+- 교사 아이디·최초 비밀번호 설정·수동 재설정 코드 migration과 API가 추가되었지만, 로컬 DB가 실행되지 않아 `teacher_accounts` migration 및 실제 Auth 연동 검증은 미완료입니다.
+- 현재 실행에서도 `npx supabase@latest db lint --local`과 `npx supabase@latest test db --local`이 `127.0.0.1:54322` 연결 거부로 종료되었습니다. `docker`, `podman`, `wsl` 명령도 설치되어 있지 않습니다.
 
 ## 재개 조건
 
@@ -25,14 +27,20 @@
    npx supabase@latest test db --local
    ```
 
-5. 오류가 있으면 관련 migration(`20260921123925_academy_foundation.sql` 또는 `20260922053203_teacher_tests.sql`)만 수정하고 lint/test를 다시 실행합니다.
-6. 교사 수업기록 입력 흐름과 테스트 1~3 입력 화면은 구현되었습니다. 로컬 검증이 통과한 뒤 별도 기능 묶음으로 Supabase 조회·저장 Route Handler 또는 서버 액션을 연결합니다.
+5. 오류가 있으면 관련 migration(`20260921123925_academy_foundation.sql`, `20260922053203_teacher_tests.sql`, `20260922072111_teacher_account_activation.sql`)만 수정하고 lint/test를 다시 실행합니다.
+6. 로컬 검증이 통과한 뒤 실제 Supabase 프로젝트를 사용하기 전, 테스트용 학원 운영자 계정으로 교사 등록·활성화·로그인·재설정 API를 순서대로 확인합니다.
+7. 그 다음 별도 기능 묶음으로 `/teacher/records` 화면을 실제 인증 세션·학원 선택·수업 회차 조회와 연결합니다.
 
 ## 관련 파일
 
 - `web/supabase/migrations/20260921123925_academy_foundation.sql`
 - `web/supabase/migrations/20260922053203_teacher_tests.sql`
+- `web/supabase/migrations/20260922072111_teacher_account_activation.sql`
 - `web/supabase/tests/database/academy_foundation.test.sql`
+- `web/src/app/api/auth/teacher-login/route.ts`
+- `web/src/app/api/auth/teacher-activate/route.ts`
+- `web/src/app/api/admin/teachers/route.ts`
+- `web/src/app/admin/teachers/page.tsx`
 - `web/src/app/teacher/records/page.tsx`
 - `note/next instruction`
 

@@ -33,12 +33,20 @@ async function getAuthenticatedContext() {
 
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("id")
+    .select("id, is_login_active, password_setup_required")
     .eq("auth_user_id", user.id)
     .maybeSingle();
 
   if (profileError || !profile) {
     throw new AuthorizationError("forbidden", "활성 사용자 프로필을 확인할 수 없습니다.");
+  }
+
+  if (profile.is_login_active === false) {
+    throw new AuthorizationError("forbidden", "계정이 비활성화되었습니다.");
+  }
+
+  if (profile.password_setup_required === true) {
+    throw new AuthorizationError("forbidden", "최초 비밀번호 설정이 필요합니다.");
   }
 
   return { supabase, user, profileId: profile.id };
@@ -62,6 +70,24 @@ export async function requireAcademyMembership(
   }
 
   return membership as Membership;
+}
+
+export async function requireAcademyAdmin(academyId: string) {
+  const { supabase, profileId } = await getAuthenticatedContext();
+  const { data: membership, error } = await supabase
+    .from("academy_memberships")
+    .select("academy_id, profile_id, role, is_active")
+    .eq("academy_id", academyId)
+    .eq("profile_id", profileId)
+    .eq("role", "academy_admin")
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (error || !membership) {
+    throw new AuthorizationError("forbidden", "운영자 권한이 필요합니다.");
+  }
+
+  return { supabase, profileId, membership: membership as Membership };
 }
 
 export async function requireTeacherAssignment(input: {

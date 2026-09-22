@@ -50,6 +50,7 @@ export default function AdminPage() {
         <div className="rounded-2xl border border-slate-200 bg-white p-6">
           <p className="text-sm font-semibold text-slate-500">빠른 이동</p>
           <div className="mt-4 flex flex-wrap gap-3">
+            <Link href="/admin/teachers" className="rounded-full bg-indigo-100 px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-200">교사 계정 관리</Link>
             <Link href="/teacher" className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">교사 화면</Link>
             <Link href="/parent" className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">학부모 화면</Link>
             <Link href="/" className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">소개 화면</Link>

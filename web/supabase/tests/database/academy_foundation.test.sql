@@ -2,13 +2,20 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(21);
+select plan(25);
 
 select has_table('public', 'academies', '학원 테이블이 존재한다');
 select has_table('public', 'teacher_subject_records', '교사 과목기록 테이블이 존재한다');
 select has_column('public', 'teacher_subject_records', 'is_supplementary', '교사 과목기록에 나머지·보충 플래그가 존재한다');
 select has_table('public', 'test_definitions', '테스트 정의 테이블이 존재한다');
 select has_table('public', 'student_test_results', '학생별 테스트 결과 테이블이 존재한다');
+select has_table('public', 'teacher_accounts', '교사 계정 테이블이 존재한다');
+select has_column('public', 'profiles', 'password_setup_required', '프로필에 최초 비밀번호 설정 상태가 있다');
+select has_column('public', 'profiles', 'is_login_active', '프로필에 로그인 활성 상태가 있다');
+select ok(
+  (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'teacher_accounts'),
+  'teacher_accounts 테이블에 RLS가 활성화되어 있다'
+);
 select ok(
   (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'students'),
   'students 테이블에 RLS가 활성화되어 있다'
