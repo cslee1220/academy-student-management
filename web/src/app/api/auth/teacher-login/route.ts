@@ -39,9 +39,9 @@ export async function POST(request: NextRequest) {
 
     const { data: memberships, error: membershipError } = await admin
       .from("academy_memberships")
-      .select("academy_id")
+      .select("academy_id, role")
       .eq("profile_id", account.profile_id)
-      .eq("role", "teacher")
+      .in("role", ["teacher", "supplement_teacher"])
       .eq("is_active", true);
     if (membershipError || !memberships || memberships.length === 0) {
       return jsonError(403, "inactive_account", "현재 이용할 수 있는 학원 소속이 없습니다.");
@@ -66,9 +66,10 @@ export async function POST(request: NextRequest) {
       return jsonError(401, "invalid_login", "아이디 또는 비밀번호가 올바르지 않습니다.");
     }
 
+    const roleByAcademyId = new Map((memberships ?? []).map((membership) => [membership.academy_id, membership.role]));
     const response = NextResponse.json({
       data: {
-        academies,
+        academies: academies.map((academy) => ({ ...academy, role: roleByAcademyId.get(academy.id) ?? "teacher" })),
         requiresAcademySelection: academies.length > 1,
       },
     });

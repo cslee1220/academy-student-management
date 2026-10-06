@@ -23,6 +23,7 @@ type SessionRow = {
   start_time: string;
   end_time: string;
   status: string;
+  lead_teacher_id: string | null;
 };
 
 type ClassRow = {
@@ -136,7 +137,7 @@ export async function GET() {
 
     const { data: sessions, error: sessionError } = await supabase
       .from("class_sessions")
-      .select("id, class_id, session_date, start_time, end_time, status")
+      .select("id, class_id, session_date, start_time, end_time, status, lead_teacher_id")
       .eq("academy_id", selectedAcademyId)
       .in("id", sessionIds)
       .order("session_date", { ascending: false });
@@ -171,6 +172,7 @@ export async function GET() {
           sessionStatus: session.status,
           subjectId: assignment.subject_id,
           subjectName: assignment.subject_name_snapshot,
+          isLeadTeacher: session.lead_teacher_id === profile.id,
         },
       ];
     });

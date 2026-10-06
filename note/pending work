@@ -120,3 +120,12 @@ After Docker Desktop is running, return to `web` and run `npx supabase@latest st
 - Git for Windows 2.55.0.windows.3 was installed with administrator elevation.
 - The repository was registered as a Git `safe.directory` because its Windows owner SID differs from the current user SID.
 - `note/key info` remains untracked and must not be staged.
+
+## Validation completion (2026-09-29)
+
+- The former Docker/WSL blocker is resolved on this machine.
+- Local migration lint, reset, and 77 pgTAP checks pass.
+- Web lint/build pass; lint has one pre-existing warning at `src/app/admin/class-operations/page.tsx:38`.
+- Guardian publication, daily-record, and teacher account activation/reset integration flows pass.
+- Temporary integration data was removed and the local database was reset to seed state.
+- No source files were changed during validation. Do not stage `note/key info`.

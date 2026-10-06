@@ -1,6 +1,8 @@
+import { cookies } from "next/headers";
+
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export const ACADEMY_ROLES = ["system_admin", "academy_admin", "teacher"] as const;
+export const ACADEMY_ROLES = ["system_admin", "academy_admin", "teacher", "supplement_teacher"] as const;
 export type AcademyRole = (typeof ACADEMY_ROLES)[number];
 
 type Membership = {
@@ -9,6 +11,8 @@ type Membership = {
   role: AcademyRole;
   is_active: boolean;
 };
+
+const ACADEMY_CONTEXT_COOKIE = "academy_context";
 
 export class AuthorizationError extends Error {
   constructor(
@@ -88,6 +92,28 @@ export async function requireAcademyAdmin(academyId: string) {
   }
 
   return { supabase, profileId, membership: membership as Membership };
+}
+
+export async function requireAcademyAdminFromContext(requestedAcademyId?: string) {
+  const cookieStore = await cookies();
+  const academyId = cookieStore.get(ACADEMY_CONTEXT_COOKIE)?.value?.trim();
+  if (!academyId) {
+    throw new AuthorizationError("unauthorized", "로그인이 필요합니다.");
+  }
+  if (requestedAcademyId && requestedAcademyId !== academyId) {
+    throw new AuthorizationError("forbidden", "현재 로그인한 운영자의 학원 정보와 일치하지 않습니다.");
+  }
+
+  const admin = await requireAcademyAdmin(academyId);
+  return { ...admin, academyId };
+}
+
+export async function requireTeacherRouteFromContext() {
+  const cookieStore = await cookies();
+  const academyId = cookieStore.get(ACADEMY_CONTEXT_COOKIE)?.value?.trim();
+  if (!academyId) throw new AuthorizationError("unauthorized", "로그인이 필요합니다.");
+  const membership = await requireAcademyMembership(academyId, ["teacher", "supplement_teacher"]);
+  return { academyId, membership };
 }
 
 export async function requireTeacherAssignment(input: {

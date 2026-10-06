@@ -1,10 +1,40 @@
+# 외부 라이브러리
 node_modules/
+
+# 빌드 결과물
 .next/
 out/
+dist/
+build/
+
+# 환경설정 파일: 비밀번호, API 키 등
 .env
-.env.local
-.env.*.local
+.env.*
+*.env
+*.env.*
+
+# 비밀값 없이 작성한 예시 설정 파일은 포함
+!.env.example
+!**/.env.example
+
+# 테스트 결과
 coverage/
+
+# 로그 및 임시 파일
 *.log
 *.tsbuildinfo
 .DS_Store
+Thumbs.db
+
+# 배포 도구의 로컬 설정
+.vercel/
+
+# 로그인 테스트 쿠키
+.smoke-cookies.txt
+
+# 개인 인증정보 메모
+/note/key info
+
+# Supabase CLI가 생성하는 로컬 임시 정보
+web/supabase/.temp/
+web/supabase/.branches/

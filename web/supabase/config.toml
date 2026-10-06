@@ -183,6 +183,10 @@ minimum_password_length = 6
 # are: `letters_digits`, `lower_upper_letters_digits`, `lower_upper_letters_digits_symbols`
 password_requirements = ""
 
+[auth.sessions]
+# 보호자·교사·운영자 세션은 15일 동안 사용하지 않으면 만료됩니다.
+inactivity_timeout = "360h"
+
 # Configure passkey sign-ins.
 # [auth.passkey]
 # enabled = false

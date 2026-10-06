@@ -1,64 +1,87 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
-const summaryItems = [
-  ["미입력 수업기록", "아직 연결된 데이터가 없습니다."],
-  ["상담 현황", "아직 연결된 데이터가 없습니다."],
-  ["관리 필요 학생", "아직 연결된 데이터가 없습니다."],
+import AdminLogoutButton from "@/components/admin/admin-logout-button";
+import AdminReportSummaryPanel from "@/components/admin/admin-report-summary-panel";
+import { requireAcademyAdminFromContext } from "@/lib/auth/authorization";
+
+type AdminMenu = {
+  href: string;
+  title: string;
+  description: string;
+  tone: "rose" | "indigo" | "slate";
+};
+
+const primaryAdminMenus: AdminMenu[] = [
+  { href: "/admin/students", title: "학생 관리", description: "학생 정보, 반 배정, 보호자 접속을 관리합니다.", tone: "indigo" },
+  { href: "/admin/students/history", title: "학생 학습이력", description: "특정 학생의 학습 기록을 조회 전용으로 확인합니다.", tone: "slate" },
+  { href: "/admin/reports", title: "운영 현황·통계", description: "미입력 기록과 보충·상담 등 운영 현황을 확인합니다.", tone: "rose" },
+  { href: "/admin/academic", title: "학사 기초 설정", description: "반, 과목, 강의실, 교사 계정을 관리합니다.", tone: "indigo" },
+  { href: "/admin/announcements", title: "공지사항", description: "교사·보호자에게 게시할 공지를 작성하고 관리합니다.", tone: "indigo" },
+  { href: "/admin/inquiries", title: "학부모 문의", description: "문의 답변과 종료 처리를 관리합니다.", tone: "rose" },
 ];
 
-export default function AdminPage() {
+const secondaryAdminMenus: AdminMenu[] = [
+  { href: "/admin/students?section=exam_batch", title: "내신 일괄 배정", description: "학교·학년별 학생을 불러와 학생별 내신 반을 예약 배정하고 복귀까지 관리합니다.", tone: "rose" },
+  { href: "/admin/student-overview", title: "학생 현황", description: "현재 재원 학생을 학교·레벨·차량·수업묶음별로 확인합니다.", tone: "slate" },
+];
+
+function AdminMenuCards({ menus }: { menus: AdminMenu[] }) {
+  return menus.map((menu) => (
+    <Link
+      key={menu.href}
+      href={menu.href}
+      className={`rounded-2xl border p-6 transition hover:-translate-y-0.5 hover:shadow-md ${
+        menu.tone === "rose"
+          ? "border-rose-200 bg-rose-50 hover:border-rose-300"
+          : menu.tone === "slate"
+            ? "border-slate-200 bg-slate-50 hover:border-slate-300"
+            : "border-indigo-100 bg-white hover:border-indigo-300"
+      }`}
+    >
+      <h2 className="text-xl font-bold text-slate-950">{menu.title}</h2>
+      <p className="mt-3 leading-7 text-slate-600">{menu.description}</p>
+      <span className="mt-5 inline-block text-sm font-bold text-indigo-600">화면 열기 →</span>
+    </Link>
+  ));
+}
+
+export default async function AdminPage() {
+  try {
+    await requireAcademyAdminFromContext();
+  } catch {
+    redirect("/admin/login");
+  }
+
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
-      <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+    <main className="mx-auto max-w-7xl px-6 py-10 sm:py-12">
+      <header className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div>
-          <p className="text-sm font-bold text-indigo-600">ACADEMY ADMIN</p>
-          <h1 className="mt-2 text-4xl font-bold tracking-tight">운영자 대시보드</h1>
-          <p className="mt-3 text-slate-600">학원 운영 현황을 한눈에 확인하는 임시 화면입니다.</p>
+          <p className="text-sm font-bold tracking-wide text-indigo-600">ACADEMY ADMIN</p>
+          <h1 className="mt-2 text-4xl font-bold tracking-tight text-slate-950">관리자 메인</h1>
+          <p className="mt-3 text-slate-600">학원 운영에 필요한 관리 화면을 선택해 주세요.</p>
         </div>
-        <span className="rounded-full bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-800">임시 화면</span>
-      </div>
+        <AdminLogoutButton />
+      </header>
 
-      <div className="mt-10 grid gap-5 md:grid-cols-3">
-        {summaryItems.map(([title, description]) => (
-          <section key={title} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <p className="text-sm font-semibold text-slate-500">{title}</p>
-            <p className="mt-6 text-2xl font-bold text-slate-300">-</p>
-            <p className="mt-3 text-sm text-slate-500">{description}</p>
-          </section>
-        ))}
-      </div>
+      <section className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+        <AdminMenuCards menus={primaryAdminMenus} />
+      </section>
 
-      <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-        <div className="flex items-center justify-between gap-4">
+      <AdminReportSummaryPanel />
+
+      <section className="mt-8">
+        <div className="mb-4 flex items-end justify-between gap-3">
           <div>
-            <h2 className="text-xl font-bold">오늘 확인할 업무</h2>
-            <p className="mt-2 text-sm text-slate-500">실제 업무 데이터가 연결되면 이곳에 표시됩니다.</p>
+            <p className="text-sm font-bold tracking-wide text-slate-500">ADDITIONAL OPERATIONS</p>
+            <h2 className="mt-1 text-xl font-bold text-slate-900">추가 운영 메뉴</h2>
           </div>
-          <span className="hidden rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500 sm:inline-block">데이터 없음</span>
+          <p className="text-xs text-slate-500">기존 기능은 그대로 유지됩니다.</p>
         </div>
-        <div className="mt-7 rounded-xl border border-dashed border-slate-300 px-5 py-12 text-center text-sm text-slate-500">
-          표시할 업무가 없습니다.
+        <div className="grid gap-5 md:grid-cols-2">
+          <AdminMenuCards menus={secondaryAdminMenus} />
         </div>
       </section>
-
-      <section className="mt-8 grid gap-5 md:grid-cols-2">
-        <div className="rounded-2xl bg-slate-900 p-6 text-white">
-          <p className="text-sm font-semibold text-indigo-300">다음 구현 대상</p>
-          <h2 className="mt-3 text-xl font-bold">운영자 조회 화면</h2>
-          <p className="mt-3 leading-7 text-slate-300">학생관리, 수업회차, 통계와 공개 승인 화면은 기본 기록 흐름이 준비된 뒤 단계적으로 구현합니다.</p>
-        </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-6">
-          <p className="text-sm font-semibold text-slate-500">빠른 이동</p>
-          <div className="mt-4 flex flex-wrap gap-3">
-            <Link href="/admin/guardians" className="rounded-full bg-indigo-100 px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-200">보호자 초대</Link>
-            <Link href="/admin/publications" className="rounded-full bg-indigo-100 px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-200">공개 승인</Link>
-            <Link href="/admin/teachers" className="rounded-full bg-indigo-100 px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-200">교사 계정 관리</Link>
-            <Link href="/teacher" className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">교사 화면</Link>
-            <Link href="/parent" className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">학부모 화면</Link>
-            <Link href="/" className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">소개 화면</Link>
-          </div>
-        </div>
-      </section>
-    </div>
+    </main>
   );
 }

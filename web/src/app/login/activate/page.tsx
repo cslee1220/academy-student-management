@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useState } from "react";
 
 export default function TeacherActivatePage() {
@@ -111,11 +110,16 @@ export default function TeacherActivatePage() {
         </button>
       </form>
 
-      <p className="mt-5 text-center text-sm text-slate-500">
-        <Link href="/login" className="font-semibold text-indigo-600 hover:text-indigo-700">
+      <div className="mt-5 flex flex-col gap-2 text-center text-sm text-slate-500 sm:flex-row sm:justify-center sm:gap-4">
+        <a href="/login" className="font-semibold text-indigo-600 hover:text-indigo-700">
           로그인 화면으로 돌아가기
-        </Link>
-      </p>
+        </a>
+        {/* 인증 경계를 넘는 소개 화면 이동은 전체 문서 이동으로 세션 상태를 분리합니다. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a href="/" className="hover:text-slate-700">
+          소개 화면으로 돌아가기
+        </a>
+      </div>
     </div>
   );
 }

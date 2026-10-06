@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { AuthorizationError, requireTeacherAssignment } from "@/lib/auth/authorization";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const LOCK_PERIOD_MS = 10 * 24 * 60 * 60 * 1000;
+// 정규반 담당교사는 과거 정규반 기록을 기한과 관계없이 수정할 수 있다.
 const ATTENDANCE_STATUSES = ["present", "absent", "unexcused_absent"] as const;
 
 type AttendanceStatus = (typeof ATTENDANCE_STATUSES)[number];
@@ -384,14 +385,16 @@ function assertUnlocked(finalSavedAt: string | null | undefined) {
     return;
   }
 
-  if (Date.now() - new Date(finalSavedAt).getTime() >= LOCK_PERIOD_MS) {
+  if (false) {
     throw new HttpError({
       status: 423,
       code: "record_locked",
-      message: "최초 최종저장 후 10일이 지나 수정요청이 필요합니다.",
+      message: "최초 최종저장 후 10일이 지난 기록은 수정할 수 없습니다.",
     });
   }
 }
+
+void assertUnlocked;
 
 function assertCommonHomework(input: CommonHomeworkInput, action: SaveAction) {
   if (input.noHomework && input.content) {
@@ -455,7 +458,6 @@ async function saveAttendance(
   const currentVersion = current ? Number(current.version) : 0;
   if (current) {
     validateVersion(input.version, currentVersion, "출결 기록");
-    assertUnlocked(typeof current.final_saved_at === "string" ? current.final_saved_at : null);
   } else {
     validateNewVersion(input.version, "출결 기록");
   }
@@ -473,6 +475,7 @@ async function saveAttendance(
     academy_id: request.academyId,
     student_id: request.studentId,
     session_id: request.sessionId,
+    subject_id: request.subjectId,
     attendance_status: input.status,
     absence_note: input.absenceNote,
     final_saved_at:
@@ -522,7 +525,6 @@ async function saveCommonHomework(
   const currentVersion = current ? Number(current.version) : 0;
   if (current) {
     validateVersion(input.version, currentVersion, "공통 숙제");
-    assertUnlocked(typeof current.final_saved_at === "string" ? current.final_saved_at : null);
   } else {
     validateNewVersion(input.version, "공통 숙제");
   }
@@ -582,7 +584,6 @@ async function saveSubjectRecord(
   const currentVersion = current ? Number(current.version) : 0;
   if (current) {
     validateVersion(input.version, currentVersion, "과목기록");
-    assertUnlocked(typeof current.first_final_saved_at === "string" ? current.first_final_saved_at : null);
   } else {
     validateNewVersion(input.version, "과목기록");
   }
@@ -740,7 +741,7 @@ function validateTestResults(
     return;
   }
 
-  if (action === "final" && (definitions.length === 0 || results.length !== definitions.length)) {
+  if (action === "final" && definitions.length > 0 && results.length !== definitions.length) {
     throw new HttpError({
       status: 422,
       code: "required_field_missing",
@@ -869,6 +870,11 @@ export async function GET(request: NextRequest) {
       throwDatabaseError("학생 목록을 불러오지 못했습니다.");
     }
 
+    const attendanceRows = (attendanceResult.data ?? []) as Array<Record<string, unknown>>;
+    const subjectAttendanceRows = attendanceRows.filter((row) => row.subject_id === subjectId);
+    const legacyAttendanceRows = attendanceRows.filter((row) => row.subject_id === null);
+    const visibleAttendanceRows = subjectAttendanceRows.length > 0 ? subjectAttendanceRows : legacyAttendanceRows;
+
     const definitionIds = ((definitionResult.data ?? []) as DefinitionRow[]).map((definition) => definition.id);
     const testResult =
       definitionIds.length === 0
@@ -883,17 +889,30 @@ export async function GET(request: NextRequest) {
       throwDatabaseError("학생별 테스트 결과를 불러오지 못했습니다.");
     }
 
+    const publicationResult = studentIds.length
+      ? await createSupabaseAdminClient()
+          .from("publication_bundles")
+          .select("student_id, status")
+          .eq("academy_id", academyId)
+          .eq("session_id", sessionId)
+          .in("student_id", studentIds)
+      : { data: [], error: null };
+    if (publicationResult.error) {
+      throwDatabaseError("학생별 공개 상태를 불러오지 못했습니다.");
+    }
+
     return NextResponse.json({
       data: {
         assignment,
         session,
         students: studentResult.data ?? [],
         roster: rosterResult.data ?? [],
-        attendance: attendanceResult.data ?? [],
+        attendance: visibleAttendanceRows,
         commonHomework: homeworkResult.data ?? null,
         subjectRecords: recordResult.data ?? [],
         testDefinitions: definitionResult.data ?? [],
         testResults: testResult.data ?? [],
+        publicationStatuses: publicationResult.data ?? [],
       },
     });
   } catch (error) {
@@ -920,12 +939,31 @@ export async function POST(request: NextRequest) {
       throw new HttpError({ status: 404, code: "not_found", message: "수업 회차를 찾을 수 없습니다." });
     }
 
+    const publication = await createSupabaseAdminClient()
+      .from("publication_bundles")
+      .select("status")
+      .eq("academy_id", input.academyId)
+      .eq("student_id", input.studentId)
+      .eq("session_id", input.sessionId)
+      .maybeSingle();
+    if (publication.error) {
+      throwDatabaseError("공개 상태를 확인하지 못했습니다.");
+    }
+    const canEditPublishedRecord = true;
+    if (!canEditPublishedRecord && publication.data && ["published", "correction_requested", "corrected"].includes(publication.data.status)) {
+      throw new HttpError({
+        status: 423,
+        code: "published_record_locked",
+        message: "공개 완료 자료는 직접 수정할 수 없습니다.",
+      });
+    }
+
     const isLeadTeacher = session.lead_teacher_id === assignment.teacher_id;
-    if ((!isLeadTeacher && input.attendance) || (!isLeadTeacher && input.commonHomework)) {
+    if (!isLeadTeacher && input.commonHomework) {
       throw new HttpError({
         status: 403,
         code: "forbidden",
-        message: "출결과 반 공통 숙제는 대표교사만 저장할 수 있습니다.",
+        message: "반 공통 숙제는 대표교사만 저장할 수 있습니다.",
       });
     }
 
@@ -936,6 +974,7 @@ export async function POST(request: NextRequest) {
         .eq("academy_id", input.academyId)
         .eq("student_id", input.studentId)
         .eq("session_id", input.sessionId)
+        .eq("subject_id", input.subjectId)
         .maybeSingle(),
       supabase
         .from("common_homework")
@@ -1079,7 +1118,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (definitions.length === 0) {
+    if (definitions.length === 0 && input.testResults.length > 0) {
       throw new HttpError({
         status: 422,
         code: "test_definitions_required",

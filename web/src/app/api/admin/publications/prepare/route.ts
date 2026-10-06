@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { AuthorizationError, requireAcademyAdmin } from "@/lib/auth/authorization";
+import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/authorization";
+import { getPublicationVisibilitySettings } from "@/lib/publication-visibility";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const UUID_PATTERN =
@@ -46,6 +47,10 @@ function keyForStudentSession(studentId: string, sessionId: string) {
   return `${studentId}:${sessionId}`;
 }
 
+function keyForStudentSessionSubject(studentId: string, sessionId: string, subjectId: string) {
+  return `${studentId}:${sessionId}:${subjectId}`;
+}
+
 function keyForSubject(studentId: string, sessionId: string, subjectId: string, teacherId: string) {
   return `${studentId}:${sessionId}:${subjectId}:${teacherId}`;
 }
@@ -57,25 +62,43 @@ function mapRows(rows: Row[], keyName: string) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => null);
-    const academyId = parseUuid(
-      body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).academyId : null,
-      "academyId",
-    );
-    await requireAcademyAdmin(academyId);
+    const bodyAcademyId = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).academyId : undefined;
+    const requestedAcademyId = bodyAcademyId === undefined || bodyAcademyId === "" ? undefined : parseUuid(bodyAcademyId, "academyId");
+    const bodySessionId = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).sessionId : undefined;
+    const requestedSessionId = bodySessionId === undefined || bodySessionId === "" ? undefined : parseUuid(bodySessionId, "sessionId");
+    const { academyId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
+    const visibilitySettings = await getPublicationVisibilitySettings(admin, academyId);
+
+    const rostersQuery = admin.from("session_student_rosters").select("id, session_id, student_id, class_name_snapshot").eq("academy_id", academyId).eq("is_expected", true);
+    if (requestedSessionId) rostersQuery.eq("session_id", requestedSessionId);
+    const sessionsQuery = admin.from("class_sessions").select("id, class_id, session_date, start_time, end_time").eq("academy_id", academyId);
+    if (requestedSessionId) sessionsQuery.eq("id", requestedSessionId);
+    const attendanceQuery = admin.from("attendance_records").select("*").eq("academy_id", academyId);
+    if (requestedSessionId) attendanceQuery.eq("session_id", requestedSessionId);
+    const homeworkQuery = admin.from("common_homework").select("*").eq("academy_id", academyId);
+    if (requestedSessionId) homeworkQuery.eq("session_id", requestedSessionId);
+    const assignmentsQuery = admin.from("session_subject_assignments").select("*").eq("academy_id", academyId);
+    if (requestedSessionId) assignmentsQuery.eq("session_id", requestedSessionId);
+    const recordsQuery = admin.from("teacher_subject_records").select("*").eq("academy_id", academyId);
+    if (requestedSessionId) recordsQuery.eq("session_id", requestedSessionId);
+    const definitionsQuery = admin.from("test_definitions").select("*").eq("academy_id", academyId);
+    if (requestedSessionId) definitionsQuery.eq("session_id", requestedSessionId);
+    const bundlesQuery = admin.from("publication_bundles").select("id, student_id, session_id, status").eq("academy_id", academyId);
+    if (requestedSessionId) bundlesQuery.eq("session_id", requestedSessionId);
 
     const [rostersResult, sessionsResult, studentsResult, attendanceResult, homeworkResult, assignmentsResult, recordsResult, definitionsResult, testResultsResult, bundlesResult] =
       await Promise.all([
-        admin.from("session_student_rosters").select("id, session_id, student_id, class_name_snapshot").eq("academy_id", academyId).eq("is_expected", true),
-        admin.from("class_sessions").select("id, class_id, session_date, start_time, end_time").eq("academy_id", academyId),
+        rostersQuery,
+        sessionsQuery,
         admin.from("students").select("id, name, student_no").eq("academy_id", academyId),
-        admin.from("attendance_records").select("*").eq("academy_id", academyId),
-        admin.from("common_homework").select("*").eq("academy_id", academyId),
-        admin.from("session_subject_assignments").select("*").eq("academy_id", academyId),
-        admin.from("teacher_subject_records").select("*").eq("academy_id", academyId),
-        admin.from("test_definitions").select("*").eq("academy_id", academyId),
+        attendanceQuery,
+        homeworkQuery,
+        assignmentsQuery,
+        recordsQuery,
+        definitionsQuery,
         admin.from("student_test_results").select("*").eq("academy_id", academyId),
-        admin.from("publication_bundles").select("id, student_id, session_id, status").eq("academy_id", academyId),
+        bundlesQuery,
       ]);
 
     const results = [
@@ -97,8 +120,13 @@ export async function POST(request: NextRequest) {
     const rosters = (rostersResult.data ?? []) as Row[];
     const sessions = mapRows((sessionsResult.data ?? []) as Row[], "id");
     const students = mapRows((studentsResult.data ?? []) as Row[], "id");
-    const attendanceByKey = new Map(
+    const legacyAttendanceByKey = new Map(
       ((attendanceResult.data ?? []) as Row[]).map((row) => [keyForStudentSession(String(row.student_id), String(row.session_id)), row]),
+    );
+    const attendanceBySubjectKey = new Map(
+      ((attendanceResult.data ?? []) as Row[])
+        .filter((row) => row.subject_id)
+        .map((row) => [keyForStudentSessionSubject(String(row.student_id), String(row.session_id), String(row.subject_id)), row]),
     );
     const homeworkBySession = new Map(((homeworkResult.data ?? []) as Row[]).map((row) => [String(row.session_id), row]));
     const assignmentsBySession = new Map<string, Row[]>();
@@ -140,21 +168,29 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      const attendance = attendanceByKey.get(keyForStudentSession(studentId, sessionId));
       const session = sessions.get(sessionId);
       const homework = homeworkBySession.get(sessionId);
       const assignments = assignmentsBySession.get(sessionId) ?? [];
-      const attendanceFinal = Boolean(attendance?.final_saved_at);
+      const legacyAttendance = legacyAttendanceByKey.get(keyForStudentSession(studentId, sessionId));
+      const attendance = legacyAttendance;
+      const attendanceForAssignment = (assignment: Row) =>
+        attendanceBySubjectKey.get(
+          keyForStudentSessionSubject(studentId, sessionId, String(assignment.subject_id)),
+        ) ?? legacyAttendance;
+      const attendanceRows = assignments.length
+        ? assignments.map((assignment) => attendanceForAssignment(assignment))
+        : [legacyAttendance];
+      const attendanceFinal = attendanceRows.length > 0 && attendanceRows.every((row) => Boolean(row?.final_saved_at));
       const homeworkFinal = Boolean(homework?.final_saved_at);
-      const isPresent = attendance?.attendance_status === "present";
       const subjectRecordsFinal =
         assignments.length > 0 && assignments.every((assignment) => {
+          const attendance = attendanceForAssignment(assignment);
           const record = recordsByKey.get(
             keyForSubject(studentId, sessionId, String(assignment.subject_id), String(assignment.teacher_id)),
           );
-          return record?.status === "final";
+          return attendance?.attendance_status !== "present" || record?.status === "final";
         });
-      const ready = Boolean(session && attendanceFinal && homeworkFinal && (!isPresent || subjectRecordsFinal));
+      const ready = Boolean(session && attendanceFinal && homeworkFinal && subjectRecordsFinal);
 
       const bundlePayload = {
         ...(existing?.id ? { id: existing.id } : {}),
@@ -206,26 +242,51 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      if (isPresent) {
-        for (const assignment of assignments) {
+      const attendanceAssignments = [
+        ...new Map(assignments.map((assignment) => [String(assignment.subject_id), assignment])).values(),
+      ];
+      for (const assignment of attendanceAssignments) {
+        const subjectAttendance = attendanceForAssignment(assignment);
+        snapshotRows.push({
+          publication_bundle_id: bundle.id,
+          item_key: `attendance:${String(assignment.subject_id)}`,
+          is_visible: true,
+          label_snapshot: String(assignment.subject_name_snapshot ?? "출결"),
+          value_json: {
+            subjectName: assignment.subject_name_snapshot,
+            status: subjectAttendance?.attendance_status ?? null,
+          },
+        });
+      }
+
+      for (const assignment of assignments) {
+          const subjectAttendance = attendanceForAssignment(assignment);
+          if (subjectAttendance?.attendance_status !== "present") continue;
           const subjectId = String(assignment.subject_id);
           const teacherId = String(assignment.teacher_id);
           const record = recordsByKey.get(keyForSubject(studentId, sessionId, subjectId, teacherId));
           const subjectKey = `${sessionId}:${subjectId}:${teacherId}`;
           const definitions = definitionsBySubject.get(subjectKey) ?? [];
+          const subjectValue: Record<string, unknown> = {
+            subjectName: assignment.subject_name_snapshot,
+            isSupplementary: record?.is_supplementary ?? false,
+            publicNote: record?.public_note ?? null,
+          };
+          if (visibilitySettings.homeworkScore) {
+            subjectValue.homeworkScore = record?.homework_score ?? null;
+          }
+          if (visibilitySettings.understandingScore) {
+            subjectValue.understandingScore = record?.understanding_score ?? null;
+          }
+          if (visibilitySettings.participationScore) {
+            subjectValue.participationScore = record?.participation_score ?? null;
+          }
           snapshotRows.push({
             publication_bundle_id: bundle.id,
             item_key: `subject:${subjectId}:${teacherId}`,
             is_visible: true,
             label_snapshot: String(assignment.subject_name_snapshot ?? "과목 기록"),
-            value_json: {
-              subjectName: assignment.subject_name_snapshot,
-              homeworkScore: record?.homework_score ?? null,
-              understandingScore: record?.understanding_score ?? null,
-              participationScore: record?.participation_score ?? null,
-              isSupplementary: record?.is_supplementary ?? false,
-              publicNote: record?.public_note ?? null,
-            },
+            value_json: subjectValue,
           });
 
           for (const definition of definitions) {
@@ -243,7 +304,6 @@ export async function POST(request: NextRequest) {
               },
             });
           }
-        }
       }
 
       await admin

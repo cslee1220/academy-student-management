@@ -34,6 +34,12 @@ export function hashGuardianDeviceId(deviceId: string): string {
   return createHash("sha256").update(deviceId.trim()).digest("hex");
 }
 
+export function normalizeGuardianPhone(value: string): string | null {
+  const digits = value.replace(/\D/g, "");
+  if (!/^010\d{8}$/.test(digits)) return null;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+}
+
 export function validateGuardianPassword(password: string): string | null {
   if (password.length < GUARDIAN_PASSWORD_MIN_LENGTH) {
     return `비밀번호는 ${GUARDIAN_PASSWORD_MIN_LENGTH}자 이상이어야 합니다.`;

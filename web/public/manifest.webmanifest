@@ -1,0 +1,18 @@
+{
+  "name": "학원 보호자 학습정보",
+  "short_name": "학원 학습정보",
+  "description": "보호자 자녀 학습정보 조회 앱",
+  "start_url": "/parent",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/academy-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

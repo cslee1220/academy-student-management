@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -8,7 +8,6 @@ import {
   hashGuardianInviteToken,
   isGuardianInviteExpired,
   matchesGuardianAuthCode,
-  validateGuardianPassword,
 } from "@/lib/auth/guardian-account";
 
 class HttpError extends Error {
@@ -57,8 +56,6 @@ export async function POST(request: NextRequest) {
     const input = body as Record<string, unknown>;
     const token = parseText(input.token, "초대 토큰", 20, 300);
     const authCode = parseText(input.authCode, "인증번호", 8, 8);
-    const password = parseText(input.password, "비밀번호", 8, 100);
-    const passwordConfirmation = parseText(input.passwordConfirmation, "비밀번호 확인", 8, 100);
     const deviceId =
       typeof input.deviceId === "string" && input.deviceId.trim().length >= 8
         ? input.deviceId.trim().slice(0, 200)
@@ -67,14 +64,6 @@ export async function POST(request: NextRequest) {
     if (!/^\d{8}$/.test(authCode)) {
       throw new HttpError(400, "invalid_request", "인증번호는 숫자 8자리로 입력해 주세요.");
     }
-    if (password !== passwordConfirmation) {
-      throw new HttpError(400, "password_mismatch", "비밀번호 확인이 일치하지 않습니다.");
-    }
-    const passwordError = validateGuardianPassword(password);
-    if (passwordError) {
-      throw new HttpError(400, "weak_password", passwordError);
-    }
-
     const admin = createSupabaseAdminClient();
     const { data: invite, error: inviteError } = await admin
       .from("guardian_invites")
@@ -121,13 +110,32 @@ export async function POST(request: NextRequest) {
       throw new HttpError(401, "invalid_auth_code", "초대 인증번호가 일치하지 않습니다.");
     }
 
+    const [{ data: link, error: linkError }, { data: student, error: studentError }] = await Promise.all([
+      admin
+        .from("student_guardians")
+        .select("id, is_active, access_revoked_at")
+        .eq("academy_id", invite.academy_id)
+        .eq("student_id", invite.student_id)
+        .eq("guardian_id", invite.guardian_id)
+        .maybeSingle(),
+      admin
+        .from("students")
+        .select("id, current_status")
+        .eq("academy_id", invite.academy_id)
+        .eq("id", invite.student_id)
+        .maybeSingle(),
+    ]);
+    if (linkError || studentError || !link || !student || !link.is_active || link.access_revoked_at || student.current_status === "withdrawn") {
+      throw new HttpError(403, "guardian_access_revoked", "현재 보호자 접속 권한이 없습니다.");
+    }
+
     const { data: guardian, error: guardianError } = await admin
       .from("guardians")
-      .select("id, auth_user_id, display_name, is_login_active")
+      .select("id, auth_user_id, display_name, is_login_active, guardian_access_revoked_at")
       .eq("id", invite.guardian_id)
       .eq("academy_id", invite.academy_id)
       .maybeSingle();
-    if (guardianError || !guardian?.auth_user_id || guardian.is_login_active === false) {
+    if (guardianError || !guardian?.auth_user_id || guardian.is_login_active === false || guardian.guardian_access_revoked_at) {
       throw new HttpError(403, "guardian_inactive", "비활성화된 보호자 계정입니다.");
     }
 
@@ -136,12 +144,21 @@ export async function POST(request: NextRequest) {
       throw new HttpError(500, "auth_user_not_found", "보호자 인증 계정을 확인하지 못했습니다.");
     }
 
-    const { error: passwordErrorResult } = await admin.auth.admin.updateUserById(guardian.auth_user_id, { password });
+    const sessionPassword = randomBytes(32).toString("base64url");
+    const { error: passwordErrorResult } = await admin.auth.admin.updateUserById(guardian.auth_user_id, { password: sessionPassword });
     if (passwordErrorResult) {
-      throw new HttpError(500, "password_update_failed", "비밀번호를 설정하지 못했습니다.");
+      throw new HttpError(500, "auth_session_setup_failed", "보호자 접속 세션을 만들지 못했습니다.");
     }
 
     const deviceHash = hashGuardianDeviceId(deviceId);
+    const { error: deactivateDeviceError } = await admin
+      .from("guardian_devices")
+      .update({ is_active: false })
+      .eq("guardian_id", guardian.id)
+      .eq("is_active", true);
+    if (deactivateDeviceError) {
+      throw new HttpError(500, "device_update_failed", "기존 보호자 기기를 정리하지 못했습니다.");
+    }
     const { data: existingDevice, error: existingDeviceError } = await admin
       .from("guardian_devices")
       .select("id")
@@ -161,18 +178,6 @@ export async function POST(request: NextRequest) {
         throw new HttpError(500, "device_update_failed", "기기 접속 상태를 갱신하지 못했습니다.");
       }
     } else {
-      const { data: activeDevices, error: activeDevicesError } = await admin
-        .from("guardian_devices")
-        .select("id")
-        .eq("guardian_id", guardian.id)
-        .eq("is_active", true);
-      if (activeDevicesError) {
-        throw new HttpError(500, "device_check_failed", "등록 기기 수를 확인하지 못했습니다.");
-      }
-      if ((activeDevices ?? []).length >= 2) {
-        throw new HttpError(409, "device_limit_reached", "보호자 계정은 최대 2대의 기기만 등록할 수 있습니다.");
-      }
-
       const { error: deviceInsertError } = await admin.from("guardian_devices").insert({
         academy_id: invite.academy_id,
         guardian_id: guardian.id,
@@ -188,7 +193,7 @@ export async function POST(request: NextRequest) {
 
     const { error: guardianUpdateError } = await admin
       .from("guardians")
-      .update({ password_setup_required: false })
+      .update({ password_setup_required: false, guardian_access_revoked_at: null })
       .eq("id", guardian.id);
     if (guardianUpdateError) {
       throw new HttpError(500, "guardian_update_failed", "보호자 계정 상태를 갱신하지 못했습니다.");
@@ -206,18 +211,26 @@ export async function POST(request: NextRequest) {
     const supabase = await createSupabaseServerClient();
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email: authUserResult.user.email,
-      password,
+      password: sessionPassword,
     });
     if (signInError) {
-      throw new HttpError(500, "sign_in_failed", "비밀번호 설정 후 로그인하지 못했습니다.");
+      throw new HttpError(500, "sign_in_failed", "보호자 접속 세션을 만들지 못했습니다.");
     }
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       data: {
         guardianName: guardian.display_name,
-        message: "비밀번호 설정이 완료되었습니다. 보호자 조회 화면으로 이동합니다.",
+        message: "보호자 인증이 완료되었습니다. 보호자 조회 화면으로 이동합니다.",
       },
     });
+    response.cookies.set("academy_guardian_device", deviceHash, {
+      httpOnly: true,
+      maxAge: 60 * 60 * 24 * 30,
+      path: "/",
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
+    return response;
   } catch (error) {
     return errorResponse(error);
   }

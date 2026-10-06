@@ -1,8 +1,20 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+
+import { requireTeacherRouteFromContext } from "@/lib/auth/authorization";
 
 const fields = ["반 선택", "수업 회차 선택", "과목 선택"];
 
-export default function TeacherPage() {
+export default async function TeacherPage() {
+  let membership;
+  try {
+    ({ membership } = await requireTeacherRouteFromContext());
+  } catch {
+    redirect("/login");
+  }
+  if (membership?.role === "supplement_teacher") redirect("/teacher/supplements");
+  redirect("/teacher/records");
+
   return (
     <div className="mx-auto max-w-6xl px-6 py-12">
       <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">

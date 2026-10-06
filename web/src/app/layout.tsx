@@ -3,6 +3,10 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: "/academy-icon.svg",
+  },
   title: "학원 학생관리 PWA",
   description: "학원 학생관리 PWA의 초기 화면",
 };

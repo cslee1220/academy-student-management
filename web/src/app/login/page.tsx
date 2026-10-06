@@ -1,12 +1,12 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
 type Academy = {
   id: string;
   name: string;
+  role?: "teacher" | "supplement_teacher";
 };
 
 export default function LoginPage() {
@@ -47,7 +47,7 @@ export default function LoginPage() {
         setAcademies(availableAcademies);
         setMessage("접속할 학원을 선택해 주세요.");
       } else {
-        router.push("/teacher");
+        router.push(availableAcademies?.[0]?.role === "supplement_teacher" ? "/teacher/supplements" : "/teacher");
       }
     } catch {
       setError("로그인 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
@@ -70,7 +70,8 @@ export default function LoginPage() {
         setError(result?.error?.message ?? "학원 선택을 저장하지 못했습니다.");
         return;
       }
-      router.push("/teacher");
+      const academy = academies.find((item) => item.id === academyId);
+      router.push(academy?.role === "supplement_teacher" ? "/teacher/supplements" : "/teacher");
     } catch {
       setError("학원 선택을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
     } finally {
@@ -142,12 +143,14 @@ export default function LoginPage() {
       </form>
 
       <div className="mt-5 flex flex-col gap-2 text-center text-sm text-slate-500 sm:flex-row sm:justify-center sm:gap-4">
-        <Link href="/login/activate" className="font-semibold text-indigo-600 hover:text-indigo-700">
+        <a href="/login/activate" className="font-semibold text-indigo-600 hover:text-indigo-700">
           최초 비밀번호 설정 / 재설정
-        </Link>
-        <Link href="/" className="hover:text-slate-700">
+        </a>
+        {/* 인증 경계를 넘는 소개 화면 이동은 전체 문서 이동으로 세션 상태를 분리합니다. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a href="/" className="hover:text-slate-700">
           소개 화면으로 돌아가기
-        </Link>
+        </a>
       </div>
     </div>
   );

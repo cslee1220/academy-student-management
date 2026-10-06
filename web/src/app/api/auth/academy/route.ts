@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
       .select("academy_id")
       .eq("academy_id", academyId)
       .eq("profile_id", profile.id)
-      .eq("role", "teacher")
+      .in("role", ["teacher", "supplement_teacher", "academy_admin"])
       .eq("is_active", true)
       .maybeSingle();
     if (membershipError || !membership) {

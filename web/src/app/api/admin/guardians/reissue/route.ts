@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
-import { AuthorizationError, requireAcademyAdmin } from "@/lib/auth/authorization";
+import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/authorization";
+import { getAppOrigin } from "@/lib/app-url";
 import {
   createGuardianAuthCode,
   createGuardianInviteToken,
@@ -43,7 +43,7 @@ function errorResponse(error: unknown) {
     return NextResponse.json({ error: { code: error.code, message: error.message } }, { status: error.status });
   }
   return NextResponse.json(
-    { error: { code: "internal_error", message: "보호자 초대를 재발급하지 못했습니다." } },
+    { error: { code: "internal_error", message: "보호자 접속 링크를 재발급하지 못했습니다." } },
     { status: 500 },
   );
 }
@@ -53,36 +53,43 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => null);
     const input = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
-    const academyId = parseUuid(input?.academyId, "academyId");
+    const requestedAcademyId = parseUuid(input?.academyId, "academyId");
     const guardianId = parseUuid(input?.guardianId, "guardianId");
     const studentId = parseUuid(input?.studentId, "studentId");
-    const { profileId: actorProfileId } = await requireAcademyAdmin(academyId);
+    const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
 
-    const [{ data: guardian, error: guardianError }, { data: link, error: linkError }] = await Promise.all([
+    const [{ data: guardian, error: guardianError }, { data: link, error: linkError }, { data: student, error: studentError }, { data: academy, error: academyError }] = await Promise.all([
       admin
         .from("guardians")
-        .select("id, auth_user_id, display_name, password_setup_required, is_login_active")
+        .select("id, auth_user_id, display_name, password_setup_required, is_login_active, guardian_access_revoked_at")
         .eq("id", guardianId)
         .eq("academy_id", academyId)
         .maybeSingle(),
       admin
         .from("student_guardians")
-        .select("id, student_id")
+        .select("id, student_id, access_revoked_at")
         .eq("academy_id", academyId)
         .eq("guardian_id", guardianId)
         .eq("student_id", studentId)
         .eq("is_active", true)
         .maybeSingle(),
+      admin
+        .from("students")
+        .select("id, name, current_status")
+        .eq("academy_id", academyId)
+        .eq("id", studentId)
+        .maybeSingle(),
+      admin.from("academies").select("name").eq("id", academyId).maybeSingle(),
     ]);
-    if (guardianError || linkError || !guardian || !link) {
+    if (guardianError || linkError || studentError || academyError || !guardian || !link || !student || !academy) {
       throw new HttpError(404, "guardian_link_not_found", "학생과 보호자 연결을 찾지 못했습니다.");
     }
     if (!guardian.auth_user_id || guardian.is_login_active === false) {
       throw new HttpError(403, "guardian_inactive", "비활성화된 보호자 계정입니다.");
     }
-    if (!guardian.password_setup_required) {
-      throw new HttpError(409, "guardian_already_activated", "이미 비밀번호를 설정한 보호자는 초대 재발급 대상이 아닙니다.");
+    if (student.current_status === "withdrawn") {
+      throw new HttpError(409, "student_withdrawn", "퇴원 학생에게는 접속 링크를 발급할 수 없습니다.");
     }
 
     const now = new Date().toISOString();
@@ -95,14 +102,24 @@ export async function POST(request: NextRequest) {
       .is("used_at", null)
       .is("revoked_at", null);
     if (revokeError) {
-      throw new HttpError(500, "invite_revoke_failed", "기존 초대를 취소하지 못했습니다.");
+      throw new HttpError(500, "invite_revoke_failed", "기존 접속 링크를 취소하지 못했습니다.");
     }
 
-    const { error: passwordResetError } = await admin.auth.admin.updateUserById(guardian.auth_user_id, {
-      password: randomBytes(32).toString("base64url"),
-    });
-    if (passwordResetError) {
-      throw new HttpError(500, "auth_reset_failed", "보호자 인증 상태를 초기화하지 못했습니다.");
+    const { error: linkRestoreError } = await admin
+      .from("student_guardians")
+      .update({ access_revoked_at: null })
+      .eq("id", link.id)
+      .eq("academy_id", academyId);
+    if (linkRestoreError) {
+      throw new HttpError(500, "guardian_link_update_failed", "보호자 접근 상태를 갱신하지 못했습니다.");
+    }
+    const { error: guardianRestoreError } = await admin
+      .from("guardians")
+      .update({ guardian_access_revoked_at: null })
+      .eq("id", guardianId)
+      .eq("academy_id", academyId);
+    if (guardianRestoreError) {
+      throw new HttpError(500, "guardian_update_failed", "보호자 접근 상태를 갱신하지 못했습니다.");
     }
 
     const inviteToken = createGuardianInviteToken();
@@ -122,7 +139,7 @@ export async function POST(request: NextRequest) {
       .select("id")
       .single();
     if (inviteError || !invite) {
-      throw new HttpError(500, "invite_creation_failed", "새 보호자 초대를 만들지 못했습니다.");
+      throw new HttpError(500, "invite_creation_failed", "새 보호자 접속 링크를 만들지 못했습니다.");
     }
     inviteId = invite.id;
 
@@ -132,21 +149,22 @@ export async function POST(request: NextRequest) {
       target_id: inviteId,
       field_key: "guardian_invite_reissued",
       new_value_json: { student_id: studentId, guardian_id: guardianId },
-      reason: "운영자가 보호자 초대를 재발급했습니다.",
+      reason: "운영자가 보호자 접속 링크를 재발급했습니다.",
       actor_profile_id: actorProfileId,
     });
     if (auditError) {
-      throw new HttpError(500, "audit_log_failed", "보호자 초대 재발급 감사 로그를 남기지 못했습니다.");
+      throw new HttpError(500, "audit_log_failed", "보호자 접속 링크 재발급 감사 로그를 남기지 못했습니다.");
     }
 
     return NextResponse.json({
       data: {
-        studentName: "연결된 학생",
+        studentName: student.name,
+        academyName: academy.name,
         guardianName: guardian.display_name,
-        inviteUrl: `${request.nextUrl.origin}/invite?token=${encodeURIComponent(inviteToken)}`,
+        inviteUrl: `${getAppOrigin(request)}/invite?token=${encodeURIComponent(inviteToken)}`,
         authCode,
         expiresAt,
-        message: "기존 미사용 초대를 취소하고 새 초대를 발급했습니다.",
+        message: "기존 미사용 접속 링크를 취소하고 새 접속 링크를 발급했습니다.",
       },
     });
   } catch (error) {

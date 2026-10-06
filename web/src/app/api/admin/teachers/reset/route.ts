@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { AuthorizationError, requireAcademyAdmin } from "@/lib/auth/authorization";
+import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/authorization";
 import { createActivationCode, hashActivationCode } from "@/lib/auth/teacher-account";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -50,9 +50,9 @@ export async function POST(request: NextRequest) {
     }
 
     const input = body as Record<string, unknown>;
-    const academyId = parseUuid(input.academyId, "academyId");
+    const requestedAcademyId = input.academyId === undefined || input.academyId === "" ? undefined : parseUuid(input.academyId, "academyId");
     const profileId = parseUuid(input.profileId, "profileId");
-    const { profileId: actorProfileId } = await requireAcademyAdmin(academyId);
+    const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
 
     const { data: membership, error: membershipError } = await admin
@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
       .select("profile_id, role, is_active")
       .eq("academy_id", academyId)
       .eq("profile_id", profileId)
-      .eq("role", "teacher")
+      .in("role", ["teacher", "supplement_teacher"])
       .eq("is_active", true)
       .maybeSingle();
     if (membershipError || !membership) {

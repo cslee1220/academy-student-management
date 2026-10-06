@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { AuthorizationError, requireAcademyAdmin } from "@/lib/auth/authorization";
+import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/authorization";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const UUID_PATTERN =
@@ -44,10 +44,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => null);
     const input = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
-    const academyId = parseUuid(input?.academyId, "academyId");
+    const requestedAcademyId = parseUuid(input?.academyId, "academyId");
     const guardianId = parseUuid(input?.guardianId, "guardianId");
     const studentId = parseUuid(input?.studentId, "studentId");
-    const { profileId } = await requireAcademyAdmin(academyId);
+    const { academyId, profileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
     const { data: invite, error: inviteError } = await admin
       .from("guardian_invites")
