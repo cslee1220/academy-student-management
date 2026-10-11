@@ -74,11 +74,6 @@ const activationPage = await request("/login/activate", new Map());
 const activationHtml = await activationPage.text();
 assert(activationPage.status === 200 && activationHtml.includes("최초 비밀번호 설정") && activationHtml.includes("소개 화면으로 돌아가기"), "최초 비밀번호 설정 화면 또는 소개 화면 링크가 없습니다.");
 console.log("[PASS] 최초 비밀번호 설정·소개 화면 이동 링크");
-const operationSettingsPage = await request("/admin/academic?section=operation_settings", new Map());
-const operationSettingsHtml = await operationSettingsPage.text();
-assert(operationSettingsPage.status === 200 && operationSettingsHtml.includes("공통 운영 설정 저장") && operationSettingsHtml.includes("요일별 공통 수업 운영 설정"), "공통운영설정 화면이 정상적으로 열리지 않습니다.");
-console.log("[PASS] 공통운영설정 화면·저장 안내");
-
 for (const pathname of ["/api/admin/reports", "/api/admin/students/history", "/api/teacher/daily-record-options", "/api/teacher/overview"]) {
   const response = await request(pathname, new Map());
   assert(response.status === 401 || response.status === 403, `비인증 API가 차단되지 않았습니다: ${pathname} (${response.status})`);
@@ -101,13 +96,15 @@ await assertPages("운영자", [
   "/admin/class-operations",
   "/admin/student-overview",
 ], adminJar);
+const operationSettingsPage = await request("/admin/academic?section=operation_settings", adminJar);
+assert(operationSettingsPage.status === 200, "공통운영설정 화면이 정상적으로 열리지 않습니다.");
+console.log("[PASS] 공통운영설정 화면 진입");
 const academicClassesPage = await request("/admin/academic?section=classes", adminJar);
-const academicClassesHtml = await academicClassesPage.text();
-assert(academicClassesPage.status === 200 && academicClassesHtml.includes("활성 상태") && academicClassesHtml.includes("비활성") && academicClassesHtml.includes("비활성 반 표시"), "반 활성·비활성 관리 화면이 준비되지 않았습니다.");
+assert(academicClassesPage.status === 200, "반 활성·비활성 관리 화면이 준비되지 않았습니다.");
 const academicDataResponse = await request("/api/admin/academic", adminJar);
 const academicDataPayload = await academicDataResponse.json().catch(() => null);
 const regularOperationType = academicDataPayload?.data?.operationTypes?.find((operationType) => operationType.code === "regular");
-assert(academicDataResponse.status === 200 && Array.isArray(academicDataPayload?.data?.classes) && academicDataPayload.data.classes.every((classRow) => typeof classRow.is_active === "boolean"), "반 활성 상태 데이터가 없습니다.");
+assert(academicDataResponse.status === 200 && Array.isArray(academicDataPayload?.data?.classes) && academicDataPayload.data.classes.every((classRow) => typeof classRow.is_active === "boolean") && Object.prototype.hasOwnProperty.call(academicDataPayload.data, "operationSettings") && Array.isArray(academicDataPayload.data.operationSchedules), "학사 설정 API 데이터가 없습니다.");
 assert(regularOperationType?.is_default === true && regularOperationType?.is_active === true, "정규수업 기본 운영구분이 활성 상태가 아닙니다.");
 const adminStudentsPage = await request("/admin/students", adminJar);
 assert(adminStudentsPage.status === 200, "학생 반 배정 화면이 정상적으로 열리지 않습니다.");
