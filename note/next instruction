@@ -1,0 +1,859 @@
+1# 다음 Codex 실행 지침
+
+## 현재 작업 상태
+
+- 작업공간: `E:\Coding_basic\academy-student management`
+- 현재 기능 묶음: 교사 인증 세션 기반 수업기록 조회·저장 연결
+- 완료한 파일:
+  - `web/supabase/migrations/20260921123925_academy_foundation.sql`
+  - `web/supabase/config.toml`
+  - `web/src/lib/supabase/server.ts`
+  - `web/src/lib/auth/authorization.ts`
+  - `web/package.json`, `web/package-lock.json`
+  - `web/supabase/tests/database/academy_foundation.test.sql`
+- 추가 완료 파일:
+  - `web/src/app/teacher/page.tsx`
+  - `web/src/app/teacher/records/page.tsx`
+- 테스트 입력 기반 추가 파일:
+  - `web/supabase/migrations/20260922053203_teacher_tests.sql`
+  - `web/supabase/tests/database/academy_foundation.test.sql`의 테스트 RLS 검증
+- 핵심 내용: 문서에 정의된 핵심 학원·계정·학생·수업·기록·보호자·공개·수정요청·감사로그 표의 초안, RLS 정책, 역할·학원·활성계정·교사 배정 서버 검증 기반
+- 교사 화면 내용: `/teacher/records`에서 합성 학생 A/B/C를 대상으로 반·수업 회차·과목 선택, 출결, 공통 숙제, 과목별 점수·메모, 임시저장·최종저장 검증 흐름을 확인할 수 있음
+- 테스트 화면 내용: 테스트 1~3의 이름·최고점 설정과 학생별 점수 또는 미응시 사유 입력을 한 행에 표시함. 결석·무단결석이면 테스트·과목 점수·나머지/보충·공개 메모를 비활성화함
+- 데이터 기반 내용: `test_definitions`, `student_test_results` 표, 테스트 교사·학원 운영자 RLS, `is_supplementary` 저장 컬럼 초안을 추가함
+- 교사 화면은 실제 로그인·개인정보·Supabase 저장 없이 브라우저 임시 상태만 사용함
+- 실제 Supabase 프로젝트, 키, 로그인, 실제 개인정보는 아직 연결하지 않음
+- 현재 환경에는 Docker가 없어 `npx supabase@latest db lint --local`을 실행하지 못함
+- 마지막 웹 검증: `npm run lint`, `npm run build` 성공. `/teacher/records` 정적 라우트 생성 확인
+- 이번 실행의 로컬 Supabase 검증: Docker 미설치로 `db lint --local`, `test db --local`이 127.0.0.1:54322 연결 거부됨
+- 이번 실행에서도 `docker --version`과 `npx supabase@latest status`가 Docker/Podman 미설치로 중단됨
+- 현재 운영체제는 Windows 10 Home 1909, 빌드 18363이며 Docker Desktop·Podman WSL2의 최소 빌드보다 낮음
+- WSL 명령도 설치되어 있지 않으므로 이 실행에서는 컨테이너 설치를 진행하지 않음
+- pgTAP 구조·RLS 테스트 파일을 추가했으며, `db lint --local`과 `test db --local`은 Docker 미실행으로 127.0.0.1:54322 연결 거부됨
+- `note/key info`는 기존 사용자 파일이므로 열거나 스테이징하지 않음
+- 첫 번째 인증 결정사항 구현 완료: 운영자가 교사 이름을 등록하면 `T-숫자6자리` 아이디와 24시간 유효 일회용 활성화 코드를 발급하고, 교사는 이를 사용해 직접 비밀번호를 설정함
+- 비밀번호는 Supabase Auth가 관리하며 DB에 저장하지 않음. 아이디는 내부 합성 이메일로 Auth와 연결되고 실제 이메일 발송은 하지 않음
+- 교사 로그인 시 활성 학원이 2개 이상이면 학원 선택을 거치고 `academy_context` HttpOnly 쿠키를 설정함
+- 비밀번호 분실 시 운영자가 재설정 코드를 발급하고, 교사는 같은 최초 비밀번호 설정 화면에서 새 비밀번호를 설정함
+- 추가 파일: `web/supabase/migrations/20260922072111_teacher_account_activation.sql`, `web/src/lib/auth/teacher-account.ts`, `web/src/lib/supabase/admin.ts`, 인증·운영자 교사계정 API 및 `/login`, `/login/activate`, `/admin/teachers` 화면
+- `npm run lint`, `npm run build` 성공. 빌드에서 인증 API 5개와 화면 라우트가 생성됨
+- `npx supabase@latest db lint --local`, `npx supabase@latest test db --local`은 Docker/Podman 미설치 및 `127.0.0.1:54322` 연결 거부로 미실행
+- `/teacher/records`는 더 이상 합성 반·학생 목록을 사용하지 않고 `/api/teacher/record-options`, `/api/teacher/records`를 호출함
+- `/api/teacher/record-options`는 인증된 교사의 활성 학원·배정 수업 회차·과목만 반환하며 `academy_context` HttpOnly 쿠키를 사용함
+- 수업기록 화면은 서버에서 학생·출결·공통 숙제·저장된 테스트 정의·학생별 결과를 불러오고, 임시저장·최종저장을 학생별 API 요청으로 수행함
+- 새 테스트 항목을 처음 저장할 때도 테스트 순번으로 학생별 결과를 서버 테스트 ID와 연결하도록 API를 보완함
+- 이번 실행에서도 `npm run lint`, `npm run build` 성공. 새 API 라우트 `/api/teacher/record-options` 생성 확인
+- 이번 실행에서도 로컬 Supabase `db lint --local`, `test db --local`은 `127.0.0.1:54322` 연결 거부로 미실행
+
+## 다음 작업
+
+1. Windows Update로 Windows 10 22H2(빌드 19045) 이상 또는 Windows 11로 업그레이드한다.
+2. 재부팅 후 Docker Desktop을 WSL2 방식으로 설치하고 실행한다. Podman을 선택하면 WSL2를 먼저 준비한다.
+3. 새 터미널에서 `docker --version`과 `docker info`를 확인한다.
+4. `web` 폴더에서 `npx supabase@latest start`를 실행한다.
+5. `npx supabase@latest db lint --local`으로 migration을 검사한다.
+6. `npx supabase@latest db reset`으로 migration을 적용하고, `npx supabase@latest test db --local`으로 pgTAP RLS 테스트를 실행한다.
+7. 오류가 있으면 현재 migration만 수정하고 lint/test를 다시 실행한다.
+8. 로컬 검증이 끝난 뒤 테스트용 운영자 계정으로 교사 등록 API와 활성화 API를 순서대로 확인한다. 실제 학생·교사 개인정보는 사용하지 않는다.
+9. Windows 환경이 준비되면 Supabase migration·RLS·교사 인증·수업기록 저장 통합 테스트를 먼저 실행한다.
+10. 그 다음 별도 기능 묶음으로 출결 결석 전달사항 입력 UI와 테스트 미응시 사유 입력 UX를 결정·구현한다.
+11. 브루트포스 방지·일회용 코드 시도 횟수 제한을 실제 운영 연결 전에 별도 보안 기능 묶음으로 검토한다.
+
+## quota 20% 남았을 때의 마무리 규칙
+
+- 새 기능을 시작하지 말고 현재 파일 또는 현재 검증 단계만 완료한다.
+- 가능한 경우 `npm run lint`와 `npm run build`를 `web` 폴더에서 실행한다.
+- 이 파일의 `현재 작업 상태`와 `다음 작업`을 갱신한다.
+- 관련 변경만 스테이징하고 자동 커밋한다. 기존 사용자 파일은 포함하지 않는다.
+
+```powershell
+  git add web "note/next instruction" "note/pending work"
+  git commit -m "교사 로그인 활성화 흐름 추가"
+git status --short
+```
+
+- 커밋 후 이 파일을 다음 Codex 실행의 첫 지침으로 사용한다.
+- Codex가 실행 한도의 정확한 20% 시점을 외부에서 예약하거나 새 실행을 자동 시작할 수는 없으므로, 한도에 도달하기 전에 위 규칙을 수행하고 사용자가 다음 명령을 실행한다.
+
+## 다음 Codex 실행 명령
+
+같은 대화를 이어가려면 공식 OpenAI 문서의 재개 명령을 사용한다.
+
+```powershell
+codex resume
+```
+
+새 실행에서 이 파일을 기준으로 이어가려면 작업공간을 지정한다.
+
+```powershell
+codex -C "E:\Coding_basic\academy-student management" "note/next instruction과 note/pending work 파일, 루트 AGENTS.md, docs 폴더의 모든 Markdown 문서를 읽고 현재 작업 상태에서 이어서 진행하라. 한 번에 하나의 기능 묶음만 구현하고, quota가 20% 남으면 현재 최소 작업을 마무리하고 lint/build, 관련 파일 커밋, note/next instruction 갱신 후 중단하라."
+
+## Current implementation: guardian publication flow (2026-09-22)
+
+- Implemented the document-based guardian flow under `web`.
+- Added guardian invites, device registration, password setup flags, public snapshot values, and RLS in `web/supabase/migrations/20260922080006_guardian_publication_flow.sql`.
+- Added admin guardian invite API/page: `/api/admin/guardians`, `/admin/guardians`.
+- Added guardian activation API/page: `/api/guardian/activate`, `/invite`.
+- Added publication preparation and approval API/page: `/api/admin/publications`, `/api/admin/publications/prepare`, `/admin/publications`.
+- Added guardian-only published snapshot API/page: `/api/guardian/home`, `/parent`, plus logout.
+- Updated `academy_foundation.test.sql` from 25 to 30 pgTAP checks.
+- `npm run lint` passed.
+- `npm run build` passed.
+- Local DB checks are pending because Docker/Podman is unavailable and `127.0.0.1:54322` refuses the connection.
+
+## Next work
+
+1. Upgrade Windows or install Docker Desktop/WSL2 as described in `note/pending work`.
+2. Run Supabase local start, migration lint, reset, and pgTAP tests.
+3. Fix SQL/RLS errors found by the local database tests.
+4. Run a synthetic end-to-end test: admin creates guardian invite -> guardian activates -> teacher finalizes records -> admin prepares/approves publication -> guardian sees only published snapshots.
+5. Add invite-code rate limiting and guardian invite reissue/revocation before production use.
+
+## Next Codex command
+
+```powershell
+codex -C "E:\Coding_basic\academy-student management" "Read note/next instruction, note/pending work, root AGENTS.md, and every Markdown file in docs. Continue from the current guardian publication flow. First check Docker/Podman/WSL and run Supabase local start, db lint, db reset, and pgTAP tests. Fix only failing migration/RLS files, then run npm run lint and npm run build in web. Do not touch root protected files or note/key info."
+```
+
+## Current implementation: invite controls (2026-09-22)
+
+- Added `web/supabase/migrations/20260922082255_guardian_invite_controls.sql`.
+- Added five-attempt guardian authentication-code lockout for 15 minutes.
+- Added admin invite reissue and revocation APIs: `/api/admin/guardians/reissue`, `/api/admin/guardians/revoke`.
+- Added reissue and cancel controls to `/admin/guardians`.
+- Updated the pgTAP plan from 30 to 32 checks.
+- `npm run lint` passed.
+- `npm run build` passed.
+- `npx supabase@latest db lint --local` remains blocked by Docker/Podman: `ECONNREFUSED 127.0.0.1:54322`.
+
+## Next required step
+
+The next step is local Supabase migration/RLS validation. It cannot run until Docker Desktop, Podman, or WSL2 provides the local Postgres container. After the OS/tooling is available, run `supabase start`, `db lint --local`, `db reset`, and `test db --local`, then run the synthetic guardian end-to-end test.
+
+## Work paused (2026-09-22)
+
+- The requested work pause was recorded on 2026-09-22.
+- Current implementation is saved through commit `2eecad0` (`보호자 초대 제어 보강`).
+- `note/key info` remains untracked and must not be staged or committed.
+- No GitHub remote is configured in this workspace, so a GitHub push requires the repository URL.
+
+## Next Codex command (resume after environment preparation)
+
+```powershell
+codex -C "E:\Coding_basic\academy-student management" "2026-09-22 작업 중단 상태에서 재개하라. 먼저 note/next instruction, note/pending work, 루트 AGENTS.md, docs 폴더의 모든 Markdown 문서를 읽어라. Docker, Podman, WSL2 중 사용 가능한 환경을 확인하고, 가능하면 web에서 npx supabase@latest start, npx supabase@latest db lint --local, npx supabase@latest db reset, npx supabase@latest test db --local을 실행하라. 환경이 없으면 추가 기능을 구현하지 말고 그 사실을 보고하라. note/key info와 루트 보호 파일은 변경·스테이징하지 마라."
+```
+## 다음 Codex 실행 시 첫 작업
+
+- Added `web/src/app/api/teacher/records/route.ts`.
+루트 `AGENTS.md`, `docs` 폴더의 모든 Markdown, 이 파일, `note/pending work`를 읽습니다. 먼저 Docker/Podman 및 로컬 Supabase 상태를 확인하고 migration·pgTAP 검증을 재시도합니다. 검증이 통과하면 테스트용 계정으로 교사 등록·일회용 코드 활성화·로그인·재설정 흐름을 확인합니다. 이후 별도 기능 묶음으로 `/teacher/records`를 실제 인증 세션·학원 선택·수업 회차 조회와 연결합니다. 실제 학생 개인정보·실제 비밀값·문자·카카오·Push는 사용하지 않습니다. 변경은 `web` 및 필요한 두 note 파일에만 하고, `web`에서 `npm run lint`, `npm run build`를 실행한 뒤 관련 파일만 커밋합니다. `note/key info`는 절대 스테이징하지 않습니다.
+
+9/26일까지 작업. 아래 직접 확인할 화면 끝나면 다음 명령어 참고해 주세요
+4. 직접 확인할 화면
+
+  - 운영자: http://localhost:3000/admin/login
+  - 교사: http://localhost:3000/login
+  - 학생관리: /admin/students
+  - 학사설정: /admin/academic
+  - 공개승인: /admin/publications
+  - 수정요청: /admin/changes
+  - 교사 기록: /teacher/records
+  - 보호자: /guardian/login
+
+현재 구현 상태를 기준으로 운영자·교사·보호자 화면의 최종 UI 수동 테스트와 오류 수정을 진행해 주세요.
+
+  1. 먼저 다음 문서를 읽어 주세요.
+  - docs/01_database_erd_and_tables.md
+  - docs/02_role_api_permission_matrix.md
+  - docs/03_screens_and_state_transitions.md
+
+  2. 아래 화면을 역할별로 점검해 주세요.
+  - 운영자 로그인
+  - /admin/students
+  - /admin/teachers
+  - /admin/academic
+  - /admin/publications
+  - /admin/changes
+  - 교사 로그인
+  - /teacher/records
+  - 보호자 로그인 및 /parent
+
+  3. 다음 기능을 실제 클릭·입력으로 확인해 주세요.
+  - 운영자 학원 정보 자동 적용
+  - 학생 검색·중복확인·신규등록·수정
+  - 학교·레벨·강의실·반 드롭다운
+  - 보호자 1·2 선택 및 초대링크 생성
+  - 학사설정 저장
+  - 공개 준비·공개승인 상태별 조회
+  - 교사 수업·과목 선택 및 최종저장
+  - 보호자 공개자료 조회
+  - 로그인하지 않은 사용자의 접근 차단
+
+  4. 오류가 발견된 경우에만 해당 기능을 수정해 주세요.
+  - 새로운 기능은 추가하지 않습니다.
+  - 기존 데모 데이터와 권한 구조를 유지합니다.
+  - 데이터베이스를 초기화하거나 기존 데이터를 삭제하지 않습니다.
+  - 운영자·교사·보호자 권한 검증은 서버와 RLS 기준을 유지합니다.
+  - 중요한 정책 결정이 필요한 오류가 발견되면 수정하지 말고 저에게 먼저 질문해 주세요.
+
+  5. 수정 전 한국어로 다음 내용을 알려 주세요.
+  - 수정할 파일
+  - 예상 화면 변화
+  - 테스트 방법
+
+  6. 수정 후 다음 명령을 실행하고 결과를 보고해 주세요.
+  - npm run lint
+  - npm run build
+  - npx supabase@latest db lint --local
+  - npx supabase@latest test db --local
+  - npm run test:integration
+
+  7. 작업 완료 보고는 다음 순서로 작성해 주세요.
+  - 변경 파일
+  - 구현 내용
+  - 검증 명령과 결과
+  - 제가 직접 확인할 화면과 테스트 절차
+
+  가능합니다. 현재 문제는 프로젝트 코드가 아니라 Codex의 터미널 실행기 오류입니다.
+
+`helper_unknown_error: setup refresh had errors`는 명령 실행 환경 자체가 시작되지 않았다는 뜻이라, 코드 내부에서 해결할 수 없습니다.
+
+다음 순서로 복구해 주세요.
+
+1. Codex 작업창 또는 현재 작업 세션을 닫고 다시 엽니다.
+2. 프로젝트 폴더에서 PowerShell을 새로 엽니다.
+3. 아래 명령으로 환경을 확인합니다.
+
+```
+cd "D:\Coding_basic\academy-student management"
+
+node --version
+npm --version
+npm run lint
+npm run build
+```
+
+4. 로컬 Supabase를 사용하는 경우 Docker Desktop을 실행한 뒤:
+
+```
+npx supabase status
+npx supabase start
+```
+
+5. 검증 명령을 실행합니다.
+
+```
+npx supabase@latest db lint --local
+npx supabase@latest test db --local
+npm run test:integration
+```
+
+6. 화면 확인이 필요하면 별도 터미널에서:
+
+```
+cd "D:\Coding_basic\academy-student management"
+npm run dev
+```
+
+`npm run dev`가 없으면 `web` 폴더에서 실행합니다.
+
+```
+cd "D:\Coding_basic\academy-student management\web"
+npm run dev
+```
+
+`npx supabase db reset`은 기존 데이터를 삭제할 수 있으므로 실행하지 마세요.
+
+새 세션에서도 제가 명령을 실행하지 못하면, 위 명령 중 실패한 출력 전체를 보내주세요. 그 결과를 기준으로 환경 문제와 코드 문제를 분리해 계속 진행하겠습니다.
+
+### 4\. 직접 확인할 화면
+
+- `/admin/students`
+  - 학생 등록·수정 시 수업시작일
+  - 전체 학생 목록의 수업시작일
+- `/teacher/records`
+  - 테스트 보충
+  - 과제보충 및 내용
+- `/teacher/supplements`
+  - 보충 대상과 완료 체크
+- `/admin/reports`
+  - 학생 현황
+  - 당일 출결입력현황
+  - 운영활동
+  - 보충현황
+
+### 구축 후 결정할 사항
+
+1. 현재 보충 현황은 원 수업 담당 교사 기준입니다. 별도 “보충 전담교사 배정” 기능이 필요하면 추가 결정이 필요합니다.
+2. 기존 일반 보충 기록은 새 화면에서 legacy 보충으로 표시하고 테스트 보충처럼 처리했습니다. 기존 보충을 과제보충으로 일괄 전환할지 결정할 수 있습니다.
+3. 수업시작일을 운영자가 언제든 수정할지, 최초 등록 이후 수정 제한할지 운영정책을 결정하면 됩니다.
+
+아래 사항 수정해 주세요
+1. http://localhost:3000/admin/students 화면에서 "등록일은 서버에서 오늘 날짜로 자동 기록됩니다."는 필요없으니 해당 블록은 화면에고서 보이지 않게 해주시고 수업시작일을 학생 ID옆으로(같은줄 맨 오른쪽)으로 위치변경해주세요
+2. http://localhost:3000/teacher/records 화면에서 수업참여도와 테스트보충 사이로 위치변경해 주세요
+3. http://localhost:3000/admin/reports 화면 STUDENT STATUS, DAILY ATTENDANCE INPUT, OPERATIONS 부분에서 인원을 누르면 해당 학생 세부 현황페이지로 연결이되지 않습니다. 현황에서 인원을 누르면 세부현황으로 이동할 수 있도록 구현해 주세요. 예를들어 결석현황 10명이라면 10명을 클릭하면 세부 결석학생 현황을 볼 수 있도로 구현해 주세요.
+4. 보충 전담교사 배정” 기능이 필요하며 보충던담교사는 http://localhost:3000/teacher/supplements 화면만 접근 가능합니다
+5. 수업시작일을 운영자가 언제든 수정할 수 있게 해주세요
+
+
+아래 사항 수정해 주세요
+
+1. http://localhost:3000/teacher/records화면에서 수업묶음을 선택하면 현재 사용하지 않은 반배정도 나타납니다. 오류 방지를 위해 활성화 되지 않은 반을 제오하고는 표시하지 않게 해주세요. 그리고 숙제 이해도 참여도는 5점을 기본값으로 하고 수정하게 해주세요
+2.http://localhost:3000/teacher/records화면에서 정유림 선생님 반중 문법 화목 17:20-19:40반이 중복입니다. 이선미 선생님 계정도 활성화되지 않은 반이 나타나는데 이렇게 중복 또는 비활성화된 반은 수업묶음 선택시 보이지 않게 해주세요
+3. http://localhost:3000/admin/reports/students?section=operations&item=supplement_target&startDate=2026-10-01&endDate=2026-10-02 화면에서 전체 명단 위에 추가로 반과목강의실별 보충인원과 완료인원 현황을 그리드형태로 보여주고 전체 명단과 별도로 해단 반과목강의실을 누르면 해당 반과목강의실 보충대상학생을 전체 보충대상학생 자료를 그대로 보여주개 해주세요
+4.http://localhost:3000/admin/reports/students?section=operations&item=supplement_target&startDate=2026-10-01&endDate=2026-10-02 화면에서 보충학습 선생님이 완료여부를 체크할 수 있는 체크표시항목을 추가해 주세요
+co
+
+아래 내용 검토해 보고 구현 가능한지 확인해주고 결정할 사항은 별도로 보여주세요. 코드는 아직 수정하지 마세요
+1. http://localhost:3000/admin/academic?section=classes 화면을 가독성 있게 가로로 길게 화면을 배치해 주세요
+2. http://localhost:3000/teacher/records 천은심 선생님과 서현주 선생님 반묶음에서 화목반을 선택하면 "선택한 날짜는 이 수업 묶음의 요일 또는 운영 기간과 맞지 않습니다." 메시지가 나옵니다. 서현주 선생님도 배정받지 않은 반이 반 묶음 선택화면에 나오네요. 확인 및 수정 부탁해요
+3. http://localhost:3000/teacher/records 화면 상단에 선생님이 당일 출결현황(학생수), 특정일 또는 특정기간을 지정하여 보충현황(보충현황, 보충미완료), 특정일 또는 특정기간을 지정하여 상담현황(담당 학생수, 상담기록, 상당미기록), 과목 미기록 현황을 볼 수 있는 화면을 생성해 주고 인원을 클릭했을때 세부 학생현황으로 이동할 수 있게 구현해 주세요. 중요한 것은 전체 학생이 아니라 담당하는 학생에 대한 현황만 제시해 주는 형식입니다.
+
+4. 특정 학생의 현황(출석, 테스트, 과제, 이해도, 참여도, 보충현황, 상담내역)을 특정일 또는 특정기간을 지정하여 입력 수정 없이 조회만 할 수 있는 화면을 생성할 수 있나요? 이 기능은 관리자 용으로 조회하려고 합니다.
+
+
+아래 내용 검토해 보고 구현 가능한지 확인해주고 결정할 사항은 별도로 보여주세요. 코드는 아직 수정하지 마세요
+
+1. http://localhost:3000/admin 화면에서 학생관리, 학생학습이력, 운영현황통계, 학사기초설정순서대로 4개 블록을 한줄로 배치해주세요
+2. http://localhost:3000/admin/reports화면의 운영통계, STUDENT STATUS, DAILY ATTENDANCE INPUT, OPERATIONS을, http://localhost:3000/admin화면에 1번항 4개블럭 하단에 배치해 주세요(현재의 기능은 모두 구현되도록 해주세요)
+3. http://localhost:3000/teacher/records 화면에서 휴원 선택시 상태적용일 오른쪽에 등원예정일을 표시하게 해주고, http://localhost:3000/admin/reports 화면 OPERATIONS에 재등원 예정 현황은 등원예정일 D-5일 기준 표시하게 해주세요
+
+
+반과 담당교사는 변경하지 않고 이동일만 변경합니다. 이미 시작된 이동 이력은 수정할 수 없습니다. 이것을 수정 가능하게 하면 문제되는 부분을 알려주세요. 코드는 수정하지 마세요
+
+
+
+http://localhost:3000/teacher/records화면에서 기본적으로 보충은 당일을 원칙으로 하되 만약에 특정일 보충이 필요하다고 하면 어떻게 작업해야 하나요. 목적은 나머지 선생님이 해당일 보충대상자 명단을 확인하고 관리하기 위함입니다.
+
+
+학원운영자와 선생님외에 실무 관리자를 추가하여 관리하게 하려고 합니다. 어떤 방법으로 추가하여 학원운영자, 선생님, 관리자권한설정 방법에 대해 권장안을 제시해 주세요
+
+
+내신대비 운영시 반 변경에 관한 사항 검토
+1. 반배정시 강의실 1개인데 강의실 설정을 추가해야 하나요?
+2. 운영구분을 선택하면 수업순서는 비활성화 되나요?
+3. 반배정 준일을 별도로 정해야 하나요?
+추가 구축이 필요한 사항과 결정해야 할 사항 있으면 알려주고 코드는 아직 수정하지 마세요
+
+
+아래 기준으로 내신대비 운영을 추가하면 됩니다. 이번 답변에서는 코드와 파일을 수정하지 않았습니다.
+
+## 1\. 반영할 운영 기준
+
+| 항목 | 적용 기준 |
+|---|---|
+| 내신반 | 기존 문법·독해반과 별도 생성 |
+| 반 수 | 시간대별 약 30개 |
+| 과목 | `내신` 단일 과목 |
+| 운영구분 | A/B 사용 안 함, 화면에는 `미구분` 표시 |
+| 강의실 | 기존 10강의실·11강의실 재사용 |
+| 강의실 배정 | 10강의실용 반과 11강의실용 반을 별도 생성 |
+| 요일 | 기존 월·수·금, 화·목 운영 |
+| 담당교사 | 시간대별 반마다 1명 |
+| 학생 이동 | 여러 기존 반의 학생을 내신반으로 일괄 이동 |
+| 복귀 | 학생별 원래 반을 보존하여 각각 복귀 |
+| 예약 | 내신 시작일 이동과 종료 후 복귀를 모두 미래일자로 예약 |
+| 기존 반 출결 | 내신 기간에는 기존 반에서 출결·수업기록 입력 제한 |
+| 날짜 처리 | 기존 반 종료일은 내신 시작일 전날, 내신반 시작일은 시작일 |
+
+## 2\. 학사 기초 설정에서 설정할 내용
+
+### 과목
+
+- `내신` 과목을 활성 과목으로 등록합니다.
+- 문법·독해처럼 별도 과목을 자동 연결하지 않습니다.
+- 내신반에는 `내신` 과목 1개만 연결합니다.
+- 내부적으로 과목 이름만 사용하지 말고 고정된 과목 코드도 정하는 것이 좋습니다.
+
+예시:
+
+```
+표시명: 내신
+내부코드: school_exam
+활성상태: 활성
+```
+
+### 강의실
+
+기존 강의실 10·11을 사용합니다.
+
+확인할 내용은 다음과 같습니다.
+
+- 강의실 10, 11이 활성 상태인지
+- 내신대비 기간 중 다른 반과 시간 충돌이 없는지
+- 강의실 정원이 충분한지
+- 한 내신반에 강의실이 정확히 1개 연결되는지
+
+### 내신대비 반
+
+반은 다음 기준으로 생성합니다.
+
+```
+내신대비 월수금 10강의실 1반
+내신대비 월수금 10강의실 2반
+내신대비 화목 11강의실 1반
+...
+```
+
+반별 설정값은 다음과 같습니다.
+
+- 반 이름
+- 운영 요일
+- 시작·종료 시간
+- 강의실
+- 담당교사
+- 운영 시작일
+- 운영 종료일
+- 내신 과목
+- 운영구분: 미구분
+- 정원
+
+반 이름에는 최소한 `내신대비`, 요일, 강의실 또는 시간대가 포함되어야 관리하기 쉽습니다.
+
+### 담당교사
+
+- 각 내신반에 담당교사 1명을 지정합니다.
+- 담당교사가 해당 시간에 다른 반과 중복 배정되지 않는지 확인합니다.
+- 교사 계정이 활성 상태인지 확인합니다.
+- 내신반 담당교사가 내신 과목의 수업기록·테스트·숙제 입력 대상에 포함되어야 합니다.
+
+### 공통 운영시간
+
+기존 월·수·금, 화·목 시간표를 재사용합니다.
+
+다만 내신대비 기간이 기존 학기 기간과 다르면 다음을 확인해야 합니다.
+
+- 내신대비 시작일이 현재 학기 범위 안에 있는지
+- 종료일이 학기 종료일을 넘는지
+- 학기 밖 운영을 허용할지
+- 학기를 새로 생성해야 하는지
+
+권장 방식은 내신대비 기간을 현재 학기 안에서 운영하는 것입니다.
+
+## 3\. 학생 반 이동에 필요한 변경 기준
+
+학생별로 다음 정보를 반드시 보존해야 합니다.
+
+```
+학생
+내신 운영 건
+내신반
+이동 전 반
+이동 전 반 배정 ID
+내신 시작일
+내신 종료일
+복귀일
+복귀 상태
+```
+
+예를 들어 학생 A와 B가 서로 다른 기존 반에 있었다면 다음처럼 저장해야 합니다.
+
+| 학생 | 이동 전 반 | 내신반 | 복귀 반 |
+|---|---|---|---|
+| 학생 A | 문법 A반 | 내신 월수금 10강의실 1반 | 문법 A반 |
+| 학생 B | 독해 B반 | 내신 월수금 10강의실 1반 | 독해 B반 |
+
+따라서 종료일에 모든 학생을 하나의 반으로 복귀시키면 안 됩니다.
+
+### 권장 예약 방식
+
+내신 시작 시 다음을 미리 생성합니다.
+
+```
+기존 반 배정 종료일: 내신 시작일 - 1일
+내신반 배정 시작일: 내신 시작일
+내신반 배정 종료일: 내신 종료일
+기존 반 복귀 시작일: 내신 종료일 + 1일
+```
+
+이렇게 하면 실제 날짜가 되었을 때 별도 일괄 실행 없이 날짜 기준으로 현재 반을 계산할 수 있습니다.
+
+현재 시스템이 미래 배정의 자동 적용을 지원하지 않는다면 다음 중 하나가 추가로 필요합니다.
+
+1. 미래일자 반 배정을 저장하고 날짜 기준으로 자동 적용
+2. 내신 시작일·복귀일에 서버가 자동 실행
+3. 운영자가 예약 건을 확인한 뒤 일괄 실행
+
+권장 방식은 1번입니다.
+
+## 4\. 출결·수업기록 제한
+
+내신 기간에는 서버가 수업일과 학생의 반 배정기간을 기준으로 담당 범위를 판단해야 합니다.
+
+내신 기간 중에는 다음이 적용되어야 합니다.
+
+- 기존 반 교사는 해당 학생의 내신 기간 기록을 입력할 수 없음
+- 내신반 담당교사는 내신반 수업블록에서 입력 가능
+- 학생이 기존 반에 남아 있는 것처럼 조회되지 않음
+- 출결·수업기록·숙제·테스트가 내신반 기준으로 저장됨
+- 화면 숨김뿐 아니라 API에서도 기존 반 입력을 차단
+
+## 5\. 테스트·숙제·보충 기능에서 확인할 내용
+
+현재 기능이 문법·독해를 기준으로 작성되어 있다면 다음 보완이 필요합니다.
+
+- 교사 기록 화면의 과목 선택지에 `내신` 추가
+- 내신 수업블록 조회 가능
+- 내신 테스트 입력 가능
+- 내신 숙제 입력 가능
+- 테스트 보충 등록 가능
+- 숙제 보충 등록 가능
+- 보충 예정일·완료 여부 저장
+- 관리자 보충현황에 내신 자료 포함
+- 미완료 통계에 내신 자료 포함
+- 내신반은 필수 과목이 `내신` 하나로만 계산
+
+특히 현재 저장 완료 조건이 문법·독해 두 과목을 모두 요구한다면, 내신반에서는 한 과목만 완료해도 최종저장할 수 있도록 반 또는 운영블록별 필수 과목을 계산해야 합니다.
+
+## 6\. 추가로 결정해야 할 사항
+
+다음 사항은 구현 전에 확정해야 합니다.
+
+### 운영 기간
+
+- 내신 시작일
+- 내신 종료일
+- 복귀일을 종료일 다음 날로 할지
+- 공백 기간을 둘지
+
+권장: 종료일 다음 날 복귀, 공백 없음.
+
+### 내신 운영 건 단위
+
+내신반 30개를 각각 별도 운영 건으로 만들지, 하나의 `내신대비 운영 건` 아래에 30개 반을 둘지 결정해야 합니다.
+
+권장:
+
+```
+2026년 1학기 중간고사 대비
+ ├ 내신 월수금 10강의실 1반
+ ├ 내신 월수금 10강의실 2반
+ ├ 내신 화목 11강의실 1반
+ └ ...
+```
+
+하나의 운영 건으로 묶어야 시작·종료·복귀 예약과 취소를 일괄 처리하기 쉽습니다.
+
+### 학생 변경 처리
+
+내신 기간 중 다음 상황을 어떻게 처리할지 정해야 합니다.
+
+- 신규 학생이 내신반에 추가되는 경우
+- 학생이 휴원·퇴원하는 경우
+- 학생이 원래 반을 변경한 경우
+- 내신반을 중간에 변경하는 경우
+- 내신 운영 자체를 취소하는 경우
+
+권장: 내신 시작 직전의 원래 반을 복귀 기준으로 고정하고, 중간 변경은 별도 이력으로 남깁니다.
+
+### 정원 초과
+
+확정 : 내신대비반은 정원개념이 없으며  운영자가 반을 직접 선택
+
+### 보호자 공개
+
+확정 : 내신대비 수업기록을 보호자에게 일반 수업기록처럼 공개합니다.
+
+
+### 통계 포함 여부
+
+확정 : 원본 데이터는 보존하되, 일반 정규반 통계와 내신대비 통계는 필터로 분리합니다.()
+
+### 기존 기록 수정 권한
+
+내신 기간 이후에 기존 반의 출결이나 수업기록을 수정할 수 있는 역할을 정해야 합니다.
+
+권장:
+
+- 일반 교사: 차단
+- 학원 운영자: 사유 입력 후 수정 가능
+- 수정 시 감사로그 저장
+
+## 7\. 구현 전 최종 확인 목록
+
+다음 값이 확정되면 구현을 시작할 수 있습니다.
+
+- 내신 운영명
+- 내신 시작일
+- 내신 종료일
+- 복귀일 규칙
+- 정확한 시간대 목록
+- 10강의실·11강의실별 반 배정
+- 약 30개 반의 이름
+- 반별 담당교사
+- 반별 정원
+- 학생별 내신반 배정표
+- 학생별 원래 반 복귀 정보
+- 내신 기록의 보호자 공개 여부
+- 통계 포함 여부
+- 중간 반 변경 처리 방식
+- 운영 취소·복귀 예약 변경 방식
+
+이 기준을 먼저 확정한 뒤, 다음 단계에서 학사 기초 설정 화면 → 내신 운영 건 생성 → 학생 일괄 이동 예약 → 반 복귀 예약 → 내신 수업기록 연동 순서로 구현하는 것이 안전합니다.
+```
+  Worked for 1m 53s • 1:48 PM
+```
+여러 기존 반의 학생을 내신반으로 일괄 이동 : 수동이 아니라 자동으로 가능하나요? 가능하면 방법 알려주세요  
+
+네, 가능합니다. 다만 자동 이동을 위해서는 “어떤 학생을 어느 내신반에 배정할지” 규칙을 먼저 정해야 합니다.
+
+## 권장 방식: 자동 배정 예약
+
+### 1\. 내신 운영 건 생성
+
+예시:
+
+```
+2026년 1학기 중간고사 대비
+기간: 2026-04-01 ~ 2026-04-15
+복귀일: 2026-04-16
+```
+
+### 2\. 대상 학생 자동 선정
+
+운영자가 기존 반을 선택합니다.
+
+```
+대상 반:
+- 초급 A반
+- 초급 B반
+- 중급 A반
+```
+
+시스템은 해당 반에 배정된 재원 학생을 자동으로 추출합니다.
+
+자동 제외 대상도 설정할 수 있습니다.
+
+- 휴원 학생
+- 퇴원 학생
+- 이미 내신반에 배정된 학생
+- 미래 반 이동이 이미 예약된 학생
+- 반 배정 정보가 없는 학생
+
+### 3\. 내신반 자동 배정 규칙 설정
+
+가장 안전한 방식은 기존 반 또는 기존 시간대를 기준으로 매핑하는 것입니다.
+
+예시:
+
+| 기존 반·시간 | 내신반 |
+|---|---|
+| 초급 A반 월수금 17:00 | 내신 월수금 10강의실 1반 |
+| 초급 B반 월수금 17:00 | 내신 월수금 10강의실 2반 |
+| 중급 A반 화목 18:00 | 내신 화목 11강의실 1반 |
+
+기존 반과 내신반을 직접 연결하면 학생별로 다른 반에 잘못 복귀하는 문제를 줄일 수 있습니다.
+
+### 4\. 정원 초과 처리
+
+같은 시간대에 내신반이 여러 개라면 다음 기준 중 하나를 정해야 합니다.
+
+권장 기준:
+
+1. 기존 반과 연결된 내신반에 우선 배정
+2. 정원이 차면 다음 내신반으로 이동
+3. 모든 반이 차면 미배정 목록으로 분리
+4. 미배정 학생은 운영자가 별도로 확인
+
+자동으로 정원을 초과시키면 안 됩니다.
+
+### 5\. 미리보기 후 일괄 확정
+
+자동 배정 전에 다음 결과를 미리 보여주는 것이 필요합니다.
+
+```
+자동 배정 대상: 85명
+정상 배정: 80명
+정원 초과: 3명
+반 배정 충돌: 1명
+반 배정 정보 없음: 1명
+```
+
+운영자가 `일괄 확정`을 누르면 학생별 반 이동 예약을 생성합니다.
+
+## 실제 반 이동 처리
+
+학생마다 다음 데이터를 자동으로 저장합니다.
+
+```
+학생 ID
+기존 반 배정 ID
+기존 반 ID
+내신반 ID
+내신 시작일
+내신 종료일
+복귀일
+운영 건 ID
+```
+
+날짜는 다음과 같이 생성합니다.
+
+```
+기존 반 종료일: 내신 시작일 전날
+내신반 시작일: 내신 시작일
+내신반 종료일: 내신 종료일
+기존 반 복귀일: 내신 종료일 다음 날
+```
+
+예를 들어 학생 A가 기존 `초급 A반`이었다면 자동으로 다음과 같이 처리됩니다.
+
+```
+초급 A반       ~ 2026-03-31
+내신 1반       2026-04-01 ~ 2026-04-15
+초급 A반 복귀  2026-04-16 ~
+```
+
+학생 B가 기존 `중급 B반`이었다면 학생 B는 종료 후 `중급 B반`으로 복귀합니다. 모든 학생을 하나의 반으로 복귀시키지 않습니다.
+
+## 시작일에 운영자가 다시 실행해야 하나요?
+
+권장 방식은 시작일에 별도 실행하지 않는 방식입니다.
+
+미리 미래일자 배정을 저장해 두고, 시스템이 수업일 기준으로 현재 배정을 판단합니다.
+
+```
+오늘 날짜 < 내신 시작일 → 기존 반
+내신 시작일 ≤ 오늘 날짜 ≤ 종료일 → 내신반
+오늘 날짜 ≥ 복귀일 → 원래 반
+```
+
+현재 시스템이 미래일자 배정을 지원하지 않는 경우에는 대안으로 서버 자동 작업을 사용할 수 있습니다.
+
+```
+내신 시작일 00:00 → 내신반 일괄 적용
+복귀일 00:00 → 학생별 원래 반 일괄 복귀
+```
+
+이 경우에는 중복 실행을 막기 위해 운영 건에 다음 상태를 저장해야 합니다.
+
+```
+예약
+미리보기
+확정
+적용 중
+적용 완료
+오류
+취소
+```
+
+## 자동화 전에 결정할 사항
+
+자동 배정을 구현하려면 다음 기준을 확정해야 합니다.
+
+1. 대상 학생은 선택한 반의 재원 학생 전체인지
+2. 휴원·퇴원 학생을 제외할지
+3. 기존 반별로 특정 내신반을 지정할지
+4. 정원 초과 시 다음 반으로 자동 분산할지
+5. 정원 초과 학생을 미배정으로 둘지
+6. 학생이 이미 다른 미래 반 이동을 예약한 경우 처리 방법
+7. 내신 기간 중 반을 변경한 학생의 복귀 기준
+8. 자동 배정 전 운영자 미리보기와 확정 단계를 둘지
+
+가장 안전한 최종 흐름은 다음과 같습니다.
+
+```
+내신 운영 건 생성
+→ 대상 기존 반 선택
+→ 기존 반별 내신반 자동 매핑
+→ 학생별 자동 배정 미리보기
+→ 충돌·정원 초과 확인
+→ 운영자 일괄 확정
+→ 시작일·복귀일 미래 배정 자동 생성
+→ 날짜에 따라 내신반 적용
+→ 복귀일에 학생별 원래 반 자동 복귀
+```
+
+따라서 수동으로 학생 한 명씩 이동할 필요는 없으며, `기존 반 선택 + 내신반 매핑 + 일괄 확정` 방식으로 자동 처리하는 것이 적절합니다.
+
+
+
+
+
+## 1\. `/admin/academic`에서 설정할 사항
+
+현재 학사 설정 화면에 다음 항목을 추가하거나 확장합니다.
+
+- `내신` 과목 등록
+- 내신대비 운영 건 등록
+  - 운영명
+  - 시작일·종료일
+  - 복귀일
+- 내신반 생성
+  - 약 30개 반
+  - 월·수·금 / 화·목
+  - 시간대
+  - 강의실 10·11
+  - 담당교사
+- 내신반의 필수 과목을 `내신` 단일 과목으로 설정
+- A/B 수업 순서는 사용하지 않고 `미구분` 처리
+- 내신반별 학생 정원은 현재 적용하지 않음
+
+현재의 `문법 담당교사·독해 담당교사` 중심 설정만으로는 내신반을 처리하기 어렵기 때문에, 내신반은 별도 과목·교사·강의실 설정이 필요합니다.
+
+## 2\. 구현할 사항
+
+- 기존 반별 학생을 내신반으로 자동 배정
+- 한 기존 반의 학생이 여러 내신반으로 나뉘는 학생별 매핑
+- 자동 배정 미리보기와 일괄 확정
+- 기존 반 배정 종료일 자동 설정
+- 내신반 시작일·종료일 자동 예약
+- 복귀일에 학생별 원래 반으로 자동 복귀
+- 내신 기간 중 기존 반의 출결·수업기록 입력 차단
+- 내신 수업블록·출결·테스트·숙제·보충 기능 연동
+- 정규 통계와 내신 통계 분리
+- 내신 기간의 정규수업 미실시를 미입력으로 계산하지 않도록 처리
+- 운영자용 내신대비 일괄 배정 화면 추가
+
+권장 화면 구조는 다음과 같습니다.
+
+```
+/admin/academic
+ ├ 내신 과목·내신반·운영기간 설정
+ └ 내신대비 운영 건 관리
+
+/admin/students
+ └ 내신대비 학생 일괄 배정
+```
+
+## 3\. 결정할 사항
+
+- 내신 운영명
+- 시작일·종료일·복귀일
+- 종료일 다음 날 바로 복귀할지
+- 기존 반별 내신반 매핑 방법
+- 한 기존 반 학생을 여러 내신반으로 나누는 기준
+- 중간에 학생이 반을 변경하는 경우 처리
+- 내신반 정원 제한을 적용할지
+  - 권장: 1차 구현에서는 제한하지 않음
+- 내신 데이터를 보호자에게 공개할지
+- 내신 데이터를 통계에 포함하는 범위
+- 내신 기간 중 관리자만 기존 반 기록을 수정할 수 있게 할지
+- 미래일자 예약만으로 처리할지, 날짜가 되면 자동 실행할지
+
+
+다음의 추가 확정사항 반영해서 전체계획 업데이트 해주고 진행시 문제점과 보완사항 알려주세요. 1. 내신 데이터를 통계에 포함(분리하지 않음), 2. 내신기간 중에도 정규반 선생님은 **과거 정규반 기록을 수정할 수 있게 구현(기한 상관 없음. 다만 내신수업 관련기록은 작성 수정 불가능) 3. 미래일자 배정을 미리 만들고 날짜가 되면 시스템이 자동으로 해당 배정을 사용하는 방식으로 구현
+
+## 4\. 권장안
+
+- 내신 운영 건 1개 아래에 약 30개 내신반을 관리
+- `내신`을 별도 과목으로 등록
+- 내부 식별값은 `school_exam`처럼 안정적으로 관리
+- 기존 반 → 내신반을 학생별로 매핑
+- 자동 배정 전 미리보기 후 운영자가 일괄 확정
+- 반 배정은 시작일·종료일·복귀일을 미리 예약
+- 기존 반과 내신반 배정기간이 겹치지 않게 처리
+- 정원 제한은 초기에는 적용하지 않음
+- 정규 통계와 내신 통계를 분리하고, 전체 이력에서는 둘 다 표시
+- 내신 종료 후에는 학생별 원래 반으로 자동 복귀
+
+핵심은 `학사 설정에서 내신 운영과 반을 설정`하고, `학생 관리에서 학생별 내신반 자동 배정을 확정`하는 구조입니다. 코드는 아직 수정하지 않았습니다.
+
+학기설정 삭제기능 추가해주세요
+
+
+
+1. 내신 일괄배정 트랜잭션·자동 롤백
+2. 통합 테스트 계정·픽스처 구성
+3. 주요 화면 시나리오 테스트
+4. 기존 반 배정 중복 데이터 정리 기준 적용
+5. Supabase 원격 연결·마이그레이션·배포 준비
+
