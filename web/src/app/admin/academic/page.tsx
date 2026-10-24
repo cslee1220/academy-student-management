@@ -108,7 +108,7 @@ type OperationSchedule = {
   is_active: boolean;
   updated_at: string;
 };
-type OperationScheduleDraft = { id?: string; weekdays: string[]; startTime: string; endTime: string; effectiveStart: string; effectiveEnd: string };
+type OperationScheduleDraft = { id?: string; weekdays: string[]; startTime: string; endTime: string };
 type GradePromotionSettings = { academy_id: string; automatic_enabled: boolean; effective_month: number; effective_day: number; enabled_from_date: string | null; updated_at: string };
 type GradePromotionBatch = { id: string; promotion_year: number; effective_date: string; status: "preview" | "approved" | "applied" | "reverted"; created_at: string; previewed_at: string | null; approved_at: string | null; applied_at: string | null; reverted_at: string | null };
 type GradePromotionItem = { id: string; student_id: string; student_no: string; student_name: string; current_status: string; old_school_level: string | null; old_grade: string | null; new_grade: string | null; action: "promote" | "manual_school_level" | "manual_graduation" | "skipped"; status: "pending" | "applied" | "reverted" | "conflict" | "skipped"; note: string | null };
@@ -151,13 +151,18 @@ const settingItems: Array<{ key: SettingKey; title: string; description: string 
   { key: "vehicles", title: "차량", description: "학생 등록에서 선택할 차량을 관리합니다." },
   { key: "subjects", title: "과목", description: "수업 기록에 사용할 과목을 관리합니다." },
   { key: "operation_types", title: "운영구분", description: "정규수업·시험대비 등 학생 반 배정에 사용할 운영구분을 관리합니다." },
-  { key: "operation_settings", title: "공통 수업 운영", description: "요일별 공통 수업시간과 유효기간을 설정합니다." },
+  { key: "operation_settings", title: "공통 수업 운영", description: "요일별 공통 수업시간을 설정합니다." },
   { key: "grade_promotions", title: "학년 자동 승급", description: "1월 1일 기준 학년 승급 미리보기·승인·이력·되돌리기를 관리합니다." },
   { key: "schools", title: "학교", description: "학생 등록에서 선택할 학교를 관리합니다." },
   { key: "academy_levels", title: "레벨", description: "학생 등록에서 선택할 레벨과 표시순서를 관리합니다." },
   { key: "teachers", title: "교사 계정", description: "교사 계정 등록, 활성화 코드 발급과 계정 상태를 관리합니다." },
   { key: "publication_settings", title: "보호자 공개 설정", description: "과목별 점수·이해도·참여도의 보호자 공개 여부를 설정합니다." },
 ];
+
+const batchAssignmentItems = [
+  { href: "/admin/students?section=exam_batch", title: "내신 일괄 배정", description: "학교·학년별 학생을 불러와 학생별 내신 반을 예약 배정하고 복귀까지 관리합니다.", tone: "rose" },
+  { href: "/admin/students?section=class_batch", title: "신학기 반 일괄 배정", description: "학생마다 서로 다른 새 반과 수업순서를 지정해 신학기 반 배정을 한 번에 반영합니다.", tone: "indigo" },
+] as const;
 
 type ApiResult = {
   error?: { message?: string };
@@ -172,11 +177,6 @@ function operationScheduleGroup(weekdays: string[]) {
   const isTuesdayThursday = weekdays.length === 2 && ["tue", "thu"].every((weekday) => weekdays.includes(weekday));
   if (isTuesdayThursday) return 1;
   return 2;
-}
-
-function defaultOperationSchedulePeriod(terms: Term[]) {
-  const term = terms.find((item) => item.is_current) ?? terms[0];
-  return { start: term?.start_date ?? "", end: term?.end_date ?? "" };
 }
 
 function gradePromotionActionLabel(action: GradePromotionItem["action"]) {
@@ -269,7 +269,7 @@ function AcademicSettingsPageContent() {
   const [operationTypeDisplayOrder, setOperationTypeDisplayOrder] = useState("0");
   const [operationTypeIsActive, setOperationTypeIsActive] = useState(true);
   const [publicationSettings, setPublicationSettings] = useState(emptyData.publicationSettings);
-  const [operationScheduleDrafts, setOperationScheduleDrafts] = useState<OperationScheduleDraft[]>([{ weekdays: [], startTime: "", endTime: "", effectiveStart: "", effectiveEnd: "" }]);
+  const [operationScheduleDrafts, setOperationScheduleDrafts] = useState<OperationScheduleDraft[]>([{ weekdays: [], startTime: "", endTime: "" }]);
   const [studentClassGridColumns, setStudentClassGridColumns] = useState(5);
   const [isOperationScheduleEditing, setIsOperationScheduleEditing] = useState(true);
   const [editingOperationScheduleId, setEditingOperationScheduleId] = useState<string | "new" | null>("new");
@@ -317,10 +317,9 @@ function AcademicSettingsPageContent() {
       setGradePromotionAutomaticEnabled(result.data.gradePromotion?.settings.automatic_enabled ?? false);
       setStudentClassGridColumns(result.data.operationSettings?.student_class_grid_columns ?? 5);
       const schedules = result.data.operationSchedules ?? [];
-      const defaultPeriod = defaultOperationSchedulePeriod(result.data.terms);
       setOperationScheduleDrafts(schedules.length
-        ? schedules.map((schedule) => ({ id: schedule.id, weekdays: schedule.weekdays, startTime: schedule.start_time.slice(0, 5), endTime: schedule.end_time.slice(0, 5), effectiveStart: schedule.effective_start, effectiveEnd: schedule.effective_end }))
-        : [{ weekdays: [], startTime: "", endTime: "", effectiveStart: defaultPeriod.start, effectiveEnd: defaultPeriod.end }]);
+        ? schedules.map((schedule) => ({ id: schedule.id, weekdays: schedule.weekdays, startTime: schedule.start_time.slice(0, 5), endTime: schedule.end_time.slice(0, 5) }))
+        : [{ weekdays: [], startTime: "", endTime: "" }]);
       setIsOperationScheduleEditing(!schedules.length);
       setEditingOperationScheduleId(schedules.length ? null : "new");
       return true;
@@ -665,11 +664,9 @@ function AcademicSettingsPageContent() {
       setError(`${invalidScheduleIndex + 1}번째 운영시간표의 요일을 하나 이상 선택해 주세요.`);
       return;
     }
-    const missingValueIndex = operationScheduleDrafts.findIndex((schedule) => (
-      !schedule.startTime || !schedule.endTime || !schedule.effectiveStart || !schedule.effectiveEnd
-    ));
+    const missingValueIndex = operationScheduleDrafts.findIndex((schedule) => !schedule.startTime || !schedule.endTime);
     if (missingValueIndex >= 0) {
-      setError(`${missingValueIndex + 1}번째 운영시간표의 시작·종료시간과 유효기간을 모두 입력해 주세요.`);
+      setError(`${missingValueIndex + 1}번째 운영시간표의 시작시간과 종료시간을 입력하고 학기 설정을 확인해 주세요.`);
       return;
     }
     const invalidTimeIndex = operationScheduleDrafts.findIndex((schedule) => schedule.startTime >= schedule.endTime);
@@ -677,12 +674,6 @@ function AcademicSettingsPageContent() {
       setError(`${invalidTimeIndex + 1}번째 운영시간표의 시작시간은 종료시간보다 빨라야 합니다.`);
       return;
     }
-    const invalidDateIndex = operationScheduleDrafts.findIndex((schedule) => schedule.effectiveStart > schedule.effectiveEnd);
-    if (invalidDateIndex >= 0) {
-      setError(`${invalidDateIndex + 1}번째 운영시간표의 유효 시작일은 종료일보다 빠르거나 같아야 합니다.`);
-      return;
-    }
-
     const saved = await saveResource("operation_settings", {
       schedules: operationScheduleDrafts,
       studentClassGridColumns,
@@ -717,17 +708,15 @@ function AcademicSettingsPageContent() {
   }
 
   function beginOperationScheduleEdit(scheduleId?: string) {
-    const defaultPeriod = defaultOperationSchedulePeriod(data.terms);
     setOperationScheduleDrafts(data.operationSchedules.length
-      ? data.operationSchedules.map((schedule) => ({ id: schedule.id, weekdays: schedule.weekdays, startTime: schedule.start_time.slice(0, 5), endTime: schedule.end_time.slice(0, 5), effectiveStart: schedule.effective_start, effectiveEnd: schedule.effective_end }))
-      : [{ weekdays: [], startTime: "", endTime: "", effectiveStart: defaultPeriod.start, effectiveEnd: defaultPeriod.end }]);
+      ? data.operationSchedules.map((schedule) => ({ id: schedule.id, weekdays: schedule.weekdays, startTime: schedule.start_time.slice(0, 5), endTime: schedule.end_time.slice(0, 5) }))
+      : [{ weekdays: [], startTime: "", endTime: "" }]);
     setIsOperationScheduleEditing(true);
     setEditingOperationScheduleId(scheduleId ?? (data.operationSchedules.length ? null : "new"));
   }
 
   function beginOperationScheduleAdd() {
-    const defaultPeriod = defaultOperationSchedulePeriod(data.terms);
-    setOperationScheduleDrafts((current) => [...current, { weekdays: [], startTime: "", endTime: "", effectiveStart: defaultPeriod.start, effectiveEnd: defaultPeriod.end }]);
+    setOperationScheduleDrafts((current) => [...current, { weekdays: [], startTime: "", endTime: "" }]);
     setEditingOperationScheduleId("new");
     setIsOperationScheduleEditing(true);
   }
@@ -747,7 +736,7 @@ function AcademicSettingsPageContent() {
   }
 
   function cancelOperationScheduleEdit() {
-    setOperationScheduleDrafts(data.operationSchedules.map((schedule) => ({ id: schedule.id, weekdays: schedule.weekdays, startTime: schedule.start_time.slice(0, 5), endTime: schedule.end_time.slice(0, 5), effectiveStart: schedule.effective_start, effectiveEnd: schedule.effective_end })));
+    setOperationScheduleDrafts(data.operationSchedules.map((schedule) => ({ id: schedule.id, weekdays: schedule.weekdays, startTime: schedule.start_time.slice(0, 5), endTime: schedule.end_time.slice(0, 5) })));
     setEditingOperationScheduleId(null);
     setIsOperationScheduleEditing(false);
   }
@@ -807,6 +796,24 @@ function AcademicSettingsPageContent() {
                 <p className="mt-5 text-sm font-bold text-indigo-600">설정하기</p>
               </Link>
             ))}
+          </div>
+          <div className="mt-8 border-t border-slate-200 pt-6">
+            <p className="text-sm font-bold text-indigo-600">STUDENT ASSIGNMENT</p>
+            <h3 className="mt-1 text-xl font-bold text-slate-900">학생 반 배정</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-500">기존 학생관리 기능으로 연결됩니다. 기존 배정 처리 방식과 경로는 변경되지 않습니다.</p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              {batchAssignmentItems.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`rounded-2xl border p-5 transition hover:-translate-y-0.5 hover:shadow-md ${item.tone === "rose" ? "border-rose-200 bg-rose-50 hover:border-rose-300" : "border-indigo-100 bg-white hover:border-indigo-300"}`}
+                >
+                  <h3 className="text-lg font-bold text-slate-900">{item.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{item.description}</p>
+                  <span className="mt-5 inline-block text-sm font-bold text-indigo-600">화면 열기 →</span>
+                </Link>
+              ))}
+            </div>
           </div>
         </section>
       ) : null}
@@ -1072,7 +1079,7 @@ function AcademicSettingsPageContent() {
       <section className={selectedSection === "operation_settings" ? "mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8" : "hidden"}>
         <div>
           <h2 className="text-xl font-bold">요일별 공통 수업 운영 설정</h2>
-          <p className="mt-1 text-sm leading-6 text-slate-500">요일별 공통 수업시간과 유효기간을 설정합니다. 새 시간표의 유효기간은 현재 학기 기간을 기본값으로 채우며, 필요하면 직접 수정할 수 있습니다.</p>
+          <p className="mt-1 text-sm leading-6 text-slate-500">요일별 공통 수업시간을 설정합니다. 운영기간은 현재 학기 설정을 기준으로 자동 적용됩니다.</p>
         </div>
         {isOperationScheduleEditing ? (
           <form onSubmit={submitOperationSettings} className="mt-6 space-y-5">
@@ -1110,8 +1117,6 @@ function AcademicSettingsPageContent() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="text-sm font-semibold text-slate-700">시작시간<input type="time" value={draft.startTime} onChange={(event) => updateOperationScheduleDraft(draft.id, (schedule) => ({ ...schedule, startTime: event.target.value }))} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm" required /></label>
                       <label className="text-sm font-semibold text-slate-700">종료시간<input type="time" value={draft.endTime} onChange={(event) => updateOperationScheduleDraft(draft.id, (schedule) => ({ ...schedule, endTime: event.target.value }))} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm" required /></label>
-                      <label className="text-sm font-semibold text-slate-700">유효 시작일<input type="date" value={draft.effectiveStart} onChange={(event) => updateOperationScheduleDraft(draft.id, (schedule) => ({ ...schedule, effectiveStart: event.target.value }))} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm" required /><span className="mt-1 block text-xs font-normal text-slate-500">기본값은 현재 학기 시작일입니다.</span></label>
-                      <label className="text-sm font-semibold text-slate-700">유효 종료일<input type="date" value={draft.effectiveEnd} onChange={(event) => updateOperationScheduleDraft(draft.id, (schedule) => ({ ...schedule, effectiveEnd: event.target.value }))} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm" required /><span className="mt-1 block text-xs font-normal text-slate-500">기본값은 현재 학기 종료일입니다.</span></label>
                     </div>
                   </div>
                 </fieldset>
@@ -1139,7 +1144,6 @@ function AcademicSettingsPageContent() {
                   <div>
                     <span className="font-semibold">{formatOperationWeekdays(schedule.weekdays)}</span>
                     <span className="ml-3 text-slate-600">{schedule.start_time.slice(0, 5)} ~ {schedule.end_time.slice(0, 5)}</span>
-                    <span className="mt-1 block text-xs text-slate-500">유효기간 {schedule.effective_start} ~ {schedule.effective_end}</span>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={() => beginOperationScheduleEdit(schedule.id)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-white">설정 변경</button>

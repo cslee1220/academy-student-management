@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import AdminReportSummary, { AdminReportSummaryData } from "@/components/admin/admin-report-summary";
+import { readReportPeriodFromUrl, syncReportPeriodToUrl } from "@/lib/admin-report-period";
 
 function today() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -22,11 +23,12 @@ export default function AdminReportSummaryPanel() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function loadReport() {
+  async function loadReport(nextStartDate = startDate, nextEndDate = endDate) {
     setIsLoading(true);
     setError("");
+    syncReportPeriodToUrl(nextStartDate, nextEndDate);
     try {
-      const params = new URLSearchParams({ startDate, endDate });
+      const params = new URLSearchParams({ startDate: nextStartDate, endDate: nextEndDate });
       const response = await fetch(`/api/admin/reports?${params.toString()}`, { cache: "no-store" });
       const payload = await response.json().catch(() => null) as ReportApiResult | null;
       if (!response.ok) throw new Error(payload?.error?.message ?? "운영 통계를 불러오지 못했습니다.");
@@ -39,9 +41,12 @@ export default function AdminReportSummaryPanel() {
   }
 
   useEffect(() => {
+    const period = readReportPeriodFromUrl(firstDay(initialEndDate), initialEndDate);
     // 관리자 메인 진입 시 현재 기간 통계를 한 번만 조회합니다.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadReport();
+    setStartDate(period.startDate);
+    setEndDate(period.endDate);
+    void loadReport(period.startDate, period.endDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

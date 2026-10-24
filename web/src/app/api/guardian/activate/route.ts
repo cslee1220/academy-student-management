@@ -1,9 +1,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
+import { shouldUseSecureCookie } from "@/lib/auth/cookie-security";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import {
+  GUARDIAN_INVITE_MAX_USES,
   hashGuardianDeviceId,
   hashGuardianInviteToken,
   isGuardianInviteExpired,
@@ -68,15 +70,19 @@ export async function POST(request: NextRequest) {
     const { data: invite, error: inviteError } = await admin
       .from("guardian_invites")
       .select(
-        "id, academy_id, student_id, guardian_id, auth_code_hash, expires_at, used_at, revoked_at, attempt_count, last_attempt_at, locked_until",
+        "id, academy_id, student_id, guardian_id, auth_code_hash, expires_at, use_count, used_at, revoked_at, attempt_count, last_attempt_at, locked_until",
       )
       .eq("invite_token_hash", hashGuardianInviteToken(token))
       .maybeSingle();
     if (inviteError || !invite) {
       throw new HttpError(404, "invite_not_found", "유효한 초대 링크를 찾지 못했습니다.");
     }
-    if (invite.used_at || invite.revoked_at || isGuardianInviteExpired(invite.expires_at)) {
-      throw new HttpError(410, "invite_expired", "초대 링크가 만료되었거나 이미 사용되었습니다.");
+    const inviteUseCount = Number(invite.use_count ?? 0);
+    if (invite.revoked_at || isGuardianInviteExpired(invite.expires_at)) {
+      throw new HttpError(410, "invite_expired", "초대 링크가 만료되었거나 취소되었습니다.");
+    }
+    if (invite.used_at || inviteUseCount >= GUARDIAN_INVITE_MAX_USES) {
+      throw new HttpError(410, "invite_usage_limit", "초대 링크의 최대 사용 횟수(5회)를 모두 사용했습니다.");
     }
     const now = Date.now();
     if (invite.locked_until && new Date(invite.locked_until).getTime() > now) {
@@ -98,6 +104,7 @@ export async function POST(request: NextRequest) {
         })
         .eq("id", invite.id)
         .is("used_at", null)
+        .lt("use_count", GUARDIAN_INVITE_MAX_USES)
         .is("revoked_at", null);
       if (attemptUpdateError) {
         throw new HttpError(500, "attempt_update_failed", "인증 시도 상태를 저장하지 못했습니다.");
@@ -199,14 +206,19 @@ export async function POST(request: NextRequest) {
       throw new HttpError(500, "guardian_update_failed", "보호자 계정 상태를 갱신하지 못했습니다.");
     }
 
-    const { error: inviteUpdateError } = await admin
-      .from("guardian_invites")
-      .update({ used_at: new Date().toISOString(), attempt_count: 0, last_attempt_at: null, locked_until: null })
-      .eq("id", invite.id)
-      .is("used_at", null);
+    const { data: consumedUseCount, error: inviteUpdateError } = await admin.rpc("consume_guardian_invite_use", {
+      p_invite_id: invite.id,
+    });
     if (inviteUpdateError) {
+      if (inviteUpdateError.code === "P0003") {
+        throw new HttpError(410, "invite_usage_limit", "초대 링크의 최대 사용 횟수(5회)를 모두 사용했습니다.");
+      }
+      if (inviteUpdateError.code === "P0002") {
+        throw new HttpError(410, "invite_expired", "초대 링크가 만료되었거나 취소되었습니다.");
+      }
       throw new HttpError(500, "invite_update_failed", "초대 사용 상태를 저장하지 못했습니다.");
     }
+    const currentUseCount = Number(consumedUseCount ?? inviteUseCount + 1);
 
     const supabase = await createSupabaseServerClient();
     const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -220,6 +232,8 @@ export async function POST(request: NextRequest) {
     const response = NextResponse.json({
       data: {
         guardianName: guardian.display_name,
+        useCount: currentUseCount,
+        usesRemaining: Math.max(GUARDIAN_INVITE_MAX_USES - currentUseCount, 0),
         message: "보호자 인증이 완료되었습니다. 보호자 조회 화면으로 이동합니다.",
       },
     });
@@ -228,7 +242,7 @@ export async function POST(request: NextRequest) {
       maxAge: 60 * 60 * 24 * 30,
       path: "/",
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookie(request),
     });
     return response;
   } catch (error) {

@@ -61,9 +61,10 @@ function completedFor(task: Record<string, unknown>) {
   return (!hasTest || task.test_completed === true) && (!hasHomework || task.homework_completed === true);
 }
 
-function scheduledFor(task: Record<string, unknown>, kind: "test" | "homework", recordDate: string) {
+function scheduledWithin(task: Record<string, unknown>, kind: "test" | "homework", startDate: string, endDate: string) {
   const scheduledDate = kind === "test" ? task.test_supplement_date : task.homework_supplement_date;
-  return (typeof scheduledDate === "string" && scheduledDate ? scheduledDate : task.record_date) === recordDate;
+  const date = typeof scheduledDate === "string" && scheduledDate ? scheduledDate : task.record_date;
+  return typeof date === "string" && date >= startDate && date <= endDate;
 }
 
 function errorResponse(error: unknown) {
@@ -75,14 +76,17 @@ function errorResponse(error: unknown) {
 export async function GET(request: NextRequest) {
   try {
     const requestedAcademyId = request.nextUrl.searchParams.get("academyId") ?? undefined;
-    const recordDate = parseDate(request.nextUrl.searchParams.get("recordDate"));
+    const legacyRecordDate = request.nextUrl.searchParams.get("recordDate");
+    const startDate = parseDate(request.nextUrl.searchParams.get("startDate") ?? legacyRecordDate);
+    const endDate = parseDate(request.nextUrl.searchParams.get("endDate") ?? legacyRecordDate ?? startDate);
+    if (endDate < startDate) throw new HttpError(400, "invalid_date_range", "종료일은 시작일 이후 날짜여야 합니다.");
     const { academyId, profileId, role } = await getTeacherContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
     let taskQuery = admin
       .from("student_supplement_tasks")
       .select("id, source_subject_record_id, block_id, class_id, subject_id, teacher_id, student_id, record_date, test_supplement_date, class_name_snapshot, subject_name_snapshot, classroom_name_snapshot, legacy_supplementary, is_test_supplementary, test_items, test_completed, test_completed_by_profile_id, test_completed_at, homework_supplement_date, is_homework_supplementary, homework_content, homework_completed, homework_completed_by_profile_id, homework_completed_at, version, updated_at")
       .eq("academy_id", academyId)
-      .or(`record_date.eq.${recordDate},test_supplement_date.eq.${recordDate},homework_supplement_date.eq.${recordDate}`)
+      .or(`and(record_date.gte.${startDate},record_date.lte.${endDate}),and(test_supplement_date.gte.${startDate},test_supplement_date.lte.${endDate}),and(homework_supplement_date.gte.${startDate},homework_supplement_date.lte.${endDate})`)
       .eq("is_active", true)
       .order("classroom_name_snapshot", { ascending: true })
       .order("subject_name_snapshot", { ascending: true })
@@ -99,18 +103,35 @@ export async function GET(request: NextRequest) {
     const rows = (tasks ?? []).map((task) => {
       const normalized = {
         ...task,
-        has_test_supplementary: (task.is_test_supplementary || task.legacy_supplementary) && scheduledFor(task as Record<string, unknown>, "test", recordDate),
-        has_homework_supplementary: task.is_homework_supplementary && scheduledFor(task as Record<string, unknown>, "homework", recordDate),
+        has_test_supplementary: (task.is_test_supplementary || task.legacy_supplementary) && scheduledWithin(task as Record<string, unknown>, "test", startDate, endDate),
+        has_homework_supplementary: task.is_homework_supplementary && scheduledWithin(task as Record<string, unknown>, "homework", startDate, endDate),
         test_items: normalizeTestItems(task.test_items),
         completed: completedFor({
           ...task,
-          is_test_supplementary: (task.is_test_supplementary || task.legacy_supplementary) && scheduledFor(task as Record<string, unknown>, "test", recordDate),
+          is_test_supplementary: (task.is_test_supplementary || task.legacy_supplementary) && scheduledWithin(task as Record<string, unknown>, "test", startDate, endDate),
           legacy_supplementary: false,
-          is_homework_supplementary: task.is_homework_supplementary && scheduledFor(task as Record<string, unknown>, "homework", recordDate),
+          is_homework_supplementary: task.is_homework_supplementary && scheduledWithin(task as Record<string, unknown>, "homework", startDate, endDate),
         }),
         student: studentById.get(task.student_id) ?? null,
       };
       return normalized;
+    }).filter((row) => row.has_test_supplementary || row.has_homework_supplementary).sort((left, right) => {
+      const classroomCompare = (left.classroom_name_snapshot ?? "강의실 미지정").localeCompare(right.classroom_name_snapshot ?? "강의실 미지정", "ko", { numeric: true, sensitivity: "base" });
+      if (classroomCompare !== 0) return classroomCompare;
+      const studentNameCompare = (left.student?.name ?? "학생 정보 없음").localeCompare(right.student?.name ?? "학생 정보 없음", "ko", { numeric: true, sensitivity: "base" });
+      if (studentNameCompare !== 0) return studentNameCompare;
+      const studentNoCompare = (left.student?.student_no ?? "").localeCompare(right.student?.student_no ?? "", "ko", { numeric: true, sensitivity: "base" });
+      if (studentNoCompare !== 0) return studentNoCompare;
+      const classCompare = left.class_name_snapshot.localeCompare(right.class_name_snapshot, "ko", { numeric: true, sensitivity: "base" });
+      if (classCompare !== 0) return classCompare;
+      const subjectCompare = left.subject_name_snapshot.localeCompare(right.subject_name_snapshot, "ko", { numeric: true, sensitivity: "base" });
+      if (subjectCompare !== 0) return subjectCompare;
+      const supplementCompare = `${left.has_test_supplementary ? "테스트 보충" : ""}${left.has_homework_supplementary ? "과제보충" : ""}`.localeCompare(
+        `${right.has_test_supplementary ? "테스트 보충" : ""}${right.has_homework_supplementary ? "과제보충" : ""}`,
+        "ko",
+        { numeric: true, sensitivity: "base" },
+      );
+      return supplementCompare !== 0 ? supplementCompare : left.id.localeCompare(right.id);
     });
     const summaryMap = new Map<string, { classroomName: string; className: string; subjectName: string; targetCount: number; completedCount: number; incompleteCount: number }>();
     for (const row of rows) {
@@ -120,7 +141,13 @@ export async function GET(request: NextRequest) {
       if (row.completed) summary.completedCount += 1; else summary.incompleteCount += 1;
       summaryMap.set(key, summary);
     }
-    return NextResponse.json({ data: { recordDate, summary: [...summaryMap.values()], rows } });
+    const summary = [...summaryMap.values()].sort((left, right) => {
+      const classroomCompare = left.classroomName.localeCompare(right.classroomName, "ko", { numeric: true, sensitivity: "base" });
+      if (classroomCompare !== 0) return classroomCompare;
+      const classCompare = left.className.localeCompare(right.className, "ko", { numeric: true, sensitivity: "base" });
+      return classCompare !== 0 ? classCompare : left.subjectName.localeCompare(right.subjectName, "ko", { numeric: true, sensitivity: "base" });
+    });
+    return NextResponse.json({ data: { recordDate: startDate === endDate ? startDate : null, startDate, endDate, summary, rows } });
   } catch (error) {
     return errorResponse(error);
   }

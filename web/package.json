@@ -3,30 +3,35 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
-    "start": "next start",
+    "start": "next start --hostname 0.0.0.0",
     "lint": "eslint",
     "test:fixtures": "node scripts/verify-integration-fixtures.mjs",
     "test:academic-periods": "node scripts/academic-period-integration.mjs",
     "test:screens": "node scripts/screen-scenarios.mjs",
     "test:integration": "node scripts/demo-integration.mjs",
-    "test:daily-integration": "node scripts/daily-integration.mjs"
+    "test:daily-integration": "node scripts/daily-integration.mjs",
+    "test:browser-save-fault": "node scripts/browser-save-fault.mjs",
+    "generate:vapid": "node scripts/generate-vapid-keys.mjs",
+    "backup:database": "powershell -ExecutionPolicy Bypass -File scripts/backup-supabase.ps1"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "2.116.0",
-    "next": "16.3.5",
+    "next": "16.4.3",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "web-push": "3.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/web-push": "3.6.4",
     "eslint": "^9",
-    "eslint-config-next": "16.3.5",
+    "eslint-config-next": "16.4.3",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

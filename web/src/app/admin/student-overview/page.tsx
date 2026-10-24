@@ -82,6 +82,7 @@ export default function StudentOverviewPage() {
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [selectedSectionKey, setSelectedSectionKey] = useState<string | null>(null);
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
+  const [vehicleFilter, setVehicleFilter] = useState("all");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -97,11 +98,13 @@ export default function StudentOverviewPage() {
       setOverview(payload?.data ?? null);
       setSelectedSectionKey(null);
       setSelectedGroupKey(null);
+      setVehicleFilter("all");
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "학생 현황을 불러오지 못했습니다.");
       setOverview(null);
       setSelectedSectionKey(null);
       setSelectedGroupKey(null);
+      setVehicleFilter("all");
     } finally {
       setIsLoading(false);
     }
@@ -113,7 +116,24 @@ export default function StudentOverviewPage() {
     void loadOverview();
   }, [loadOverview]);
 
-  const selectedSection = overview?.sections.find((section) => section.key === selectedSectionKey) ?? null;
+  const vehicleSectionKeys = new Set(["vehicles", "vehicleSchedules"]);
+  const vehicleOptions = overview
+    ? [...new Set(overview.sections
+      .filter((section) => vehicleSectionKeys.has(section.key))
+      .flatMap((section) => section.groups.map((group) => group.columns[0]).filter((value): value is string => Boolean(value))))]
+      .sort((left, right) => left.localeCompare(right, "ko", { numeric: true }))
+    : [];
+  const rawSelectedSection = overview?.sections.find((section) => section.key === selectedSectionKey) ?? null;
+  const selectedSection = rawSelectedSection && vehicleSectionKeys.has(rawSelectedSection.key) && vehicleFilter !== "all"
+    ? (() => {
+        const groups = rawSelectedSection.groups.filter((group) => group.columns[0] === vehicleFilter);
+        return {
+          ...rawSelectedSection,
+          groups,
+          distinctStudentCount: new Set(groups.flatMap((group) => group.students.map((student) => student.id))).size,
+        };
+      })()
+    : rawSelectedSection;
   const selectedGroup = selectedSection?.groups.find((group) => group.key === selectedGroupKey) ?? null;
   const missingOperationBundleStudents = selectedSection?.key === missingOperationBundlesSectionKey
     ? selectedSection.groups.flatMap((group) => group.students)
@@ -138,11 +158,13 @@ export default function StudentOverviewPage() {
       const nextCategory = selectedSection.groups[index + 1]?.columns[0] ?? null;
       const isCategoryStart = showCategoryTotals && category !== previousCategory;
       const isCategoryEnd = showCategoryTotals && category !== nextCategory;
+      const isVehicleSection = selectedSection.key === "vehicles" || selectedSection.key === "vehicleSchedules";
+      const toggleGroup = () => setSelectedGroupKey(group.key === selectedGroupKey ? null : group.key);
       return <Fragment key={group.key}>
         {isCategoryStart ? <tr className="border-t-2 border-slate-300 bg-slate-50"><td colSpan={headers.length + 1} className="px-3 py-3 font-bold text-slate-700">{category}</td></tr> : null}
         <tr className={`border-b border-slate-100 last:border-0 ${group.key === selectedGroupKey ? "bg-indigo-50" : "hover:bg-slate-50"}`}>
           {group.columns.map((column, columnIndex) => <td key={`${group.key}-${columnIndex}`} className="px-3 py-3">{columnIndex === 0 ? <button type="button" onClick={() => setSelectedGroupKey(group.key === selectedGroupKey ? null : group.key)} className="w-full text-left font-bold text-indigo-700 hover:underline">{column}</button> : <span>{column}</span>}</td>)}
-          <td className="px-3 py-3 text-right font-bold text-slate-900">{group.count}명</td>
+          <td className="px-3 py-3 text-right font-bold text-slate-900">{isVehicleSection ? <button type="button" onClick={toggleGroup} aria-label={`${group.label} 학생 상세 보기`} className="rounded-md px-2 py-1 text-indigo-700 hover:bg-indigo-100 hover:underline">{group.count}명</button> : <span>{group.count}명</span>}</td>
         </tr>
         {isCategoryEnd ? <tr className="border-b-2 border-slate-300 bg-indigo-50/60"><td colSpan={headers.length} className="px-3 py-3 text-right font-bold text-indigo-800">{category} 합계</td><td className="px-3 py-3 text-right font-bold text-indigo-800">{categoryTotals.get(category) ?? 0}명</td></tr> : null}
       </Fragment>;
@@ -195,7 +217,7 @@ export default function StudentOverviewPage() {
               const selected = section.key === selectedSectionKey;
               const tone = sectionTones[section.key] ?? "border-slate-200 bg-slate-50 text-slate-800";
               const sectionCount = section.distinctStudentCount ?? section.groups.reduce((total, group) => total + group.count, 0);
-              return <button key={section.key} type="button" onClick={() => { setSelectedSectionKey(selected ? null : section.key); setSelectedGroupKey(null); }} className={`min-h-24 rounded-xl border p-4 text-left font-bold transition hover:-translate-y-0.5 hover:shadow-sm ${tone} ${selected ? "ring-2 ring-indigo-300 ring-offset-2" : ""}`}><span className="text-base">{section.title}</span>{section.key === missingOperationBundlesSectionKey ? <span className="mt-2 block text-sm font-extrabold">{sectionCount}명</span> : null}</button>;
+              return <button key={section.key} type="button" onClick={() => { setSelectedSectionKey(selected ? null : section.key); setSelectedGroupKey(null); setVehicleFilter("all"); }} className={`min-h-24 rounded-xl border p-4 text-left font-bold transition hover:-translate-y-0.5 hover:shadow-sm ${tone} ${selected ? "ring-2 ring-indigo-300 ring-offset-2" : ""}`}><span className="text-base">{section.title}</span><span className="mt-2 block text-sm font-extrabold">{sectionCount}명</span></button>;
             })}
           </div>
         </section>
@@ -205,6 +227,7 @@ export default function StudentOverviewPage() {
           {missingOperationBundleStudents.length ? <ul className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{missingOperationBundleStudents.map((student) => <li key={student.id} className="rounded-lg border border-rose-100 bg-rose-50/60 px-4 py-3 font-semibold text-rose-900">{student.name}</li>)}</ul> : <p className="mt-5 rounded-xl bg-emerald-50 px-4 py-8 text-center text-sm font-semibold text-emerald-800">연결 누락된 학생이 없습니다.</p>}
         </section> : selectedSection ? <section className="mt-5 rounded-2xl border border-indigo-100 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-end"><div><p className="text-sm font-bold text-indigo-600">DETAIL STATUS</p><h2 className="mt-1 text-xl font-bold text-slate-950">{selectedSection.title}</h2></div><button type="button" onClick={() => { setSelectedSectionKey(null); setSelectedGroupKey(null); }} className="text-sm font-semibold text-slate-500 hover:text-slate-800">닫기</button></div>
+          {vehicleSectionKeys.has(selectedSection.key) ? <div className="mt-5 flex flex-wrap items-center gap-3"><label htmlFor="student-overview-vehicle-filter" className="text-sm font-bold text-slate-700">차량 필터</label><select id="student-overview-vehicle-filter" value={vehicleFilter} onChange={(event) => { setVehicleFilter(event.target.value); setSelectedGroupKey(null); }} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500"><option value="all">전체 차량</option>{vehicleOptions.map((vehicleName) => <option key={vehicleName} value={vehicleName}>{vehicleName}</option>)}</select></div> : null}
           {selectedSection.groups.length ? <div className="mt-5 overflow-x-auto"><table className="min-w-[680px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr>{(sectionColumns[selectedSection.key] ?? ["현황"]).map((column) => <th key={column} className="px-3 py-3 font-semibold">{column}</th>)}<th className="px-3 py-3 text-right font-semibold">학생수</th></tr></thead><tbody>{renderDetailRows()}</tbody></table></div> : <p className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">표시할 세부 현황이 없습니다.</p>}
         </section> : null}
 

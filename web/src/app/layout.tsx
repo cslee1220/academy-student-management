@@ -41,11 +41,6 @@ export default function RootLayout({
           </div>
         </header>
         <main className="flex-1">{children}</main>
-        <footer className="border-t border-slate-200 bg-white">
-          <div className="mx-auto max-w-6xl px-6 py-5 text-sm text-slate-500">
-            현재는 화면 구조를 확인하는 초기 단계입니다.
-          </div>
-        </footer>
       </body>
     </html>
   );

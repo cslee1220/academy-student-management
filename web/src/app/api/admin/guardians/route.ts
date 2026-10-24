@@ -8,6 +8,7 @@ import {
   authEmailForGuardian,
   createGuardianAuthCode,
   createGuardianInviteToken,
+  GUARDIAN_INVITE_MAX_USES,
   GUARDIAN_INVITE_VALIDITY_MS,
   hashGuardianAuthCode,
   hashGuardianInviteToken,
@@ -97,7 +98,7 @@ export async function GET(request: NextRequest) {
           .eq("academy_id", academyId),
         admin
           .from("guardian_invites")
-          .select("id, student_id, guardian_id, expires_at, used_at, revoked_at, attempt_count, locked_until, created_at")
+          .select("id, student_id, guardian_id, expires_at, use_count, used_at, revoked_at, attempt_count, locked_until, created_at")
           .eq("academy_id", academyId)
           .order("created_at", { ascending: false }),
       ]);
@@ -276,6 +277,7 @@ export async function POST(request: NextRequest) {
       .eq("guardian_id", guardianId)
       .eq("student_id", studentId)
       .is("used_at", null)
+      .lt("use_count", GUARDIAN_INVITE_MAX_USES)
       .is("revoked_at", null);
     if (pendingInviteRevokeError) throw new HttpError(500, "invite_revoke_failed", "기존 접속 링크를 취소하지 못했습니다.");
 
@@ -320,6 +322,8 @@ export async function POST(request: NextRequest) {
         inviteUrl: `${getAppOrigin(request)}/invite?token=${encodeURIComponent(inviteToken)}`,
         authCode,
         expiresAt,
+        useCount: 0,
+        maxUses: GUARDIAN_INVITE_MAX_USES,
         message: "접속 링크와 인증번호는 화면에 한 번만 표시됩니다. 보호자에게 안전하게 전달해 주세요.",
       },
     });

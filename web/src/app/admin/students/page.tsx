@@ -6,6 +6,7 @@ import { FormEvent, Suspense, useCallback, useEffect, useRef, useState } from "r
 
 import StudentSearchSelect from "@/components/admin/student-search-select";
 import ExamBatchAssignmentPanel from "@/components/admin/exam-batch-assignment-panel";
+import ClassBatchAssignmentPanel from "@/components/admin/class-batch-assignment-panel";
 import AdminLogoutButton from "@/components/admin/admin-logout-button";
 import { GUARDIAN_RELATIONSHIPS } from "@/lib/guardian-relations";
 import { redirectAdminOnAuthFailure } from "@/lib/admin-session";
@@ -24,6 +25,7 @@ type Student = {
   level: string | null;
   classroom_id: string | null;
   vehicle_id: string | null;
+  student_phone: string | null;
   guardian1_name: string | null;
   phone: string | null;
   phone2: string | null;
@@ -95,7 +97,7 @@ type GuardianLink = {
   is_active: boolean;
   access_revoked_at: string | null;
   guardian: { display_name: string; phone: string | null; email: string | null; password_setup_required: boolean; is_login_active: boolean; guardian_access_revoked_at: string | null } | null;
-  invite: { id: string; expires_at: string; used_at: string | null; revoked_at: string | null; attempt_count: number; locked_until: string | null; created_at: string } | null;
+  invite: { id: string; expires_at: string; use_count: number; used_at: string | null; revoked_at: string | null; attempt_count: number; locked_until: string | null; created_at: string } | null;
 };
 type StatusHistory = {
   id: string;
@@ -133,6 +135,8 @@ type ApiResult = {
     inviteUrl?: string;
     authCode?: string;
     expiresAt?: string;
+    useCount?: number;
+    maxUses?: number;
     inviteType?: "activation" | "access" | "password_reset";
     studentName?: string;
     message?: string;
@@ -161,8 +165,11 @@ function addDays(dateString: string, days: number) {
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
-function isActiveAssignmentOnDate(assignment: Assignment, date: string) {
-  return assignment.status === "active" && assignment.start_date <= date && (!assignment.end_date || assignment.end_date >= date);
+function isAssignmentValidOnDate(assignment: Assignment, date: string) {
+  return assignment.start_date <= date && (!assignment.end_date || assignment.end_date >= date);
+}
+function isRegularAssignment(assignment: Assignment, classes: ClassRow[]) {
+  return assignment.assignment_role !== "exam" && classes.find((row) => row.id === assignment.class_id)?.category !== "exam_prep";
 }
 function formatStudentPhone(value: string) {
   const digits = value.replace(/\D/g, "").replace(/^010/, "").slice(0, 8);
@@ -208,6 +215,9 @@ function guardianInviteMessage(data: NonNullable<ApiResult["data"]>) {
     `${studentName} 접속 인증번호`,
     data.authCode ?? "",
     "",
+    "접속 링크는 발급일로부터 60일 동안 최대 5회까지 사용할 수 있습니다.",
+    "재발급하면 기존 접속 링크는 즉시 취소됩니다.",
+    "",
     "접속 링크",
     `안드로이드: ${data.inviteUrl ?? ""}`,
     `아이폰: ${data.inviteUrl ?? ""}`,
@@ -239,11 +249,16 @@ function writeRecentStudentId(academyId: string, studentId: string) {
 function StudentsPageContent() {
   const searchParams = useSearchParams();
   const isExamBatch = searchParams.get("section") === "exam_batch";
+  const isClassBatch = searchParams.get("section") === "class_batch";
   const [academyId, setAcademyId] = useState("");
   const [data, setData] = useState<AcademicData>(emptyData);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [studentFormError, setStudentFormError] = useState("");
+  const [studentFormMessage, setStudentFormMessage] = useState("");
   const [classMoveError, setClassMoveError] = useState("");
+  const [operationGroupError, setOperationGroupError] = useState("");
+  const [operationGroupMessage, setOperationGroupMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [isStudentListOpen, setIsStudentListOpen] = useState(false);
@@ -256,12 +271,16 @@ function StudentsPageContent() {
   const [originalStatus, setOriginalStatus] = useState("enrolled");
   const [studentNo, setStudentNo] = useState("");
   const [studentName, setStudentName] = useState("");
+  const [originalStudentName, setOriginalStudentName] = useState("");
+  const [studentNameError, setStudentNameError] = useState("");
+  const [studentNameMessage, setStudentNameMessage] = useState("");
   const [schoolLevel, setSchoolLevel] = useState<School["school_level"] | "">("");
   const [schoolId, setSchoolId] = useState("");
   const [grade, setGrade] = useState("");
   const [registeredAt, setRegisteredAt] = useState(today);
   const [classStartDate, setClassStartDate] = useState(today);
   const [level, setLevel] = useState("");
+  const [studentPhone, setStudentPhone] = useState("");
   const [vehicleId, setVehicleId] = useState("");
   const [guardian1Name, setGuardian1Name] = useState("");
   const [phone, setPhone] = useState("");
@@ -273,6 +292,9 @@ function StudentsPageContent() {
   const [statusEffectiveDate, setStatusEffectiveDate] = useState(today);
   const [expectedReturnDate, setExpectedReturnDate] = useState("");
   const [withdrawalType, setWithdrawalType] = useState("");
+  const [isReturnDateEditing, setIsReturnDateEditing] = useState(false);
+  const [returnDateError, setReturnDateError] = useState("");
+  const [returnDateMessage, setReturnDateMessage] = useState("");
 
   const [assignmentId, setAssignmentId] = useState<string | null>(null);
   const [assignmentClassId, setAssignmentClassId] = useState("");
@@ -291,6 +313,8 @@ function StudentsPageContent() {
   const [moveDateEditValue, setMoveDateEditValue] = useState("");
   const [isFutureAssignmentDateEditing, setIsFutureAssignmentDateEditing] = useState(false);
   const [futureAssignmentDateEditValue, setFutureAssignmentDateEditValue] = useState("");
+  const [futureAssignmentEditClassId, setFutureAssignmentEditClassId] = useState("");
+  const [isFutureAssignmentEditConfirming, setIsFutureAssignmentEditConfirming] = useState(false);
   const [futureAssignmentDateReason, setFutureAssignmentDateReason] = useState("");
   const [operationSchedules, setOperationSchedules] = useState<OperationSchedule[]>([]);
   const [isLoadingOperationBlocks, setIsLoadingOperationBlocks] = useState(false);
@@ -304,6 +328,7 @@ function StudentsPageContent() {
   const [duplicateCheckKey, setDuplicateCheckKey] = useState("");
   const [duplicateMatches, setDuplicateMatches] = useState<DuplicateStudent[]>([]);
   const [isClassPickerOpen, setIsClassPickerOpen] = useState(false);
+  const isReentryAssignmentMode = Boolean(studentId && originalStatus !== "enrolled" && currentStatus === "enrolled");
 
   useEffect(() => {
     if (!isClassPickerOpen) return;
@@ -375,6 +400,17 @@ function StudentsPageContent() {
     setError("");
     setIsLoading(true);
     try {
+      const rolloverResponse = await fetch("/api/admin/students", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resource: "rollover_assignments", ...(academyId ? { academyId } : {}) }),
+      });
+      const rolloverResult = await readResult(rolloverResponse);
+      if (redirectIfUnauthorized(rolloverResponse)) return;
+      if (!rolloverResponse.ok || !rolloverResult?.data) {
+        setError(rolloverResult?.error?.message ?? "학사기간 배정을 보정하지 못했습니다.");
+        return;
+      }
       const response = await fetch(academyId ? `/api/admin/students?academyId=${encodeURIComponent(academyId)}` : "/api/admin/students", { cache: "no-store" });
       const result = await readResult(response);
       if (redirectIfUnauthorized(response)) return;
@@ -458,10 +494,11 @@ function StudentsPageContent() {
   }
 
   async function checkDuplicate(): Promise<boolean> {
-    setError("");
-    setMessage("");
+    const setDuplicateError = setStudentFormError;
+    setDuplicateError("");
+    setStudentFormMessage("");
     if (!studentName.trim()) {
-      setError("중복 확인을 위해 학생 이름을 입력해 주세요.");
+      setDuplicateError("중복 확인을 위해 학생 이름을 입력해 주세요.");
       return false;
     }
     setIsLoading(true);
@@ -482,7 +519,7 @@ function StudentsPageContent() {
       const result = await readResult(response);
       if (redirectIfUnauthorized(response)) return false;
       if (!response.ok) {
-        setError(result?.error?.message ?? "중복 확인을 처리하지 못했습니다.");
+        setDuplicateError(result?.error?.message ?? "중복 확인을 처리하지 못했습니다.");
         return false;
       }
       const duplicates = result?.data?.duplicates ?? [];
@@ -490,14 +527,48 @@ function StudentsPageContent() {
       setDuplicateCheckKey(duplicates.length ? "" : getDuplicateCheckKey());
       if (duplicates.length) {
         window.alert("같은 이름의 학생이 있습니다. 확인하세요");
-        setMessage("같은 이름의 학생이 있습니다. 확인하세요");
+        setStudentFormMessage("같은 이름의 학생이 있습니다. 확인하세요");
       } else {
-        setMessage("신규등록가능");
+        setStudentFormMessage("신규등록가능");
       }
       return duplicates.length === 0;
     } catch {
-      setError("중복 확인 요청을 처리하지 못했습니다.");
+      setDuplicateError("중복 확인 요청을 처리하지 못했습니다.");
       return false;
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function saveStudentName() {
+    if (!studentId || !studentName.trim() || studentName.trim() === originalStudentName) return;
+    setIsLoading(true);
+    setStudentNameError("");
+    setStudentNameMessage("");
+    try {
+      const response = await fetch("/api/admin/students", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          academyId,
+          resource: "student_name",
+          id: studentId,
+          name: studentName,
+        }),
+      });
+      const result = await readResult(response);
+      if (redirectIfUnauthorized(response)) return;
+      if (!response.ok) {
+        setStudentNameError(result?.error?.message ?? "학생 이름을 수정하지 못했습니다.");
+        return;
+      }
+      const savedName = studentName.trim();
+      setStudentName(savedName);
+      setOriginalStudentName(savedName);
+      setStudentNameMessage("학생 이름을 수정했습니다.");
+      await loadData();
+    } catch {
+      setStudentNameError("학생 이름 수정 요청을 처리하지 못했습니다.");
     } finally {
       setIsLoading(false);
     }
@@ -506,32 +577,40 @@ function StudentsPageContent() {
   async function saveStudent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setStudentFormError("");
+    setStudentFormMessage("");
     setMessage("");
     if (isClassMoveEditing || isMoveDateEditing || isOperationGroupEditing) {
-      setError(isMoveDateEditing ? "이동일 수정 중에는 이동일 변경 저장 버튼을 사용해 주세요." : isOperationGroupEditing ? "수업 순서 변경 중에는 수업 순서 변경 저장 버튼을 사용해 주세요." : "반 이동 중에는 아래 반 이동 저장 버튼을 사용해 주세요.");
+      setStudentFormError(isMoveDateEditing ? "이동일 수정 중에는 이동일 변경 저장 버튼을 사용해 주세요." : isOperationGroupEditing ? "수업 순서 변경 중에는 수업 순서 변경 저장 버튼을 사용해 주세요." : "반 이동 중에는 아래 반 이동 저장 버튼을 사용해 주세요.");
       return;
     }
     const isNewStudent = !studentId;
     const statusChanged = Boolean(studentId) && originalStatus !== currentStatus;
+    const needsNewActiveAssignment = Boolean(studentId && currentStatus === "enrolled" && (!assignmentId || isReentryAssignmentMode));
     let duplicateCheckPassed = isNewStudent && duplicateCheckKey === getDuplicateCheckKey();
     if (isNewStudent && (!schoolLevel || !schoolId || !grade || !level || !guardian1Name.trim() || !phone || !phoneRelationship || !assignmentClassId)) {
-      setError("보호자2를 제외한 학생 정보와 보호자1 정보, 반을 모두 입력해 주세요.");
+      setStudentFormError("보호자2를 제외한 학생 정보와 보호자1 정보, 반을 모두 입력해 주세요.");
       return;
     }
     if (isNewStudent && !duplicateCheckPassed) {
       duplicateCheckPassed = await checkDuplicate();
       if (!duplicateCheckPassed) return;
+      setStudentFormMessage("");
     }
     if (assignmentClassId && !operationSchedules.length) {
-      setError("관리자 설정에서 요일별 공통 수업 운영시간을 먼저 저장해 주세요.");
+      setStudentFormError("관리자 설정에서 요일별 공통 수업 운영시간을 먼저 저장해 주세요.");
       return;
     }
     if (statusChanged && !statusEffectiveDate) {
-      setError("상태를 변경할 때는 적용일이 필요합니다.");
+      setStudentFormError("상태를 변경할 때는 적용일이 필요합니다.");
       return;
     }
     if (statusChanged && currentStatus === "withdrawn" && !withdrawalType) {
-      setError("퇴원 상태에는 퇴원 유형이 필요합니다.");
+      setStudentFormError("퇴원 상태에는 퇴원 유형이 필요합니다.");
+      return;
+    }
+    if (needsNewActiveAssignment && !assignmentClassId) {
+      setStudentFormError("재원 학생은 새로 배정할 정규반을 선택해 주세요.");
       return;
     }
     setIsLoading(true);
@@ -551,6 +630,7 @@ function StudentsPageContent() {
           registeredAt,
           classStartDate,
           level,
+          studentPhone,
           vehicleId: vehicleId || null,
           guardian1Name,
           phone,
@@ -565,7 +645,7 @@ function StudentsPageContent() {
       const result = await readResult(response);
       if (redirectIfUnauthorized(response)) return;
       if (!response.ok) {
-        setError(result?.error?.message ?? "학생 정보를 저장하지 못했습니다.");
+        setStudentFormError(result?.error?.message ?? "학생 정보를 저장하지 못했습니다.");
         return;
       }
       const savedStudentId = result?.data?.id ?? studentId;
@@ -584,33 +664,81 @@ function StudentsPageContent() {
       }
       let operationAssignmentCount = 0;
       if (assignmentClassId && savedStudentId) {
+        const useReentryAssignment = isReentryAssignmentMode;
+        const reentryStartDate = useReentryAssignment
+          ? statusEffectiveDate
+          : !assignmentId && studentId && currentStatus === "enrolled"
+            ? (statusChanged ? statusEffectiveDate : today)
+            : undefined;
         const assignmentResponse = await fetch("/api/admin/students", {
-          method: assignmentId ? "PATCH" : "POST",
+          method: useReentryAssignment || !assignmentId ? "POST" : "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             academyId,
-            resource: "assignments",
-            ...(assignmentId ? { id: assignmentId } : {}),
+            resource: useReentryAssignment ? "reentry_assignment" : "assignments",
+            ...(assignmentId && !useReentryAssignment ? { id: assignmentId } : {}),
             studentId: savedStudentId,
             classId: assignmentClassId,
-            ...(!assignmentId ? { operationGroup } : {}),
+            ...(!assignmentId || useReentryAssignment ? { operationGroup, ...(reentryStartDate ? { startDate: reentryStartDate } : {}) } : {}),
+            ...(useReentryAssignment ? { previousStatus: originalStatus } : {}),
           }),
         });
         const assignmentResult = await readResult(assignmentResponse);
         if (redirectIfUnauthorized(assignmentResponse)) return;
         if (!assignmentResponse.ok) {
-          setError(assignmentResult?.error?.message ?? "학생 정보는 저장했지만 반 배정을 저장하지 못했습니다.");
+          const assignmentErrorMessage = assignmentResult?.error?.message ?? "학생 정보는 저장했지만 반 배정을 저장하지 못했습니다.";
           await loadData();
+          setStudentFormError(assignmentErrorMessage);
           return;
         }
         operationAssignmentCount = 1;
       }
-      setMessage(isNewStudent ? `${duplicateCheckPassed ? "신규등록가능 · " : ""}학생을 등록했습니다. 학생 ID: ${result?.data?.student_no ?? "자동 생성 완료"}${operationAssignmentCount ? " 운영 블록 자동 매칭도 완료했습니다." : ""} 보호자 접속 발급 대상으로 자동 선택되었습니다.` : "학생 정보와 반 배정을 수정했습니다.");
+      const operationAssignmentMessage = operationAssignmentCount ? " 운영 블록 자동 매칭도 완료했습니다." : "";
+      setStudentFormMessage(isNewStudent
+        ? `${duplicateCheckPassed ? "신규등록가능 · " : ""}학생을 등록했습니다. 학생 ID: ${result?.data?.student_no ?? "자동 생성 완료"}${operationAssignmentMessage} 보호자 접속 발급 대상으로 자동 선택되었습니다.`
+        : `학생 정보와 반 배정을 수정했습니다.${operationAssignmentMessage}`);
       resetStudentForm();
       await loadData();
       await loadOperationData(academyId);
     } catch {
-      setError("학생 저장 요청을 처리하지 못했습니다.");
+      setStudentFormError("학생 저장 요청을 처리하지 못했습니다.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function saveReturnDate() {
+    if (!studentId || currentStatus !== "paused") return;
+    const currentPausedHistory = data.statusHistory
+      .filter((history) => history.student_id === studentId && history.next_status === "paused")
+      .sort((left, right) => right.effective_date.localeCompare(left.effective_date) || right.created_at.localeCompare(left.created_at))[0] ?? null;
+    if (!currentPausedHistory) {
+      setReturnDateError("현재 휴원 이력을 찾을 수 없습니다. 학생 정보를 새로 조회해 주세요.");
+      return;
+    }
+    setIsLoading(true);
+    setReturnDateError("");
+    setReturnDateMessage("");
+    try {
+      const response = await fetch("/api/admin/students", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          academyId,
+          resource: "status_history",
+          id: currentPausedHistory.id,
+          studentId,
+          expectedReturnDate: expectedReturnDate || null,
+        }),
+      });
+      const result = await readResult(response);
+      if (redirectIfUnauthorized(response)) return;
+      if (!response.ok) throw new Error(result?.error?.message ?? "복귀 예정일을 저장하지 못했습니다.");
+      setIsReturnDateEditing(false);
+      setReturnDateMessage(expectedReturnDate ? "복귀 예정일을 수정했습니다." : "복귀 예정일을 미정으로 변경했습니다.");
+      await loadData();
+    } catch (reason) {
+      setReturnDateError(reason instanceof Error ? reason.message : "복귀 예정일을 저장하지 못했습니다.");
     } finally {
       setIsLoading(false);
     }
@@ -695,7 +823,7 @@ function StudentsPageContent() {
         return;
       }
       setIssuedInvite(result.data);
-      setMessage(result.data.message ?? "기존 미사용 접속 링크를 취소하고 새 접속 링크를 발급했습니다.");
+      setMessage(result.data.message ?? "기존 사용 가능한 접속 링크를 취소하고 새 접속 링크를 발급했습니다.");
       await loadData();
     } catch {
       setError("보호자 접속 링크 재발급 요청을 처리하지 못했습니다.");
@@ -735,12 +863,16 @@ function StudentsPageContent() {
     setOriginalStatus("enrolled");
     setStudentNo("");
     setStudentName("");
+    setOriginalStudentName("");
+    setStudentNameError("");
+    setStudentNameMessage("");
     setSchoolLevel("");
     setSchoolId("");
     setGrade("");
     setRegisteredAt(today);
     setClassStartDate(data.terms.find((term) => term.is_current && !term.is_archived)?.start_date ?? today);
     setLevel("");
+    setStudentPhone("");
     setVehicleId("");
     setGuardian1Name("");
     setPhone("");
@@ -752,6 +884,9 @@ function StudentsPageContent() {
     setStatusEffectiveDate(today);
     setExpectedReturnDate("");
     setWithdrawalType("");
+    setIsReturnDateEditing(false);
+    setReturnDateError("");
+    setReturnDateMessage("");
     setAssignmentId(null);
     setAssignmentClassId("");
     setOperationTypeId(data.operationTypes.find((operationType) => operationType.code === "regular" && operationType.is_active)?.id ?? data.operationTypes.find((operationType) => operationType.is_default && operationType.is_active)?.id ?? "");
@@ -770,14 +905,18 @@ function StudentsPageContent() {
     setMoveDateEditValue("");
     setIsFutureAssignmentDateEditing(false);
     setFutureAssignmentDateEditValue("");
+    setFutureAssignmentEditClassId("");
+    setIsFutureAssignmentEditConfirming(false);
     setFutureAssignmentDateReason("");
     setDuplicateCheckKey("");
     setDuplicateMatches([]);
+    setStudentFormError("");
   }
 
   function startNewStudentRegistration(name = "") {
     resetStudentForm();
     setError("");
+    setStudentFormMessage("");
     setMessage("");
     setGuardianStudentId("");
     setGuardianContactKey("");
@@ -787,10 +926,15 @@ function StudentsPageContent() {
     setIssuedInvite(null);
     setGuardianInviteNotice("");
     setStudentName(name);
+    setOriginalStudentName("");
+    setStudentNameError("");
+    setStudentNameMessage("");
     setIsStudentSearchOpen(Boolean(name.trim()));
   }
 
   function editStudent(student: Student) {
+    setStudentFormError("");
+    setStudentFormMessage("");
     setSelectedStudentId(student.id);
     setGuardianStudentId(student.id);
     applyGuardianContact(student);
@@ -798,12 +942,16 @@ function StudentsPageContent() {
     setOriginalStatus(student.current_status);
     setStudentNo(student.student_no);
     setStudentName(student.name);
+    setOriginalStudentName(student.name);
+    setStudentNameError("");
+    setStudentNameMessage("");
     setSchoolLevel(student.school_level ?? "");
     setSchoolId(student.school_id ?? "");
     setGrade(student.grade ?? "");
     setRegisteredAt(student.registered_at);
     setClassStartDate(student.class_start_date ?? student.registered_at);
     setLevel(student.level ?? "");
+    setStudentPhone(student.student_phone ?? "");
     setVehicleId(student.vehicle_id ?? "");
     setGuardian1Name(student.guardian1_name ?? "");
     setPhone(student.phone ?? "");
@@ -813,16 +961,27 @@ function StudentsPageContent() {
     setPhone2Relationship(student.phone2_relationship ?? "");
     setCurrentStatus(student.current_status);
     setStatusEffectiveDate(today);
-    setExpectedReturnDate("");
+    const currentPausedHistory = data.statusHistory
+      .filter((history) => history.student_id === student.id && history.next_status === "paused")
+      .sort((left, right) => right.effective_date.localeCompare(left.effective_date) || right.created_at.localeCompare(left.created_at))[0] ?? null;
+    setExpectedReturnDate(currentPausedHistory?.expected_return_date ?? "");
     setWithdrawalType("");
-    const currentAssignment = data.assignments.find((assignment) => assignment.student_id === student.id && isActiveAssignmentOnDate(assignment, today));
+    setIsReturnDateEditing(false);
+    setReturnDateError("");
+    setReturnDateMessage("");
+    const latestDatedAssignment = data.assignments
+      .filter((assignment) => assignment.student_id === student.id && isRegularAssignment(assignment, data.classes) && isAssignmentValidOnDate(assignment, today))
+      .sort((left, right) => right.start_date.localeCompare(left.start_date))[0] ?? null;
+    const currentAssignment = data.assignments
+      .filter((assignment) => assignment.student_id === student.id && isRegularAssignment(assignment, data.classes) && assignment.status === "active" && isAssignmentValidOnDate(assignment, today))
+      .sort((left, right) => right.start_date.localeCompare(left.start_date))[0] ?? null;
     const upcomingStudentAssignment = data.assignments
-      .filter((assignment) => assignment.student_id === student.id && assignment.status === "active" && assignment.start_date > today)
+      .filter((assignment) => assignment.student_id === student.id && isRegularAssignment(assignment, data.classes) && assignment.status === "active" && assignment.start_date > today)
       .sort((left, right) => left.start_date.localeCompare(right.start_date))[0] ?? null;
     setAssignmentId(currentAssignment?.id ?? null);
     setAssignmentClassId(currentAssignment?.class_id ?? "");
-    setOperationTypeId(currentAssignment?.operation_type_id ?? data.operationTypes.find((operationType) => operationType.code === "regular" && operationType.is_active)?.id ?? data.operationTypes.find((operationType) => operationType.is_default && operationType.is_active)?.id ?? "");
-    const currentOperationGroup = currentAssignment?.operation_group ?? "A";
+    setOperationTypeId(currentAssignment?.operation_type_id ?? latestDatedAssignment?.operation_type_id ?? data.operationTypes.find((operationType) => operationType.code === "regular" && operationType.is_active)?.id ?? data.operationTypes.find((operationType) => operationType.is_default && operationType.is_active)?.id ?? "");
+    const currentOperationGroup = currentAssignment?.operation_group ?? latestDatedAssignment?.operation_group ?? "A";
     setOperationGroup(currentOperationGroup);
     setIsOperationGroupEditing(false);
     setOperationGroupEditValue(currentOperationGroup);
@@ -838,6 +997,8 @@ function StudentsPageContent() {
     setMoveDateEditValue("");
     setIsFutureAssignmentDateEditing(false);
     setFutureAssignmentDateEditValue(upcomingStudentAssignment?.start_date ?? "");
+    setFutureAssignmentEditClassId(upcomingStudentAssignment?.class_id ?? "");
+    setIsFutureAssignmentEditConfirming(false);
     setFutureAssignmentDateReason("");
     setDuplicateCheckKey("");
     setDuplicateMatches([]);
@@ -863,11 +1024,16 @@ function StudentsPageContent() {
     setMoveDateEditValue("");
     setIsFutureAssignmentDateEditing(false);
     setFutureAssignmentDateEditValue("");
+    setFutureAssignmentEditClassId("");
+    setIsFutureAssignmentEditConfirming(false);
     setFutureAssignmentDateReason("");
   }
 
   const selectedStudent = data.students.find((student) => student.id === selectedStudentId) ?? null;
   const selectedHistory = data.statusHistory.filter((history) => history.student_id === selectedStudentId);
+  const currentPausedHistory = selectedHistory
+    .filter((history) => history.next_status === "paused")
+    .sort((left, right) => right.effective_date.localeCompare(left.effective_date) || right.created_at.localeCompare(left.created_at))[0] ?? null;
   const selectedGuardians = data.guardians.filter((link) => link.student_id === selectedStudentId);
   const availableSchools = data.schools.filter((school) => !schoolLevel || school.school_level === schoolLevel);
   const availableLevels = data.levels.filter((option) => option.is_active || option.name === level);
@@ -910,7 +1076,6 @@ function StudentsPageContent() {
       if (leftEnd !== rightEnd) return leftEnd.localeCompare(rightEnd);
       return left.name.localeCompare(right.name, "ko");
     });
-  const selectedClassIdForDisplay = isClassMoveEditing ? classMoveTargetId : assignmentClassId;
   const classGridColumnsClassName = ({
     1: "grid-cols-1",
     2: "grid-cols-1 sm:grid-cols-2",
@@ -920,32 +1085,46 @@ function StudentsPageContent() {
   } as Record<number, string>)[data.studentClassGridColumns] ?? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5";
   const classById = new Map(data.classes.map((row) => [row.id, row]));
   const currentActiveAssignment = studentId
-    ? data.assignments.find((assignment) => assignment.student_id === studentId && isActiveAssignmentOnDate(assignment, today)) ?? null
+    ? data.assignments
+      .filter((assignment) => assignment.student_id === studentId && isRegularAssignment(assignment, data.classes) && isAssignmentValidOnDate(assignment, today))
+      .sort((left, right) => right.start_date.localeCompare(left.start_date))[0] ?? null
     : null;
   const upcomingAssignment = studentId
     ? data.assignments
-      .filter((assignment) => assignment.student_id === studentId && assignment.status === "active" && assignment.start_date > today)
+      .filter((assignment) => assignment.student_id === studentId && isRegularAssignment(assignment, data.classes) && assignment.status === "active" && assignment.start_date > today)
       .sort((left, right) => left.start_date.localeCompare(right.start_date))[0] ?? null
     : null;
   const upcomingClass = upcomingAssignment ? classById.get(upcomingAssignment.class_id) ?? null : null;
   const upcomingClassSchedule = upcomingClass
     ? operationSchedules.find((schedule) => schedule.id === upcomingClass.operation_schedule_id)
     : undefined;
+  const futureAssignmentEditClass = futureAssignmentEditClassId
+    ? classById.get(futureAssignmentEditClassId) ?? null
+    : upcomingClass;
+  const futureAssignmentEditClassSchedule = futureAssignmentEditClass
+    ? operationSchedules.find((schedule) => schedule.id === futureAssignmentEditClass.operation_schedule_id)
+    : undefined;
   const upcomingAssignmentTerm = upcomingAssignment
     ? data.terms.find((term) => term.id === upcomingAssignment.term_id) ?? null
     : null;
   const examAssignments = studentId
     ? data.assignments
-      .filter((assignment) => assignment.student_id === studentId && assignment.status === "active" && (assignment.assignment_role === "exam" || classById.get(assignment.class_id)?.category === "exam_prep"))
+      .filter((assignment) => assignment.student_id === studentId && ["active", "ended"].includes(assignment.status) && (assignment.assignment_role === "exam" || classById.get(assignment.class_id)?.category === "exam_prep"))
       .sort((left, right) => left.start_date.localeCompare(right.start_date))
     : [];
   const currentExamAssignment = examAssignments
-    .filter((assignment) => isActiveAssignmentOnDate(assignment, today))
+    .filter((assignment) => isAssignmentValidOnDate(assignment, today))
     .sort((left, right) => right.start_date.localeCompare(left.start_date))[0] ?? null;
   const upcomingExamAssignment = examAssignments.find((assignment) => assignment.start_date > today) ?? null;
   const displayedExamAssignment = currentExamAssignment ?? upcomingExamAssignment;
   const displayedExamClass = displayedExamAssignment ? classById.get(displayedExamAssignment.class_id) ?? null : null;
-  const classPickerDisabled = Boolean(assignmentId) && !isClassMoveEditing;
+  const displayedExamSchedule = displayedExamClass
+    ? operationSchedules.find((schedule) => schedule.id === displayedExamClass.operation_schedule_id) ?? null
+    : null;
+  const displayedExamClassrooms = displayedExamClass ? classroomNamesByClassId.get(displayedExamClass.id) ?? [] : [];
+  const currentAssignmentIsEditable = currentActiveAssignment?.status === "active";
+  const selectedClassIdForDisplay = isClassMoveEditing ? classMoveTargetId : assignmentClassId || currentActiveAssignment?.class_id || "";
+  const classPickerDisabled = currentStatus !== "enrolled" || (currentAssignmentIsEditable && !isClassMoveEditing && !isReentryAssignmentMode);
   const selectedClass = availableClasses.find((row) => row.id === selectedClassIdForDisplay) ?? data.classes.find((row) => row.id === selectedClassIdForDisplay) ?? null;
   const selectedClassSchedule = selectedClass
     ? operationSchedules.find((schedule) => schedule.id === selectedClass.operation_schedule_id)
@@ -964,7 +1143,7 @@ function StudentsPageContent() {
   const moveDateMinimumText = nextAssignmentStart > today ? nextAssignmentStart : today;
   const previousAssignmentForMove = currentActiveAssignment
     ? data.assignments
-      .filter((assignment) => assignment.student_id === studentId && assignment.term_id === currentActiveAssignment.term_id && assignment.status === "ended" && assignment.end_date === addDays(currentActiveAssignment.start_date, -1) && assignment.class_id !== currentActiveAssignment.class_id)
+      .filter((assignment) => assignment.student_id === studentId && isRegularAssignment(assignment, data.classes) && assignment.term_id === currentActiveAssignment.term_id && assignment.status === "ended" && assignment.end_date === addDays(currentActiveAssignment.start_date, -1) && assignment.class_id !== currentActiveAssignment.class_id)
       .sort((left, right) => right.start_date.localeCompare(left.start_date))[0] ?? null
     : null;
   const canEditMoveDate = Boolean(currentActiveAssignment && previousAssignmentForMove && currentActiveAssignment.start_date > today);
@@ -1003,6 +1182,8 @@ function StudentsPageContent() {
     setIsMoveDateEditing(false);
     setMoveDateEditValue("");
     setFutureAssignmentDateEditValue(upcomingAssignment.start_date);
+    setFutureAssignmentEditClassId(upcomingAssignment.class_id);
+    setIsFutureAssignmentEditConfirming(false);
     setFutureAssignmentDateReason("");
     setIsFutureAssignmentDateEditing(true);
   }
@@ -1010,6 +1191,8 @@ function StudentsPageContent() {
   function cancelFutureAssignmentDateEdit() {
     setIsFutureAssignmentDateEditing(false);
     setFutureAssignmentDateEditValue(upcomingAssignment?.start_date ?? "");
+    setFutureAssignmentEditClassId(upcomingAssignment?.class_id ?? "");
+    setIsFutureAssignmentEditConfirming(false);
     setFutureAssignmentDateReason("");
     setError("");
     setClassMoveError("");
@@ -1021,11 +1204,20 @@ function StudentsPageContent() {
       setError("반배정일은 오늘부터 예정 반이 속한 학기 종료일까지 지정해 주세요.");
       return;
     }
-    if (futureAssignmentDateEditValue === upcomingAssignment.start_date) {
-      setError("변경할 반배정일이 기존 날짜와 같습니다.");
+    if (!futureAssignmentEditClassId) {
+      setError("변경할 반을 선택해 주세요.");
       return;
     }
-    if (!window.confirm("예정 반의 반배정일을 변경하시겠습니까? 같은 날짜의 다른 반 배정이 있으면 저장이 차단됩니다.")) return;
+    if (futureAssignmentDateEditValue === upcomingAssignment.start_date && futureAssignmentEditClassId === upcomingAssignment.class_id) {
+      setError("변경할 반 또는 반배정일이 기존 내용과 같습니다.");
+      return;
+    }
+    if (!isFutureAssignmentEditConfirming) {
+      setError("");
+      setMessage("");
+      setIsFutureAssignmentEditConfirming(true);
+      return;
+    }
     setIsLoading(true);
     setError("");
     setMessage("");
@@ -1036,6 +1228,7 @@ function StudentsPageContent() {
         assignmentId: upcomingAssignment.id,
         studentId,
         startDate: futureAssignmentDateEditValue,
+        targetClassId: futureAssignmentEditClassId,
         reason: futureAssignmentDateReason,
       };
       let response = await fetch("/api/admin/students", {
@@ -1063,8 +1256,11 @@ function StudentsPageContent() {
         return;
       }
       setIsFutureAssignmentDateEditing(false);
+      setIsFutureAssignmentEditConfirming(false);
+      setFutureAssignmentEditClassId("");
       setFutureAssignmentDateReason("");
-      setMessage(`예정 반의 반배정일이 ${futureAssignmentDateEditValue}(으)로 변경되었습니다. 기존 반 배정은 삭제하지 않고 보존했습니다.`);
+      const changedClass = data.classes.find((row) => row.id === futureAssignmentEditClassId);
+      setMessage(`예정 반 배정이 ${changedClass?.name ?? "선택한 반"} · ${futureAssignmentDateEditValue}(으)로 변경되었습니다. 기존 반 배정과 수업기록은 삭제하지 않고 보존했습니다.`);
       await loadData();
       await loadOperationData(academyId);
     } catch {
@@ -1082,10 +1278,12 @@ function StudentsPageContent() {
   }
 
   function beginOperationGroupEdit() {
-    if (!currentActiveAssignment) return;
+    if (!currentActiveAssignment || !currentAssignmentIsEditable) return;
     setError("");
     setMessage("");
     setClassMoveError("");
+    setOperationGroupError("");
+    setOperationGroupMessage("");
     setIsClassMoveEditing(false);
     setIsMoveDateEditing(false);
     setMoveDateEditValue("");
@@ -1100,12 +1298,14 @@ function StudentsPageContent() {
     setOperationGroupEffectiveDate(today);
     setError("");
     setClassMoveError("");
+    setOperationGroupError("");
+    setOperationGroupMessage("");
   }
 
   async function changeOperationGroup() {
-    if (!studentId || !currentActiveAssignment || !currentAssignmentTerm) return;
+    if (!studentId || !currentActiveAssignment || !currentAssignmentIsEditable || !currentAssignmentTerm) return;
     if (operationGroupEditValue === operationGroup) {
-      setError("현재 수업 순서와 다른 A/B 순서를 선택해 주세요.");
+      setOperationGroupError("현재 수업 순서와 다른 A/B 순서를 선택해 주세요.");
       return;
     }
     const minimumDate = currentActiveAssignment.start_date;
@@ -1113,13 +1313,15 @@ function StudentsPageContent() {
       ? currentActiveAssignment.end_date
       : currentAssignmentTerm.end_date;
     if (!operationGroupEffectiveDate || operationGroupEffectiveDate < minimumDate || operationGroupEffectiveDate > maximumDate) {
-      setError("수업 순서 적용일은 현재 반 배정 기간 안에서 선택해 주세요.");
+      setOperationGroupError("수업 순서 적용일은 현재 반 배정 기간 안에서 선택해 주세요.");
       return;
     }
     if (!window.confirm(`수업 순서를 ${operationGroupEditValue}(으)로 ${operationGroupEffectiveDate}부터 변경하시겠습니까? 기존 수업기록은 보존됩니다.`)) return;
     setIsLoading(true);
     setError("");
     setMessage("");
+    setOperationGroupError("");
+    setOperationGroupMessage("");
     try {
       const response = await fetch("/api/admin/students", {
         method: "PATCH",
@@ -1136,16 +1338,16 @@ function StudentsPageContent() {
       const result = await readResult(response);
       if (redirectIfUnauthorized(response)) return;
       if (!response.ok) {
-        setError(result?.error?.message ?? "수업 순서를 변경하지 못했습니다.");
+        setOperationGroupError(result?.error?.message ?? "수업 순서를 변경하지 못했습니다.");
         return;
       }
       setOperationGroup(operationGroupEditValue);
       setIsOperationGroupEditing(false);
-      setMessage(`수업 순서가 ${operationGroupEditValue}(으)로 ${operationGroupEffectiveDate}부터 변경되었습니다. 기존 수업기록은 보존되었습니다.`);
+      setOperationGroupMessage(`수업 순서가 ${operationGroupEditValue}(으)로 ${operationGroupEffectiveDate}부터 변경되었습니다. 기존 수업기록은 보존되었습니다.`);
       await loadData();
       await loadOperationData(academyId);
     } catch {
-      setError("수업 순서 변경 요청을 처리하지 못했습니다.");
+      setOperationGroupError("수업 순서 변경 요청을 처리하지 못했습니다.");
     } finally {
       setIsLoading(false);
     }
@@ -1192,7 +1394,7 @@ function StudentsPageContent() {
   }
 
   function beginClassMove() {
-    if (!currentActiveAssignment) return;
+    if (!currentActiveAssignment || !currentAssignmentIsEditable) return;
     setError("");
     setMessage("");
     setClassMoveError("");
@@ -1218,7 +1420,7 @@ function StudentsPageContent() {
   }
 
   async function moveStudent() {
-    if (!studentId || !currentActiveAssignment) return;
+    if (!studentId || !currentActiveAssignment || !currentAssignmentIsEditable) return;
     if (!classMoveTargetId || classMoveTargetId === currentActiveAssignment.class_id) {
       setClassMoveError("현재 반과 다른 반을 선택해 주세요.");
       return;
@@ -1276,41 +1478,44 @@ function StudentsPageContent() {
   }
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col px-6 py-12">
-      <div className="mb-8">
+    <div className="mx-auto flex max-w-7xl flex-col px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mb-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Link href="/admin" className="text-sm font-semibold text-indigo-600 hover:text-indigo-700">운영자 대시보드로 돌아가기</Link>
           <AdminLogoutButton />
         </div>
-        <p className="mt-6 text-sm font-bold text-indigo-600">STUDENT MANAGEMENT</p>
+        <p className="mt-4 text-sm font-bold text-indigo-600">STUDENT MANAGEMENT</p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight">학생 관리</h1>
         <p className="mt-3 max-w-3xl leading-7 text-slate-600">학생 기본정보, 재원 상태 이력, 반 배정과 보호자 접속 발급을 관리합니다. 학기는 서버가 현재 날짜로 자동 적용하고, 기존 기록은 삭제하지 않고 보존합니다.</p>
       </div>
 
-      {error ? <p className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-700">{error}</p> : null}
-      {message ? <p className="mt-5 rounded-xl bg-indigo-50 px-4 py-3 text-sm leading-6 text-indigo-700">{message}</p> : null}
+      {error ? <p className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-700">{error}</p> : null}
+      {message ? <p className="mt-4 rounded-xl bg-indigo-50 px-4 py-3 text-sm leading-6 text-indigo-700">{message}</p> : null}
+      {studentId && !currentActiveAssignment ? <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">기준일 현재 유효한 정규반 배정이 없어 반 이동·수업 순서 변경 기능이 표시되지 않습니다. 정규반을 선택한 뒤 학생 정보 수정 저장을 완료해 주세요.</p> : null}
 
       {isExamBatch ? <ExamBatchAssignmentPanel /> : null}
+      {isClassBatch ? <ClassBatchAssignmentPanel /> : null}
 
-      <div className={isExamBatch ? "hidden" : ""}>
+      <div className={isExamBatch || isClassBatch ? "hidden" : "flex flex-col"}>
 
-      <form onSubmit={saveStudent} onKeyDown={(event) => { if (event.key === "Enter" && event.target !== studentSubmitButtonRef.current) event.preventDefault(); }} className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+      <form onSubmit={saveStudent} onKeyDown={(event) => { if (event.key === "Enter" && event.target !== studentSubmitButtonRef.current) event.preventDefault(); }} className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         <div className="flex items-center justify-between gap-4"><div><h2 className="text-xl font-bold">{studentId ? "학생 정보 수정" : "학생 등록"}</h2><p className="mt-1 text-sm text-slate-500">학생 상태를 변경하면 서버가 상태 이력을 자동으로 남깁니다.</p></div>{studentId ? <button type="button" onClick={() => startNewStudentRegistration()} className="text-sm font-semibold text-slate-500 hover:text-slate-800">새 학생 등록</button> : null}</div>
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div className="relative text-sm font-semibold text-slate-700">
             <label htmlFor="student-name-search">이름</label>
             <input
               id="student-name-search"
               value={studentName}
-              onChange={(event) => { const nextName = event.target.value; if (studentId) startNewStudentRegistration(nextName); else setStudentName(nextName); setDuplicateCheckKey(""); setDuplicateMatches([]); setIsStudentSearchOpen(true); }}
-              onFocus={() => setIsStudentSearchOpen(true)}
+              onChange={(event) => { const nextName = event.target.value; setStudentName(nextName); setStudentNameError(""); setStudentNameMessage(""); setDuplicateCheckKey(""); setDuplicateMatches([]); setIsStudentSearchOpen(!studentId && Boolean(nextName.trim())); }}
+              onFocus={() => { if (!studentId) setIsStudentSearchOpen(true); }}
               onBlur={() => window.setTimeout(() => setIsStudentSearchOpen(false), 150)}
               placeholder="이름을 입력해 기존 학생 검색"
               autoComplete="off"
               className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm font-normal"
               required
             />
-            {!studentId ? <div className="mt-2 flex flex-wrap items-center gap-3"><button type="button" onClick={checkDuplicate} disabled={isLoading || !academyId} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">중복 확인</button>{duplicateRegistrationStatus === "available" ? <span className="text-sm font-bold text-emerald-700">신규등록가능</span> : null}{duplicateRegistrationStatus === "duplicate" ? <span className="text-sm font-bold text-rose-700">신규등록 불가</span> : null}</div> : null}
+            {studentId ? <div className="mt-2 flex flex-wrap items-center gap-3"><button type="button" onClick={() => void saveStudentName()} disabled={isLoading || !studentName.trim() || studentName.trim() === originalStudentName} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">{isLoading ? "이름 저장 중..." : "이름 변경 저장"}</button>{studentNameError ? <span role="alert" className="text-sm font-semibold text-rose-700">{studentNameError}</span> : null}{studentNameMessage ? <span role="status" className="text-sm font-semibold text-emerald-700">{studentNameMessage}</span> : null}</div> : null}
+            {!studentId ? <div className="mt-2 flex flex-wrap items-center gap-3"><button type="button" onClick={() => void checkDuplicate()} disabled={isLoading || !academyId} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">중복 확인</button>{duplicateRegistrationStatus === "available" ? <span className="text-sm font-bold text-emerald-700">신규등록가능</span> : null}{duplicateRegistrationStatus === "duplicate" ? <span className="text-sm font-bold text-rose-700">신규등록 불가</span> : null}</div> : null}
             {duplicateMatches.length ? <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800"><p className="font-bold">등록을 중단하고 기존 학생을 선택해 주세요.</p>{duplicateMatches.map((student) => <button key={student.id} type="button" onClick={() => { const target = data.students.find((row) => row.id === student.id); if (target) editStudent(target); }} className="mt-2 block w-full rounded-lg bg-white px-3 py-2 text-left font-semibold hover:bg-rose-100">{student.student_no} · {student.name} · {student.school_name ?? "학교 없음"} · {student.grade ?? "학년 없음"}</button>)}</div> : null}
             {isStudentSearchOpen && studentName.trim() ? <div className="absolute z-30 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
               {studentSearchResults.length ? studentSearchResults.map((student) => <button key={student.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => { editStudent(student); setIsStudentSearchOpen(false); }} className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-3 text-left text-sm hover:bg-indigo-50">
@@ -1320,11 +1525,12 @@ function StudentsPageContent() {
             </div> : null}
           </div>
           {studentId ? <label className="text-sm font-semibold text-slate-700">학생 ID<input value={studentNo} readOnly className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 font-mono text-sm text-slate-600" /></label> : <div className="text-sm font-semibold text-slate-700">학생 ID<p className="mt-2 flex h-11 items-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 font-normal text-slate-500">등록일 기준 자동 생성</p></div>}
-          <label className="text-sm font-semibold text-slate-700">수업시작일<input type="date" value={classStartDate} onChange={(event) => setClassStartDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal" required /><span className="mt-1 block text-xs font-normal text-slate-500">운영자가 학생별 수업 시작일을 수정할 수 있습니다.</span></label>
+          <label className="text-sm font-semibold text-slate-700">수업시작일<input type="date" min={registeredAt} value={classStartDate} onChange={(event) => setClassStartDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal" required /><span className="mt-1 block text-xs font-normal text-slate-500">등록일 이후 날짜만 선택할 수 있습니다.</span></label>
           <label className="text-sm font-semibold text-slate-700">분류<select required={!studentId} value={schoolLevel} onChange={(event) => { setSchoolLevel(event.target.value as School["school_level"] | ""); setSchoolId(""); setDuplicateCheckKey(""); setDuplicateMatches([]); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">분류 선택</option><option value="elementary">초등</option><option value="middle">중등</option><option value="high">고등</option></select></label>
           <label className="text-sm font-semibold text-slate-700">학교명<select required={!studentId} value={schoolId} onChange={(event) => { setSchoolId(event.target.value); setDuplicateCheckKey(""); setDuplicateMatches([]); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">학교 선택</option>{availableSchools.map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}</select></label>
           <label className="text-sm font-semibold text-slate-700">학년<select required={!studentId} value={grade} onChange={(event) => { setGrade(event.target.value); setDuplicateCheckKey(""); setDuplicateMatches([]); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">학년 선택</option>{["1", "2", "3", "4", "5", "6"].map((value) => <option key={value} value={value}>{value}학년</option>)}</select></label>
           <label className="text-sm font-semibold text-slate-700">레벨<select required={!studentId} value={level} onChange={(event) => setLevel(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">레벨 선택</option>{availableLevels.map((option) => <option key={option.id} value={option.name}>{option.name}{!option.is_active ? " (비활성)" : ""}</option>)}</select></label>
+          <label className="text-sm font-semibold text-slate-700">학생 전화번호<div className="mt-2 flex h-11 items-center rounded-xl border border-slate-300 bg-white px-3"><span className="mr-1 text-slate-500">010-</span><input value={studentPhoneSuffix(studentPhone)} onChange={(event) => { const suffix = formatStudentPhone(event.target.value); setStudentPhone(suffix ? `010-${suffix}` : ""); }} inputMode="numeric" placeholder="4567-8912" className="min-w-0 flex-1 text-sm outline-none" /></div><span className="mt-1 block text-xs font-normal text-slate-500">학생 본인 연락처입니다.</span></label>
           <label className="text-sm font-semibold text-slate-700">차량<select value={vehicleId} onChange={(event) => setVehicleId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">차량 없음</option>{availableVehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.name}{!vehicle.is_active ? " (비활성)" : ""}</option>)}</select></label>
           <div className="grid gap-4 md:col-span-3 md:grid-cols-2">
             <fieldset className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
@@ -1344,16 +1550,36 @@ function StudentsPageContent() {
               </div>
             </fieldset>
           </div>
-          <label className="text-sm font-semibold text-slate-700">재원 상태<select value={currentStatus} onChange={(event) => setCurrentStatus(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="enrolled">재원</option><option value="paused">휴원</option><option value="withdrawn">퇴원</option></select></label>
+          <label className="text-sm font-semibold text-slate-700">재원 상태<select value={currentStatus} onChange={(event) => { const nextStatus = event.target.value; if (nextStatus === "enrolled" && originalStatus !== "enrolled" && currentStatus !== "enrolled") { setAssignmentId(null); setAssignmentClassId(""); setIsClassMoveEditing(false); setClassMoveTargetId(""); setClassMoveError(""); } setCurrentStatus(nextStatus); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="enrolled">재원</option><option value="paused">휴원</option><option value="withdrawn">퇴원</option></select></label>
           {studentId && originalStatus !== currentStatus ? <>
             <label className="text-sm font-semibold text-slate-700">상태 적용일<input type="date" value={statusEffectiveDate} onChange={(event) => setStatusEffectiveDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm" required /></label>
             {currentStatus === "paused" ? <label className="text-sm font-semibold text-slate-700">등원예정일<input type="date" value={expectedReturnDate} min={statusEffectiveDate || today} onChange={(event) => setExpectedReturnDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm" /></label> : null}
             {currentStatus === "withdrawn" ? <label className="text-sm font-semibold text-slate-700">퇴원 유형<select value={withdrawalType} onChange={(event) => setWithdrawalType(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required><option value="">선택하세요</option><option value="normal">정상 퇴원</option><option value="mid_course">중도 퇴원</option><option value="transfer">전학</option><option value="other">기타</option></select></label> : null}
           </> : null}
+          {studentId && originalStatus === "paused" && currentStatus === "paused" && currentPausedHistory ? (
+            <div className="md:col-span-3 rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold text-amber-900">휴원 복귀 예정일</p>
+                  <p className="mt-1 text-xs text-amber-800">휴원 적용일 {currentPausedHistory.effective_date} · 현재 예정일 {expectedReturnDate || "미정"}</p>
+                </div>
+                {!isReturnDateEditing ? <button type="button" onClick={() => { setReturnDateError(""); setReturnDateMessage(""); setIsReturnDateEditing(true); }} disabled={isLoading} className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50">복귀 예정일 수정</button> : null}
+              </div>
+              {isReturnDateEditing ? (
+                <div className="mt-4 flex flex-wrap items-end gap-3">
+                  <label className="text-sm font-semibold text-slate-700">복귀 예정일<input type="date" value={expectedReturnDate} min={currentPausedHistory.effective_date} onChange={(event) => setExpectedReturnDate(event.target.value)} className="mt-2 h-11 rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+                  <button type="button" onClick={() => void saveReturnDate()} disabled={isLoading} className="h-11 rounded-xl bg-amber-600 px-4 py-3 text-sm font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isLoading ? "저장 중..." : "복귀 예정일 저장"}</button>
+                  <button type="button" onClick={() => { setExpectedReturnDate(currentPausedHistory.expected_return_date ?? ""); setIsReturnDateEditing(false); setReturnDateError(""); }} disabled={isLoading} className="h-11 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">취소</button>
+                </div>
+              ) : null}
+              {returnDateError ? <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{returnDateError}</p> : null}
+              {returnDateMessage ? <p role="status" className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">{returnDateMessage}</p> : null}
+            </div>
+          ) : null}
         </div>
-        <section className="mt-6 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
-          <div className="flex items-center justify-between gap-3"><div><h3 className="font-bold text-slate-900">반 배정</h3><p className="mt-1 text-xs leading-5 text-slate-600">학생 정보 저장과 함께 반을 선택하면 서버가 현재 날짜에 맞는 학기를 자동 적용하고 두 과목 수업을 연결합니다.</p></div><div className="flex flex-wrap items-center justify-end gap-2">{!assignmentId && assignmentClassId ? <button type="button" onClick={resetAssignmentSelection} className="text-xs font-semibold text-slate-500 hover:text-slate-800">배정 선택 초기화</button> : null}{assignmentId && !isClassMoveEditing && !isMoveDateEditing && !isOperationGroupEditing ? <button type="button" onClick={beginOperationGroupEdit} disabled={isLoading} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">수업 순서 변경</button> : null}{assignmentId && !isClassMoveEditing && !isMoveDateEditing && !isOperationGroupEditing ? <button type="button" onClick={beginClassMove} disabled={isLoading} className="rounded-lg border border-amber-300 px-3 py-2 text-xs font-bold text-amber-700 hover:bg-amber-50 disabled:opacity-50">반 이동</button> : null}{assignmentId && isClassMoveEditing ? <button type="button" onClick={cancelClassMove} disabled={isLoading} className="text-xs font-semibold text-slate-500 hover:text-slate-800">이동 취소</button> : null}</div></div>
-          {assignmentId && !isClassMoveEditing && !isMoveDateEditing && canEditMoveDate ? <button type="button" onClick={beginMoveDateEdit} disabled={isLoading} className="mt-3 rounded-lg border border-indigo-300 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">이동일 수정</button> : null}
+        <section className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
+          <div className="flex items-center justify-between gap-3"><div><h3 className="font-bold text-slate-900">반 배정</h3><p className="mt-1 text-xs leading-5 text-slate-600">학생 정보 저장과 함께 반을 선택하면 서버가 현재 날짜에 맞는 학기를 자동 적용하고 두 과목 수업을 연결합니다.</p></div><div className="flex flex-wrap items-center justify-end gap-2">{!assignmentId && assignmentClassId ? <button type="button" onClick={resetAssignmentSelection} className="text-xs font-semibold text-slate-500 hover:text-slate-800">배정 선택 초기화</button> : null}{assignmentId && currentAssignmentIsEditable && !isClassMoveEditing && !isMoveDateEditing && !isOperationGroupEditing ? <button type="button" onClick={beginOperationGroupEdit} disabled={isLoading} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">수업 순서 변경</button> : null}{assignmentId && currentAssignmentIsEditable && !isClassMoveEditing && !isMoveDateEditing && !isOperationGroupEditing ? <button type="button" onClick={beginClassMove} disabled={isLoading} className="rounded-lg border border-amber-300 px-3 py-2 text-xs font-bold text-amber-700 hover:bg-amber-50 disabled:opacity-50">반 이동</button> : null}{assignmentId && isClassMoveEditing ? <button type="button" onClick={cancelClassMove} disabled={isLoading} className="text-xs font-semibold text-slate-500 hover:text-slate-800">이동 취소</button> : null}</div></div>
+           {assignmentId && currentAssignmentIsEditable && !isClassMoveEditing && !isMoveDateEditing && canEditMoveDate ? <button type="button" onClick={beginMoveDateEdit} disabled={isLoading} className="mt-3 rounded-lg border border-indigo-300 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">이동일 수정</button> : null}
           {isMoveDateEditing ? <div className="mt-4 rounded-xl border border-indigo-200 bg-white p-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold text-slate-700">변경할 이동일<input type="date" value={moveDateEditValue} min={moveDateEditMinimum} max={currentAssignmentTerm?.end_date} onChange={(event) => setMoveDateEditValue(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label><div className="text-xs leading-5 text-slate-600"><p className="font-bold text-slate-700">현재 이동 예정일: {currentActiveAssignment?.start_date}</p><p className="mt-2">반과 담당교사는 변경하지 않고 이동일만 변경합니다. 이미 시작된 이동 이력은 수정할 수 없습니다.</p></div></div><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => void rescheduleMoveDate()} disabled={isLoading || !moveDateEditValue || moveDateEditValue === currentActiveAssignment?.start_date} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isLoading ? "이동일 변경 중..." : "이동일 변경 저장"}</button><button type="button" onClick={cancelMoveDateEdit} disabled={isLoading} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">취소</button></div></div> : null}
            <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,280px)]">
              <div ref={classPickerRef} className="relative text-sm font-semibold text-slate-700">
@@ -1384,16 +1610,17 @@ function StudentsPageContent() {
                  </div>
                ) : null}
                {!studentId && !assignmentClassId ? <p className="mt-2 text-xs font-normal text-amber-700">반 카드를 하나 선택해 주세요.</p> : null}
+               {isReentryAssignmentMode ? <p className="mt-2 text-xs font-normal text-amber-700">휴원·퇴원 후 재원 전환입니다. 새 정규반을 선택하면 기존 배정 이력은 보존하고 선택한 반으로 재배정합니다.</p> : studentId && currentStatus === "enrolled" && !currentActiveAssignment && !upcomingAssignment ? <p className="mt-2 text-xs font-normal text-amber-700">기준일 현재 유효한 정규반 배정이 없습니다. 새 정규반을 선택하면 학생 정보 저장과 함께 배정이 생성됩니다.</p> : null}
              </div>
           {displayedExamAssignment && displayedExamClass ? <div className="self-start rounded-xl border border-slate-200 bg-white p-3">
             <div className="flex items-center justify-between gap-2">
               <h4 className="text-sm font-bold text-slate-900">내신대비반</h4>
               <span className="text-[11px] font-semibold text-slate-500">읽기 전용</span>
             </div>
-            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5"><p className="text-sm font-semibold text-amber-900">{displayedExamClass.name}</p><p className="mt-1 text-[11px] leading-4 text-amber-800">{currentExamAssignment ? "현재 진행 중" : "배정 예정"} · {displayedExamAssignment.start_date} ~ {displayedExamAssignment.end_date ?? "-"}</p></div>
+            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5"><p className="text-sm font-semibold text-amber-900">{displayedExamClass.name}</p><p className="mt-1 text-[11px] leading-4 text-amber-800">{currentExamAssignment ? "현재 진행 중" : "배정 예정"} · {displayedExamAssignment.start_date} ~ {displayedExamAssignment.end_date ?? "-"}</p><p className="mt-1 text-[11px] leading-4 text-amber-800">{displayedExamSchedule ? `${formatOperationWeekdays(displayedExamSchedule.weekdays)} ${displayedExamSchedule.start_time.slice(0, 5)}~${displayedExamSchedule.end_time.slice(0, 5)}` : "요일·시간 미설정"}{displayedExamClassrooms.length ? ` · 강의실 ${displayedExamClassrooms.join(", ")}` : " · 강의실 미지정"}</p></div>
           </div> : null}
           </div>
-           {assignmentId ? <div className="mt-4 grid gap-3 sm:grid-cols-2">
+           {currentActiveAssignment ? <div className="mt-4 grid gap-3 sm:grid-cols-2">
              <label className="text-sm font-semibold text-slate-700">운영구분<select value={operationTypeId} onChange={(event) => setOperationTypeId(event.target.value)} disabled className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-slate-100 px-3 text-sm">
                <option value="">운영구분 확인 중</option>
                {availableOperationTypes.map((operationType) => <option key={operationType.id} value={operationType.id}>{operationType.name}{operationType.is_default ? " (기본)" : ""}{!operationType.is_active ? " (비활성)" : ""}</option>)}
@@ -1401,26 +1628,39 @@ function StudentsPageContent() {
              <p className="text-xs leading-5 text-slate-500">현재 운영구분: {selectedOperationType?.name ?? "확인 필요"} · 일반 반의 신규 배정과 반 이동은 정규수업으로 저장됩니다.</p>
            </div> : <p className="mt-4 text-xs leading-5 text-slate-500">신규 학생의 일반 반 배정은 정규수업으로 자동 저장됩니다. 내신대비반은 내신대비 일괄 배정에서 별도로 지정합니다.</p>}
            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-             <label className="text-sm font-semibold text-slate-700">수업 순서 A/B<select value={isOperationGroupEditing ? operationGroupEditValue : operationGroup} onChange={(event) => isOperationGroupEditing ? setOperationGroupEditValue(event.target.value as OperationGroup) : setOperationGroup(event.target.value as OperationGroup)} disabled={Boolean(assignmentId) && !isOperationGroupEditing} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="A">A · 문법 → 독해</option><option value="B">B · 독해 → 문법</option></select></label>
-             {!assignmentId ? <p className="text-xs leading-5 text-slate-500">신규 등록 시 선택한 수업 순서로 해당 반의 운영 블록에 연결됩니다.</p> : <p className="text-xs leading-5 text-slate-500">현재 학생의 수업 순서입니다. 운영구분(정규수업·시험대비)과는 별도 기준입니다.</p>}
+             <label className="text-sm font-semibold text-slate-700">수업 순서 A/B<select value={isOperationGroupEditing ? operationGroupEditValue : operationGroup} onChange={(event) => isOperationGroupEditing ? setOperationGroupEditValue(event.target.value as OperationGroup) : setOperationGroup(event.target.value as OperationGroup)} disabled={Boolean(currentActiveAssignment) && !isOperationGroupEditing && !isReentryAssignmentMode} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="A">A · 문법 → 독해</option><option value="B">B · 독해 → 문법</option></select></label>
+             {isReentryAssignmentMode ? <p className="text-xs leading-5 text-slate-500">재원 복귀 적용일부터 선택한 수업 순서를 적용합니다. 복귀 전 기존 수업기록과 운영 이력은 보존됩니다.</p> : !currentActiveAssignment ? <p className="text-xs leading-5 text-slate-500">신규 등록 시 선택한 수업 순서로 해당 반의 운영 블록에 연결됩니다.</p> : <p className="text-xs leading-5 text-slate-500">현재 학생의 수업 순서입니다. 운영구분(정규수업·시험대비)과는 별도 기준입니다.</p>}
            </div>
-           {isOperationGroupEditing ? <div className="mt-4 rounded-xl border border-indigo-200 bg-white p-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold text-slate-700">수업 순서 적용일<input type="date" value={operationGroupEffectiveDate} min={operationGroupEffectiveDateMinimum} max={operationGroupEffectiveDateMaximum} onChange={(event) => setOperationGroupEffectiveDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label><div className="text-xs leading-5 text-slate-600"><p className="font-bold text-slate-700">현재 순서: {operationGroup}</p><p className="mt-2">적용일 전 수업기록과 운영 배정은 보존하고, 적용일부터 A/B 수업 순서를 변경합니다.</p></div></div><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => void changeOperationGroup()} disabled={isLoading || operationGroupEditValue === operationGroup || !operationGroupEffectiveDate} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isLoading ? "수업 순서 변경 중..." : "수업 순서 변경 저장"}</button><button type="button" onClick={cancelOperationGroupEdit} disabled={isLoading} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">취소</button></div></div> : null}
-          {assignmentId && !isClassMoveEditing ? <p className="mt-3 text-xs text-slate-500">현재 반 배정이 표시되어 있습니다. 반을 변경하려면 오른쪽의 반 이동 버튼을 눌러 주세요.</p> : null}
+            {isOperationGroupEditing ? <div className="mt-4 rounded-xl border border-indigo-200 bg-white p-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold text-slate-700">수업 순서 적용일<input type="date" value={operationGroupEffectiveDate} min={operationGroupEffectiveDateMinimum} max={operationGroupEffectiveDateMaximum} onChange={(event) => setOperationGroupEffectiveDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label><div className="text-xs leading-5 text-slate-600"><p className="font-bold text-slate-700">현재 순서: {operationGroup}</p><p className="mt-2">적용일 전 수업기록과 운영 배정은 보존하고, 적용일부터 A/B 수업 순서를 변경합니다.</p></div></div><div className="mt-4 flex flex-wrap items-center gap-2"><button type="button" onClick={() => void changeOperationGroup()} disabled={isLoading || operationGroupEditValue === operationGroup || !operationGroupEffectiveDate} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isLoading ? "수업 순서 변경 중..." : "수업 순서 변경 저장"}</button><button type="button" onClick={cancelOperationGroupEdit} disabled={isLoading} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">취소</button></div></div> : null}{operationGroupError ? <p role="alert" aria-live="polite" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold leading-5 text-rose-700">{operationGroupError}</p> : null}{operationGroupMessage ? <p role="status" aria-live="polite" className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold leading-5 text-emerald-700">{operationGroupMessage}</p> : null}
+           {currentActiveAssignment && !isClassMoveEditing ? <p className="mt-3 text-xs text-slate-500">현재 반 배정이 표시되어 있습니다. 반을 변경하려면 오른쪽의 반 이동 버튼을 눌러 주세요.</p> : null}
+           {currentActiveAssignment && !currentAssignmentIsEditable ? <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">오늘 기준 유효한 기존 반 배정입니다. 내일부터는 예정된 새 반 배정이 적용되며, 종료된 이력의 반 이동·수업 순서 변경은 잠시 후 새 반에서 처리할 수 있습니다.</p> : null}
             {isClassMoveEditing ? <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-4"><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><label className="text-sm font-semibold text-slate-700">이동일<input type="date" value={classMoveDate} min={moveDateMinimumText} max={currentAssignmentTerm?.end_date} onChange={(event) => setClassMoveDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label><label className="text-sm font-semibold text-slate-700">운영구분<select value={classMoveOperationTypeId} disabled className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-slate-100 px-3 text-sm"><option value={classMoveOperationTypeId}>{data.operationTypes.find((operationType) => operationType.id === classMoveOperationTypeId)?.name ?? "정규수업"} (기본)</option></select></label><label className="text-sm font-semibold text-slate-700">수업 순서 A/B<select value={classMoveOperationGroup} onChange={(event) => setClassMoveOperationGroup(event.target.value as OperationGroup)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="A">A · 문법 → 독해</option><option value="B">B · 독해 → 문법</option></select></label><label className="text-sm font-semibold text-slate-700">이동 사유<span className="mt-2 block"><input value={classMoveReason} onChange={(event) => setClassMoveReason(event.target.value)} maxLength={500} placeholder="선택 입력" className="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></span></label></div><p className="mt-3 text-xs leading-5 text-amber-800">이동일 전날 기존 반 배정이 종료되고, 이동일부터 새 반의 담당교사·정규수업 운영구분·수업 순서·수업 운영 블록에 연결됩니다.</p><div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" onClick={() => void moveStudent()} disabled={isLoading || !classMoveTargetId || classMoveTargetId === currentActiveAssignment?.class_id || !classMoveOperationTypeId} className="rounded-xl bg-amber-600 px-4 py-3 text-sm font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isLoading ? "반 이동 처리 중..." : "반 이동 저장"}</button>{classMoveError ? <p role="alert" aria-live="polite" className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold leading-5 text-rose-700">{classMoveError}</p> : null}</div></div> : null}
         </section>
-        {studentId && !assignmentId && upcomingAssignment && upcomingClass ? (
+         {studentId && !currentAssignmentIsEditable && upcomingAssignment && upcomingClass ? (
          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
-            <p className="text-sm font-bold text-amber-900">현재 날짜 기준 활성 반이 없습니다.</p>
-            <p className="mt-2 text-sm leading-6 text-amber-800">
-              예정 반: {classOptionLabel(upcomingClass, upcomingClassSchedule)} · 반배정일 {upcomingAssignment.start_date}
-            </p>
-            <p className="mt-1 text-xs leading-5 text-amber-700">수업묶음은 반배정일 이후부터 표시됩니다. 수업시작일은 학생의 최초 수업 시작일로 보존되며, 아래에서 예정 반의 반배정일만 변경할 수 있습니다.</p>
-            {!isFutureAssignmentDateEditing ? <button type="button" onClick={beginFutureAssignmentDateEdit} disabled={isLoading} className="mt-3 rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50">반배정일 수정</button> : null}
-            {isFutureAssignmentDateEditing ? <div className="mt-4 rounded-xl border border-amber-300 bg-white p-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold text-slate-700">반배정일<input type="date" value={futureAssignmentDateEditValue} min={today} max={upcomingAssignmentTerm?.end_date} onChange={(event) => setFutureAssignmentDateEditValue(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label><label className="text-sm font-semibold text-slate-700">변경 사유<span className="mt-2 block"><input value={futureAssignmentDateReason} onChange={(event) => setFutureAssignmentDateReason(event.target.value)} maxLength={500} placeholder="선택 입력" className="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></span></label></div><p className="mt-3 text-xs leading-5 text-amber-800">같은 날짜에 다른 반 배정이 있으면 기존 배정을 삭제하거나 합치지 않고 저장을 차단합니다.</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => void saveFutureAssignmentDate()} disabled={isLoading || !futureAssignmentDateEditValue} className="rounded-xl bg-amber-600 px-4 py-3 text-sm font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isLoading ? "반배정일 저장 중..." : "반배정일 저장"}</button><button type="button" onClick={cancelFutureAssignmentDateEdit} disabled={isLoading} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">취소</button></div></div> : null}
-          </div>
+           <div className="flex flex-wrap items-start justify-between gap-3">
+             <div>
+               <p className="text-sm font-bold text-amber-900">{currentActiveAssignment ? "현재 반은 오늘까지 유효하며, 예정 반은 다음 적용일부터 시작됩니다." : "현재 기준 유효한 반 배정은 없으며, 예정 반은 다음 적용일부터 시작됩니다."}</p>
+               <p className="mt-2 text-sm leading-6 text-amber-800">예정 반: {classOptionLabel(upcomingClass, upcomingClassSchedule)} · 반배정일 {upcomingAssignment.start_date}</p>
+             </div>
+             {!isFutureAssignmentDateEditing ? <button type="button" onClick={beginFutureAssignmentDateEdit} disabled={isLoading} className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50">반 배정 수정</button> : null}
+           </div>
+           <p className="mt-1 text-xs leading-5 text-amber-700">수업묶음은 반배정일 이후부터 표시됩니다. 기존 반 배정과 수업기록은 삭제하지 않고 보존합니다.</p>
+           {isFutureAssignmentDateEditing ? (
+             <div className="mt-4 rounded-xl border border-amber-300 bg-white p-4">
+               <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm font-semibold text-slate-700">변경할 반<select value={futureAssignmentEditClassId} onChange={(event) => { setFutureAssignmentEditClassId(event.target.value); setIsFutureAssignmentEditConfirming(false); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required><option value="">반을 선택해 주세요</option>{availableClasses.filter((row) => row.is_active || row.id === upcomingAssignment.class_id).map((row) => { const schedule = operationSchedules.find((item) => item.id === row.operation_schedule_id); return <option key={row.id} value={row.id}>{classOptionLabel(row, schedule)}{!row.is_active ? " (비활성·기존 배정)" : ""}</option>; })}</select></label>
+                 <label className="text-sm font-semibold text-slate-700">새 반배정일<input type="date" value={futureAssignmentDateEditValue} min={today} max={upcomingAssignmentTerm?.end_date} onChange={(event) => { setFutureAssignmentDateEditValue(event.target.value); setIsFutureAssignmentEditConfirming(false); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label>
+                 <label className="text-sm font-semibold text-slate-700 sm:col-span-2">변경 사유(선택)<input value={futureAssignmentDateReason} onChange={(event) => setFutureAssignmentDateReason(event.target.value)} maxLength={500} placeholder="선택 입력" className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+               </div>
+               {isFutureAssignmentEditConfirming ? <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-3 text-sm leading-6 text-indigo-900"><p className="font-bold">변경 내용 확인</p><p className="mt-1">변경 전: {classOptionLabel(upcomingClass, upcomingClassSchedule)} · {upcomingAssignment.start_date}</p><p>변경 후: {futureAssignmentEditClass ? classOptionLabel(futureAssignmentEditClass, futureAssignmentEditClassSchedule) : "반 미선택"} · {futureAssignmentDateEditValue}</p><p className="mt-2 text-xs text-indigo-700">확정 시 서버가 학기·중복 배정·기존 기록·수업 운영 연결을 다시 검증합니다.</p></div> : null}
+               <div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => void saveFutureAssignmentDate()} disabled={isLoading || !futureAssignmentDateEditValue || !futureAssignmentEditClassId} className="rounded-xl bg-amber-600 px-4 py-3 text-sm font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isLoading ? "반 배정 수정 중..." : isFutureAssignmentEditConfirming ? "반 배정 변경 확정" : "변경 내용 확인"}</button><button type="button" onClick={cancelFutureAssignmentDateEdit} disabled={isLoading} className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">취소</button></div>
+             </div>
+           ) : null}
+         </div>
         ) : null}
         {assignmentClassId ? (
-          <section className="mt-6 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
+          <section className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
             <div>
               <h3 className="font-bold text-slate-900">수업 운영 배정</h3>
               <p className="mt-1 text-xs leading-5 text-slate-600">요일별 공통 수업시간과 반에 설정된 문법·독해 담당교사를 사용합니다. 저장하면 두 과목 운영 블록과 학생 연결이 자동 생성됩니다.</p>
@@ -1430,31 +1670,31 @@ function StudentsPageContent() {
             {operationSchedules.length ? <p className="mt-4 rounded-lg bg-white px-3 py-3 text-xs leading-5 text-slate-600">반을 선택하면 해당 반에 연결된 운영 시간대와 반별 문법·독해 담당교사가 수업 운영 블록에 자동 적용됩니다.</p> : null}
           </section>
         ) : null}
-        <div className="mt-6 flex flex-wrap items-center gap-3"><button ref={studentSubmitButtonRef} type="submit" disabled={isLoading || !academyId || duplicateRegistrationStatus === "duplicate"} className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{studentId ? "학생 정보 수정" : "신규 학생 등록"}</button></div>
+        <div className="mt-4 flex flex-wrap items-center gap-3"><button ref={studentSubmitButtonRef} type="submit" disabled={isLoading || !academyId || duplicateRegistrationStatus === "duplicate"} className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{studentId ? "학생 정보 수정" : "신규 학생 등록"}</button>{studentFormError ? <p role="alert" aria-live="polite" className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold leading-5 text-rose-700">{studentFormError}</p> : null}{studentFormMessage ? <p role="status" aria-live="polite" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold leading-5 text-emerald-700">{studentFormMessage}</p> : null}</div>
       </form>
 
-      <form onSubmit={createGuardianInvite} className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-        <div><h2 className="text-xl font-bold">보호자 접속 발급</h2><p className="mt-1 text-sm text-slate-500">보호자는 비밀번호 없이 접속 링크와 인증번호로 이용합니다. 링크와 인증번호는 7일 동안 한 번만 사용할 수 있습니다.</p></div>
+      <form onSubmit={createGuardianInvite} className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+        <div><h2 className="text-xl font-bold">보호자 접속 발급</h2><p className="mt-1 text-sm text-slate-500">보호자는 비밀번호 없이 접속 링크와 인증번호로 이용합니다. 링크는 발급일로부터 60일 동안 최대 5회 사용할 수 있으며, 재발급하면 기존 링크는 즉시 취소됩니다.</p></div>
         <p className="mt-2 text-sm text-slate-500">학생을 선택한 뒤 보호자1 또는 보호자2를 선택하면 등록된 이름·전화번호·관계가 자동으로 입력됩니다.</p>
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div className="text-sm font-semibold text-slate-700"><label htmlFor="guardian-student-search">학생</label><StudentSearchSelect id="guardian-student-search" students={data.students} value={guardianStudentId} onChange={handleGuardianStudentChange} required /></div>
           <label className="text-sm font-semibold text-slate-700 md:col-span-2">보호자 선택<select value={guardianContactKey} onChange={(event) => handleGuardianContactChange(event.target.value as GuardianContactKey)} disabled={!guardianStudentId || !guardianContactOptions.length} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required><option value="">{guardianStudentId ? "보호자 선택" : "학생 선택 후 선택"}</option>{guardianContactOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}</select><span className="mt-2 block text-xs font-normal text-slate-500">이름·전화번호·관계는 학생 등록 정보에서 자동 사용됩니다.</span></label>
         </div>
         {!guardianName || !guardianRelationship ? <p className="mt-3 text-xs leading-5 text-amber-700">학생 등록 정보에 보호자 이름·관계가 없으면 학생 정보 수정 화면에서 먼저 입력해 주세요.</p> : null}
-        <button type="submit" disabled={isLoading || !academyId || !guardianStudentId || !guardianContactKey || !guardianName || !guardianPhone || !guardianRelationship} className="mt-6 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">접속 링크·인증번호 발급</button>
+        <button type="submit" disabled={isLoading || !academyId || !guardianStudentId || !guardianContactKey || !guardianName || !guardianPhone || !guardianRelationship} className="mt-4 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">접속 링크·인증번호 발급</button>
       </form>
 
-      {issuedInvite ? <section className="mt-6 rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-6 sm:p-8"><h2 className="text-xl font-bold text-emerald-900">보호자에게 전달할 접속 정보</h2><div className="mt-5 space-y-4"><div className="rounded-xl bg-white p-4"><p className="text-sm text-slate-500">접속 링크</p><p className="mt-2 break-all font-mono text-sm font-semibold">{issuedInvite.inviteUrl}</p></div><div className="rounded-xl bg-white p-4"><p className="text-sm text-slate-500">인증번호</p><p className="mt-2 font-mono text-2xl font-bold tracking-wider">{issuedInvite.authCode}</p></div></div><p className="mt-4 text-sm text-emerald-800">만료 시각: {new Date(issuedInvite.expiresAt ?? "").toLocaleString("ko-KR")}</p><div className="mt-6 rounded-xl border border-emerald-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-slate-900">보호자 전달용 안내문</h3><p className="mt-1 text-xs text-slate-500">학생명·학원명·인증번호·접속 링크가 자동으로 포함됩니다.</p></div><button type="button" onClick={copyGuardianInviteMessage} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700">안내문 전체 복사</button></div><pre className="mt-4 whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-6 text-slate-700">{guardianInviteMessage(issuedInvite)}</pre></div></section> : null}
-      {guardianInviteNotice ? <section className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 p-6"><h2 className="font-bold text-amber-900">보호자 연결 결과</h2><p className="mt-2 text-sm leading-6 text-amber-800">{guardianInviteNotice}</p><p className="mt-3 text-xs leading-5 text-amber-700">이미 연결된 보호자는 아래 학생별 보호자 연결 영역에서 접속 링크를 재발급해 주세요.</p></section> : null}
+      {issuedInvite ? <section className="mt-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-4 sm:p-6"><h2 className="text-xl font-bold text-emerald-900">보호자에게 전달할 접속 정보</h2><div className="mt-4 space-y-3"><div className="rounded-xl bg-white p-4"><p className="text-sm text-slate-500">접속 링크</p><p className="mt-2 break-all font-mono text-sm font-semibold">{issuedInvite.inviteUrl}</p></div><div className="rounded-xl bg-white p-4"><p className="text-sm text-slate-500">인증번호</p><p className="mt-2 font-mono text-2xl font-bold tracking-wider">{issuedInvite.authCode}</p></div></div><p className="mt-3 text-sm text-emerald-800">만료 시각: {new Date(issuedInvite.expiresAt ?? "").toLocaleString("ko-KR")} · 사용: {issuedInvite.useCount ?? 0}/{issuedInvite.maxUses ?? 5}회</p><p className="mt-1 text-xs text-emerald-700">재발급 시 기존 접속 링크는 취소됩니다.</p><div className="mt-4 rounded-xl border border-emerald-200 bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-slate-900">보호자 전달용 안내문</h3><p className="mt-1 text-xs text-slate-500">학생명·학원명·인증번호·접속 링크가 자동으로 포함됩니다.</p></div><button type="button" onClick={copyGuardianInviteMessage} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700">안내문 전체 복사</button></div><pre className="mt-3 whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-6 text-slate-700">{guardianInviteMessage(issuedInvite)}</pre></div></section> : null}
+      {guardianInviteNotice ? <section className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4"><h2 className="font-bold text-amber-900">보호자 연결 결과</h2><p className="mt-2 text-sm leading-6 text-amber-800">{guardianInviteNotice}</p><p className="mt-3 text-xs leading-5 text-amber-700">이미 연결된 보호자는 아래 학생별 보호자 연결 영역에서 접속 링크를 재발급해 주세요.</p></section> : null}
 
-      <section className="order-last mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+      <section className="order-last mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-xl font-bold">전체 학생목록</h2><p className="mt-1 text-sm text-slate-500">기본 화면에서는 숨겨져 있습니다. 이름 검색을 사용해 필요한 학생만 선택하세요.</p></div><button type="button" onClick={() => setIsStudentListOpen((open) => !open)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-50">{isStudentListOpen ? "목록 숨기기" : `전체 목록 보기 (${data.students.length}명)`}</button></div>
-        {isStudentListOpen ? <div className="mt-5 overflow-x-auto"><table className="w-full min-w-[950px] text-left text-sm"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="px-3 py-3 font-semibold">학생 ID</th><th className="px-3 py-3 font-semibold">이름·수업시작일</th><th className="px-3 py-3 font-semibold">학교·학년</th><th className="px-3 py-3 font-semibold">차량</th><th className="px-3 py-3 font-semibold">재원 상태</th><th className="px-3 py-3 font-semibold">작업</th></tr></thead><tbody>{data.students.length ? data.students.map((student) => <tr key={student.id} className="border-b border-slate-100"><td className="px-3 py-4 font-mono text-xs">{student.student_no}</td><td className="px-3 py-4 font-semibold"><span>{student.name}</span><span className="mt-1 block text-xs font-normal text-slate-500">수업시작일: {student.class_start_date ?? "-"}</span></td><td className="px-3 py-4">{student.school_name ?? "-"} · {student.grade ?? "학년 없음"}</td><td className="px-3 py-4">{student.vehicle_id ? vehicleNameById.get(student.vehicle_id) ?? "등록 차량 없음" : "차량 없음"}</td><td className="px-3 py-4">{statusLabel(student.current_status)}</td><td className="px-3 py-4"><button type="button" onClick={() => editStudent(student)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold hover:bg-slate-50">선택·수정</button></td></tr>) : <tr><td colSpan={6} className="px-3 py-12 text-center text-slate-500">등록된 학생이 없습니다.</td></tr>}</tbody></table></div> : null}
+        {isStudentListOpen ? <div className="mt-4 max-h-[520px] overflow-auto"><table className="w-full min-w-[950px] text-left text-sm"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="px-3 py-2.5 font-semibold">학생 ID</th><th className="px-3 py-2.5 font-semibold">이름·수업시작일</th><th className="px-3 py-2.5 font-semibold">학교·학년</th><th className="px-3 py-2.5 font-semibold">차량</th><th className="px-3 py-2.5 font-semibold">재원 상태</th><th className="px-3 py-2.5 font-semibold">작업</th></tr></thead><tbody>{data.students.length ? data.students.map((student) => <tr key={student.id} className="border-b border-slate-100"><td className="px-3 py-3 font-mono text-xs">{student.student_no}</td><td className="px-3 py-3 font-semibold"><span>{student.name}</span><span className="mt-1 block text-xs font-normal text-slate-500">수업시작일: {student.class_start_date ?? "-"}</span></td><td className="px-3 py-3">{student.school_name ?? "-"} · {student.grade ?? "학년 없음"}</td><td className="px-3 py-3">{student.vehicle_id ? vehicleNameById.get(student.vehicle_id) ?? "등록 차량 없음" : "차량 없음"}</td><td className="px-3 py-3">{statusLabel(student.current_status)}</td><td className="px-3 py-3"><button type="button" onClick={() => editStudent(student)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold hover:bg-slate-50">선택·수정</button></td></tr>) : <tr><td colSpan={6} className="px-3 py-12 text-center text-slate-500">등록된 학생이 없습니다.</td></tr>}</tbody></table></div> : null}
       </section>
 
-      {selectedStudent ? <section className="mt-6 rounded-2xl border border-indigo-100 bg-indigo-50 p-6 sm:p-8"><div className="flex items-center justify-between gap-4"><div><p className="text-sm font-bold text-indigo-600">STATUS HISTORY</p><h2 className="mt-1 text-xl font-bold">{selectedStudent.name} 상태 이력</h2></div><button type="button" onClick={() => setSelectedStudentId("")} className="text-sm font-semibold text-slate-500 hover:text-slate-800">닫기</button></div><div className="mt-5 space-y-3">{selectedHistory.length ? selectedHistory.map((history) => <div key={history.id} className="rounded-xl bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold">{history.previous_status ? `${statusLabel(history.previous_status)} → ` : "최초 등록 → "}{statusLabel(history.next_status)}</p><span className="text-sm text-slate-500">적용일 {history.effective_date}</span></div><p className="mt-2 text-sm text-slate-600">{history.reason ?? "사유 없음"}{history.withdrawal_type ? ` · ${history.withdrawal_type}` : ""}</p></div>) : <p className="rounded-xl bg-white px-4 py-8 text-center text-sm text-slate-500">상태 이력이 없습니다.</p>}</div></section> : null}
+      {selectedStudent ? <section className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50 p-4 sm:p-6"><div className="flex items-center justify-between gap-4"><div><p className="text-sm font-bold text-indigo-600">STATUS HISTORY</p><h2 className="mt-1 text-xl font-bold">{selectedStudent.name} 상태 이력</h2></div><button type="button" onClick={() => setSelectedStudentId("")} className="text-sm font-semibold text-slate-500 hover:text-slate-800">닫기</button></div><div className="mt-4 max-h-64 space-y-3 overflow-y-auto">{selectedHistory.length ? selectedHistory.map((history) => <div key={history.id} className="rounded-xl bg-white p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold">{history.previous_status ? `${statusLabel(history.previous_status)} → ` : "최초 등록 → "}{statusLabel(history.next_status)}</p><span className="text-sm text-slate-500">적용일 {history.effective_date}</span></div><p className="mt-2 text-sm text-slate-600">{history.reason ?? "사유 없음"}{history.withdrawal_type ? ` · ${history.withdrawal_type}` : ""}</p></div>) : <p className="rounded-xl bg-white px-4 py-8 text-center text-sm text-slate-500">상태 이력이 없습니다.</p>}</div></section> : null}
 
-      {selectedStudent ? <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-bold">{selectedStudent.name} 보호자 연결</h2><p className="mt-2 text-sm text-slate-500">접속 링크 발급·재발급·취소, 만료 시각과 사용 여부를 관리합니다.</p></div><button type="button" onClick={() => setSelectedStudentId("")} className="text-sm font-semibold text-slate-500 hover:text-slate-800">연결 관리 닫기</button></div><div className="mt-5 overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="px-3 py-3 font-semibold">보호자</th><th className="px-3 py-3 font-semibold">관계</th><th className="px-3 py-3 font-semibold">접속 상태</th><th className="px-3 py-3 font-semibold">마지막 발급·만료</th><th className="px-3 py-3 font-semibold">접속 링크 관리</th></tr></thead><tbody>{selectedGuardians.length ? selectedGuardians.map((link) => { const invitePending = Boolean(link.invite && !link.invite.used_at && !link.invite.revoked_at); const accessBlocked = Boolean(link.access_revoked_at || link.guardian?.guardian_access_revoked_at || selectedStudent.current_status === "withdrawn"); const cannotIssue = Boolean(!link.guardian?.is_login_active || selectedStudent.current_status === "withdrawn"); return <tr key={link.id} className="border-b border-slate-100"><td className="px-3 py-4 font-semibold">{link.guardian?.display_name ?? "보호자 정보 없음"}<span className="mt-1 block text-xs font-normal text-slate-500">{link.guardian?.phone ?? "전화번호 없음"}</span></td><td className="px-3 py-4">{link.relationship ?? "-"}</td><td className="px-3 py-4">{accessBlocked ? "접속 차단" : invitePending ? "인증 대기" : "접속 가능"}<span className="mt-1 block text-xs font-normal text-slate-500">{link.invite?.used_at ? "마지막 링크 사용 완료" : link.invite?.revoked_at ? "마지막 링크 취소" : "발급 기록 없음"}</span></td><td className="px-3 py-4 text-xs leading-5 text-slate-600">발급: {formatGuardianAccessDate(link.invite?.created_at)}<br />만료: {formatGuardianAccessDate(link.invite?.expires_at)}</td><td className="px-3 py-4"><div className="flex flex-wrap gap-2">{!cannotIssue ? <button type="button" onClick={() => reissueInvite(link)} disabled={isLoading} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">접속 링크 재발급</button> : null}{invitePending ? <button type="button" onClick={() => revokeInvite(link)} disabled={isLoading} className="rounded-lg border border-rose-300 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50">기존 링크 취소</button> : null}</div></td></tr>; }) : <tr><td colSpan={5} className="px-3 py-12 text-center text-slate-500">선택한 학생과 연결된 보호자가 없습니다.</td></tr>}</tbody></table></div></section> : null}
+      {selectedStudent ? <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-bold">{selectedStudent.name} 보호자 연결</h2><p className="mt-2 text-sm text-slate-500">접속 링크 발급·재발급·취소, 60일 만료 시각과 최대 5회 사용 현황을 관리합니다.</p></div><button type="button" onClick={() => setSelectedStudentId("")} className="text-sm font-semibold text-slate-500 hover:text-slate-800">연결 관리 닫기</button></div><div className="mt-4 max-h-[420px] overflow-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="px-3 py-2.5 font-semibold">보호자</th><th className="px-3 py-2.5 font-semibold">관계</th><th className="px-3 py-2.5 font-semibold">접속 상태</th><th className="px-3 py-2.5 font-semibold">마지막 발급·만료·사용</th><th className="px-3 py-2.5 font-semibold">접속 링크 관리</th></tr></thead><tbody>{selectedGuardians.length ? selectedGuardians.map((link) => { const inviteUseCount = Number(link.invite?.use_count ?? 0); const inviteExpired = Boolean(link.invite && new Date(link.invite.expires_at).getTime() <= Date.now()); const invitePending = Boolean(link.invite && inviteUseCount < 5 && !link.invite.used_at && !link.invite.revoked_at && !inviteExpired); const accessBlocked = Boolean(link.access_revoked_at || link.guardian?.guardian_access_revoked_at || selectedStudent.current_status === "withdrawn"); const cannotIssue = Boolean(!link.guardian?.is_login_active || selectedStudent.current_status === "withdrawn"); const inviteStatus = link.invite?.revoked_at ? "마지막 링크 취소" : inviteExpired ? "마지막 링크 만료" : inviteUseCount >= 5 ? "사용 한도 소진" : link.invite ? `${inviteUseCount}/5회 사용` : "발급 기록 없음"; return <tr key={link.id} className="border-b border-slate-100"><td className="px-3 py-3 font-semibold">{link.guardian?.display_name ?? "보호자 정보 없음"}<span className="mt-1 block text-xs font-normal text-slate-500">{link.guardian?.phone ?? "전화번호 없음"}</span></td><td className="px-3 py-3">{link.relationship ?? "-"}</td><td className="px-3 py-3">{accessBlocked ? "접속 차단" : "접속 가능"}<span className="mt-1 block text-xs font-normal text-slate-500">{inviteStatus}</span></td><td className="px-3 py-3 text-xs leading-5 text-slate-600">발급: {formatGuardianAccessDate(link.invite?.created_at)}<br />만료: {formatGuardianAccessDate(link.invite?.expires_at)}<br />사용: {inviteUseCount}/5회</td><td className="px-3 py-3"><div className="flex flex-wrap gap-2">{!cannotIssue ? <button type="button" onClick={() => reissueInvite(link)} disabled={isLoading} className="rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">접속 링크 재발급</button> : null}{invitePending ? <button type="button" onClick={() => revokeInvite(link)} disabled={isLoading} className="rounded-lg border border-rose-300 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50">기존 링크 취소</button> : null}</div></td></tr>; }) : <tr><td colSpan={5} className="px-3 py-12 text-center text-sm text-slate-500">선택한 학생과 연결된 보호자가 없습니다.</td></tr>}</tbody></table></div></section> : null}
 
       </div>
     </div>
@@ -1463,7 +1703,7 @@ function StudentsPageContent() {
 
 export default function StudentsPage() {
   return (
-    <Suspense fallback={<div className="mx-auto max-w-6xl px-6 py-12 text-sm text-slate-500">학생 관리 화면을 불러오는 중입니다.</div>}>
+      <Suspense fallback={<div className="mx-auto max-w-7xl px-4 py-8 text-sm text-slate-500 sm:px-6">학생 관리 화면을 불러오는 중입니다.</div>}>
       <StudentsPageContent />
     </Suspense>
   );

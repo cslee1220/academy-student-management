@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
 import { AuthorizationError, requireAcademyAdminFromContext, requireAcademyMembership } from "@/lib/auth/authorization";
+import { resolveEffectiveAssignment, type AssignmentRole } from "@/lib/assignment-resolution";
 import { getRiskRuleDefinition, RISK_RULE_KEYS, type RiskRule, type RiskRuleKey } from "@/lib/risk-rules";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { activeWithdrawalConcerns, type WithdrawalConcernConsultation, type WithdrawalConcernResolution } from "@/lib/withdrawal-concerns";
@@ -17,6 +18,7 @@ type StudentRow = {
   id: string;
   student_no: string;
   name: string;
+  registered_at: string;
   current_status: string;
   class_start_date: string | null;
 };
@@ -34,6 +36,27 @@ type AttendanceRow = {
   student_id: string;
   record_date: string;
   attendance_status: "present" | "absent" | "unexcused_absent";
+  absence_note: string | null;
+};
+
+type AttendanceSubjectDetail = {
+  subjectName: string;
+  status: string;
+  absenceNote: string | null;
+};
+
+type AttendanceSubjectAccumulator = {
+  statuses: string[];
+  hasMissing: boolean;
+  absenceNotes: Set<string>;
+};
+
+type AttendanceSummaryAccumulator = {
+  studentId: string;
+  blockIds: Set<string>;
+  statuses: string[];
+  hasMissing: boolean;
+  subjects: Map<string, AttendanceSubjectAccumulator>;
 };
 
 type SubjectRow = {
@@ -74,11 +97,13 @@ type ScheduleBlockStudentRow = {
 };
 
 type ClassAssignmentRow = {
+  id: string;
   class_id: string;
   student_id: string;
   start_date: string;
   end_date: string | null;
   status: string;
+  assignment_role: AssignmentRole;
 };
 
 type StatusHistoryRow = {
@@ -120,6 +145,12 @@ type SupplementTestItem = {
   nonAttemptReason: string | null;
 };
 
+type ConsultationRow = WithdrawalConcernConsultation & {
+  method: string | null;
+  status: string | null;
+  consultation_type: string | null;
+};
+
 type RiskReason = {
   rule: RiskRuleKey;
   label: string;
@@ -128,7 +159,7 @@ type RiskReason = {
   lookbackDays: number;
 };
 
-type ReportDetailSection = "student_status" | "daily_attendance" | "operations";
+type ReportDetailSection = "student_status" | "daily_attendance" | "operations" | "publication";
 type ReportDetailItem =
   | "enrolled"
   | "paused"
@@ -142,25 +173,40 @@ type ReportDetailItem =
   | "withdrawals"
   | "new_students"
   | "consultation_missing"
+  | "consultation_records"
   | "subject_missing"
   | "returning_soon"
   | "withdrawal_concern"
+  | "class_movement"
+  | "monthly_new_students"
+  | "monthly_pause_returns"
+  | "monthly_withdrawal_returns"
+  | "monthly_withdrawals"
+  | "monthly_pauses"
+  | "monthly_adjustments"
   | "supplement_target"
   | "supplement_completed"
   | "supplement_cancelled"
-  | "supplement_incomplete";
+  | "supplement_incomplete"
+  | "publication_all"
+  | "publication_published"
+  | "publication_draft";
 
 type ReportDetailRow = {
   studentId: string;
   studentNo: string;
   name: string;
   statusLabel?: string;
+  previousStatusLabel?: string | null;
+  endingStatusLabel?: string | null;
   date?: string;
   attendanceStatus?: string;
+  attendanceBySubject?: AttendanceSubjectDetail[];
   className?: string | null;
   subjectName?: string | null;
   classroomName?: string | null;
   classDisplay?: string | null;
+  previousClassDisplay?: string | null;
   expectedReturnDate?: string | null;
   daysUntilReturn?: number;
   supplementType?: string;
@@ -179,6 +225,45 @@ type ReportDetailRow = {
   homeworkCompleted?: boolean;
   consultationAt?: string | null;
   consultationContent?: string | null;
+  consultationMethod?: string | null;
+  consultationStatus?: string | null;
+  consultationType?: string | null;
+  publicationStatus?: "draft" | "published";
+  adjustmentAmount?: number;
+  adjustmentReason?: string | null;
+};
+
+type MonthlyFlowItem =
+  | "monthly_new_students"
+  | "monthly_pause_returns"
+  | "monthly_withdrawal_returns"
+  | "monthly_withdrawals"
+  | "monthly_pauses"
+  | "monthly_adjustments";
+
+type MonthlyFlowMovement = {
+  studentId: string;
+  previousStatus: string | null;
+  endingStatus: string | null;
+  date: string;
+  expectedReturnDate?: string | null;
+  adjustmentAmount?: number;
+  adjustmentReason?: string;
+};
+
+type MonthlyStudentFlow = {
+  startDate: string;
+  endDate: string;
+  previousEndDate: string;
+  beginningCount: number;
+  endingCount: number;
+  newStudents: number;
+  pauseReturns: number;
+  withdrawalReturns: number;
+  withdrawals: number;
+  pauses: number;
+  adjustments: number;
+  rows: Record<MonthlyFlowItem, MonthlyFlowMovement[]>;
 };
 
 type WithdrawalConcernHistoryRow = {
@@ -369,7 +454,7 @@ function parseVersion(value: unknown) {
 
 function parseDetail(value: string | null) {
   if (!value) return null;
-  const sections: ReportDetailSection[] = ["student_status", "daily_attendance", "operations"];
+  const sections: ReportDetailSection[] = ["student_status", "daily_attendance", "operations", "publication"];
   if (!sections.includes(value as ReportDetailSection)) throw new HttpError(400, "invalid_detail", "상세 현황 구분이 올바르지 않습니다.");
   return value as ReportDetailSection;
 }
@@ -378,7 +463,7 @@ function parseDetailItem(value: string | null): ReportDetailItem | null {
   if (!value) return null;
   const items: ReportDetailItem[] = [
     "enrolled", "paused", "withdrawn", "new", "expected", "missing", "present", "absent", "unexcused_absent",
-    "withdrawals", "new_students", "consultation_missing", "subject_missing", "returning_soon", "withdrawal_concern", "supplement_target", "supplement_completed", "supplement_cancelled", "supplement_incomplete",
+    "withdrawals", "new_students", "monthly_new_students", "monthly_pause_returns", "monthly_withdrawal_returns", "monthly_withdrawals", "monthly_pauses", "monthly_adjustments", "consultation_missing", "consultation_records", "subject_missing", "returning_soon", "withdrawal_concern", "class_movement", "supplement_target", "supplement_completed", "supplement_cancelled", "supplement_incomplete", "publication_all", "publication_published", "publication_draft",
   ];
   if (!items.includes(value as ReportDetailItem)) throw new HttpError(400, "invalid_detail", "상세 현황 항목이 올바르지 않습니다.");
   return value as ReportDetailItem;
@@ -394,6 +479,18 @@ function seoulDate(value: string) {
 
 function firstDayOfMonth(value: string) {
   return `${value.slice(0, 8)}01`;
+}
+
+function parseYearMonth(value: string | null, fieldName: string, fallback: number, min: number, max: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new HttpError(400, "invalid_month", `${fieldName} 값이 올바르지 않습니다.`);
+  }
+  return parsed;
+}
+
+function lastDayOfMonth(year: number, month: number) {
+  return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
 }
 
 function subtractDays(value: string, days: number) {
@@ -445,19 +542,37 @@ function effectiveScheduleBlocksForDate(blocks: ScheduleBlockRow[], date: string
   return [...latestByKey.values()];
 }
 
-function expectedSessionKeys(blocks: ScheduleBlockRow[], blockStudents: ScheduleBlockStudentRow[], startDate: string, endDate: string) {
+function expectedSessionKeys(
+  blocks: ScheduleBlockRow[],
+  blockStudents: ScheduleBlockStudentRow[],
+  classAssignments: ClassAssignmentRow[],
+  startDate: string,
+  endDate: string,
+) {
   const studentsByBlock = new Map<string, ScheduleBlockStudentRow[]>();
   for (const blockStudent of blockStudents) {
     const rows = studentsByBlock.get(blockStudent.block_id) ?? [];
     rows.push(blockStudent);
     studentsByBlock.set(blockStudent.block_id, rows);
   }
+  const assignmentsByStudent = new Map<string, ClassAssignmentRow[]>();
+  for (const assignment of classAssignments) {
+    const rows = assignmentsByStudent.get(assignment.student_id) ?? [];
+    rows.push(assignment);
+    assignmentsByStudent.set(assignment.student_id, rows);
+  }
   const keys = new Set<string>();
   for (const date of dateRange(startDate, endDate)) {
     for (const block of effectiveScheduleBlocksForDate(blocks, date)) {
       if (block.weekday !== weekdayOf(date)) continue;
       for (const blockStudent of studentsByBlock.get(block.id) ?? []) {
-        if ((blockStudent.is_active || blockStudent.end_date) && blockStudent.start_date <= date && (!blockStudent.end_date || blockStudent.end_date >= date)) {
+        const effectiveAssignment = resolveEffectiveAssignment(assignmentsByStudent.get(blockStudent.student_id) ?? [], date);
+        if (
+          effectiveAssignment?.class_id === block.class_id
+          && (blockStudent.is_active || blockStudent.end_date)
+          && blockStudent.start_date <= date
+          && (!blockStudent.end_date || blockStudent.end_date >= date)
+        ) {
           keys.add(`${block.id}:${blockStudent.student_id}:${date}`);
         }
       }
@@ -487,9 +602,9 @@ function scheduleDisplayForStudentDate(studentId: string, date: string, blocks: 
 }
 
 function rollupAttendanceStatus(hasMissing: boolean, statuses: string[]) {
-  if (hasMissing) return "미입력";
   if (statuses.includes("unexcused_absent")) return "unexcused_absent";
   if (statuses.includes("absent")) return "absent";
+  if (hasMissing) return "미입력";
   return "present";
 }
 
@@ -502,6 +617,145 @@ function statusLabel(status: string) {
     withdrawn: "퇴원",
   };
   return labels[status] ?? status;
+}
+
+function isEnrolledStatus(status: string | undefined) {
+  return status === "enrolled" || status === "active";
+}
+
+function isPausedStatus(status: string | undefined) {
+  return status === "paused" || status === "on_hold";
+}
+
+function latestStatusHistoryByStudent(rows: StatusHistoryRow[]) {
+  const latest = new Map<string, StatusHistoryRow>();
+  for (const row of [...rows].sort((left, right) =>
+    right.effective_date.localeCompare(left.effective_date)
+      || (right.created_at ?? "").localeCompare(left.created_at ?? ""),
+  )) {
+    if (!latest.has(row.student_id)) latest.set(row.student_id, row);
+  }
+  return latest;
+}
+
+function statusAtDate(student: StudentRow, rows: StatusHistoryRow[], date: string) {
+  if (student.registered_at > date) return null;
+  return latestStatusHistoryByStudent(rows.filter((row) => row.effective_date <= date)).get(student.id)?.next_status ?? student.current_status;
+}
+
+function emptyMonthlyFlowRows(): Record<MonthlyFlowItem, MonthlyFlowMovement[]> {
+  return {
+    monthly_new_students: [],
+    monthly_pause_returns: [],
+    monthly_withdrawal_returns: [],
+    monthly_withdrawals: [],
+    monthly_pauses: [],
+    monthly_adjustments: [],
+  };
+}
+
+function calculateMonthlyStudentFlow(
+  students: StudentRow[],
+  historyRows: StatusHistoryRow[],
+  startDate: string,
+  endDate: string,
+): MonthlyStudentFlow {
+  const previousEndDate = subtractDays(startDate, 1);
+  const historyByStudent = new Map<string, StatusHistoryRow[]>();
+  for (const row of historyRows) {
+    const rows = historyByStudent.get(row.student_id) ?? [];
+    rows.push(row);
+    historyByStudent.set(row.student_id, rows);
+  }
+  const rows = emptyMonthlyFlowRows();
+  let beginningCount = 0;
+  let endingCount = 0;
+  let newStudents = 0;
+  let pauseReturns = 0;
+  let withdrawalReturns = 0;
+  let withdrawals = 0;
+  let pauses = 0;
+  let adjustments = 0;
+
+  for (const student of students) {
+    if (student.registered_at > endDate) continue;
+    const previousStatus = statusAtDate(student, historyRows, previousEndDate);
+    const endingStatus = statusAtDate(student, historyRows, endDate);
+    const inPeriod = (historyByStudent.get(student.id) ?? [])
+      .filter((row) => row.effective_date >= startDate && row.effective_date <= endDate)
+      .sort((left, right) => left.effective_date.localeCompare(right.effective_date) || (left.created_at ?? "").localeCompare(right.created_at ?? ""));
+    const registeredInPeriod = student.registered_at >= startDate && student.registered_at <= endDate;
+    const previousWasEnrolled = isEnrolledStatus(previousStatus ?? undefined);
+    const endingIsEnrolled = isEnrolledStatus(endingStatus ?? undefined);
+    const hasPauseReturn = inPeriod.some((row) => isPausedStatus(row.previous_status ?? undefined) && isEnrolledStatus(row.next_status));
+    const hasWithdrawalReturn = inPeriod.some((row) => row.previous_status === "withdrawn" && isEnrolledStatus(row.next_status));
+    const hasPauseExit = inPeriod.some((row) => isEnrolledStatus(row.previous_status ?? undefined) && isPausedStatus(row.next_status));
+    const hasWithdrawalExit = inPeriod.some((row) => (isEnrolledStatus(row.previous_status ?? undefined) || isPausedStatus(row.previous_status ?? undefined)) && row.next_status === "withdrawn");
+    const isPauseReturn = !registeredInPeriod && endingIsEnrolled && (isPausedStatus(previousStatus ?? undefined) || hasPauseReturn || (previousWasEnrolled && hasPauseExit));
+    const isWithdrawalReturn = !registeredInPeriod && endingIsEnrolled && (previousStatus === "withdrawn" || hasWithdrawalReturn || (previousWasEnrolled && hasWithdrawalExit));
+    const isWithdrawal = !endingIsEnrolled && endingStatus === "withdrawn" && (isEnrolledStatus(previousStatus ?? undefined) || isPausedStatus(previousStatus ?? undefined) || hasWithdrawalExit);
+    const isPause = !endingIsEnrolled && isPausedStatus(endingStatus ?? undefined) && (isEnrolledStatus(previousStatus ?? undefined) || hasPauseExit || registeredInPeriod);
+    const movementDate = (targetStatus: string) => inPeriod.find((row) => row.next_status === targetStatus)?.effective_date ?? endDate;
+    const pauseMovement = [...inPeriod].reverse().find((row) => row.next_status === "paused");
+
+    if (previousWasEnrolled) beginningCount += 1;
+    if (endingIsEnrolled) endingCount += 1;
+    if (registeredInPeriod) {
+      newStudents += 1;
+      rows.monthly_new_students.push({ studentId: student.id, previousStatus, endingStatus, date: student.registered_at });
+    }
+    if (isPauseReturn) {
+      pauseReturns += 1;
+      rows.monthly_pause_returns.push({ studentId: student.id, previousStatus, endingStatus, date: movementDate("enrolled") });
+    }
+    if (isWithdrawalReturn) {
+      withdrawalReturns += 1;
+      rows.monthly_withdrawal_returns.push({ studentId: student.id, previousStatus, endingStatus, date: movementDate("enrolled") });
+    }
+    if (isWithdrawal) {
+      withdrawals += 1;
+      rows.monthly_withdrawals.push({ studentId: student.id, previousStatus, endingStatus, date: movementDate("withdrawn") });
+    }
+    if (isPause) {
+      pauses += 1;
+      rows.monthly_pauses.push({ studentId: student.id, previousStatus, endingStatus, date: pauseMovement?.effective_date ?? endDate, expectedReturnDate: pauseMovement?.expected_return_date ?? null });
+    }
+
+    const expectedEndingContribution = (previousWasEnrolled ? 1 : 0)
+      + (registeredInPeriod ? 1 : 0)
+      + (isPauseReturn ? 1 : 0)
+      + (isWithdrawalReturn ? 1 : 0)
+      - (isWithdrawal ? 1 : 0)
+      - (isPause ? 1 : 0);
+    const actualEndingContribution = endingIsEnrolled ? 1 : 0;
+    const adjustmentAmount = actualEndingContribution - expectedEndingContribution;
+    if (adjustmentAmount !== 0) {
+      adjustments += adjustmentAmount;
+      const reason = registeredInPeriod && !endingIsEnrolled
+        ? "당월 신규 등록 후 월말에 재원 상태가 아님"
+        : previousStatus && !previousWasEnrolled && isWithdrawal
+          ? "전월말 재원 인원에 포함되지 않은 휴원생의 퇴원"
+          : (hasPauseExit || hasWithdrawalExit) && endingIsEnrolled
+            ? "월중 휴원·퇴원 후 월말 재원으로 복귀한 상태 변동"
+            : "상태 이력과 월말 재원 스냅샷의 차이";
+      rows.monthly_adjustments.push({ studentId: student.id, previousStatus, endingStatus, date: endDate, adjustmentAmount, adjustmentReason: reason });
+    }
+  }
+
+  return {
+    startDate,
+    endDate,
+    previousEndDate,
+    beginningCount,
+    endingCount,
+    newStudents,
+    pauseReturns,
+    withdrawalReturns,
+    withdrawals,
+    pauses,
+    adjustments,
+    rows,
+  };
 }
 
 function normalizeRules(rows: Array<Record<string, unknown>>) {
@@ -715,26 +969,50 @@ export async function GET(request: NextRequest) {
     }
     const admin = createSupabaseAdminClient();
 
+    if (request.nextUrl.searchParams.get("view") === "monthly_student_flow") {
+      const fallbackYear = Number(endDate.slice(0, 4));
+      const fallbackMonth = Number(endDate.slice(5, 7));
+      const flowYear = parseYearMonth(request.nextUrl.searchParams.get("year"), "year", fallbackYear, 2000, 2100);
+      const flowMonth = parseYearMonth(request.nextUrl.searchParams.get("month"), "month", fallbackMonth, 1, 12);
+      const flowStartDate = `${flowYear}-${String(flowMonth).padStart(2, "0")}-01`;
+      const flowEndDate = lastDayOfMonth(flowYear, flowMonth);
+      const [{ data: flowStudents, error: flowStudentsError }, { data: flowHistory, error: flowHistoryError }] = await Promise.all([
+        admin.from("students").select("id, student_no, name, registered_at, current_status, class_start_date").eq("academy_id", academyId).order("name", { ascending: true }),
+        admin.from("student_status_history").select("id, student_id, previous_status, next_status, effective_date, expected_return_date, created_at").eq("academy_id", academyId).lte("effective_date", flowEndDate),
+      ]);
+      if (flowStudentsError || flowHistoryError) {
+        databaseError(flowStudentsError ?? flowHistoryError, "월별 학생현황을 불러오지 못했습니다.");
+      }
+      const monthlyStudentFlow = calculateMonthlyStudentFlow(
+        (flowStudents ?? []) as StudentRow[],
+        (flowHistory ?? []) as StatusHistoryRow[],
+        flowStartDate,
+        flowEndDate,
+      );
+      return NextResponse.json({ data: { period: { startDate: flowStartDate, endDate: flowEndDate }, monthlyStudentFlow } });
+    }
+
     const { data: ruleRows, error: ruleError } = await admin.from("risk_rule_settings").select("id, item_key, is_enabled, threshold_score, lookback_days, minimum_count, minimum_valid_sessions").eq("academy_id", academyId);
     if (ruleError) databaseError(ruleError, "위험군 기준을 불러오지 못했습니다.");
     const rules = normalizeRules((ruleRows ?? []) as Array<Record<string, unknown>>);
     const riskStart = subtractDays(endDate, Math.max(...rules.map((rule) => rule.lookback_days), 1));
-    const [{ data: students, error: studentsError }, { data: attendance, error: attendanceError }, { data: subjects, error: subjectsError }, { data: consultations, error: consultationsError }, { data: resolutions, error: resolutionsError }, { data: statusHistory, error: statusHistoryError }, { data: expectedReturnHistory, error: expectedReturnHistoryError }, { data: scheduleBlocks, error: scheduleBlocksError }, { data: scheduleBlockStudents, error: scheduleBlockStudentsError }, { data: classAssignments, error: classAssignmentsError }, { data: supplementTasks, error: supplementTasksError }, { data: publications, error: publicationsError }] = await Promise.all([
-      admin.from("students").select("id, student_no, name, current_status, class_start_date").eq("academy_id", academyId).order("name", { ascending: true }),
-      admin.from("daily_attendance_records").select("block_id, student_id, record_date, attendance_status").eq("academy_id", academyId).gte("record_date", riskStart).lte("record_date", endDate),
+    const [{ data: students, error: studentsError }, { data: attendance, error: attendanceError }, { data: subjects, error: subjectsError }, { data: consultations, error: consultationsError }, { data: resolutions, error: resolutionsError }, { data: statusHistory, error: statusHistoryError }, { data: periodStatusHistory, error: periodStatusHistoryError }, { data: expectedReturnHistory, error: expectedReturnHistoryError }, { data: scheduleBlocks, error: scheduleBlocksError }, { data: scheduleBlockStudents, error: scheduleBlockStudentsError }, { data: classAssignments, error: classAssignmentsError }, { data: supplementTasks, error: supplementTasksError }, { data: publications, error: publicationsError }] = await Promise.all([
+      admin.from("students").select("id, student_no, name, registered_at, current_status, class_start_date").eq("academy_id", academyId).order("name", { ascending: true }),
+      admin.from("daily_attendance_records").select("block_id, student_id, record_date, attendance_status, absence_note").eq("academy_id", academyId).gte("record_date", riskStart).lte("record_date", endDate),
       admin.from("daily_subject_records").select("block_id, student_id, record_date, homework_score, understanding_score, participation_score").eq("academy_id", academyId).gte("record_date", riskStart).lte("record_date", endDate),
-      admin.from("parent_consultations").select("id, student_id, consultation_at, content, withdrawal_concern, created_at").eq("academy_id", academyId),
+      admin.from("parent_consultations").select("id, student_id, consultation_at, method, status, consultation_type, content, withdrawal_concern, created_at").eq("academy_id", academyId),
       admin.from("student_withdrawal_concern_resolutions").select("id, student_id, consultation_id, resolved_at, reason").eq("academy_id", academyId),
+      admin.from("student_status_history").select("id, student_id, previous_status, next_status, effective_date, expected_return_date, created_at").eq("academy_id", academyId).lte("effective_date", endDate),
       admin.from("student_status_history").select("id, student_id, previous_status, next_status, effective_date, expected_return_date, created_at").eq("academy_id", academyId).gte("effective_date", startDate).lte("effective_date", endDate),
-      admin.from("student_status_history").select("student_id, next_status, effective_date, expected_return_date, created_at").eq("academy_id", academyId).eq("next_status", "paused").not("expected_return_date", "is", null),
+      admin.from("student_status_history").select("student_id, next_status, effective_date, expected_return_date, created_at").eq("academy_id", academyId).eq("next_status", "paused").not("expected_return_date", "is", null).lte("effective_date", endDate),
       admin.from("class_schedule_blocks").select("id, class_id, class_name_snapshot, subject_name_snapshot, classroom_name_snapshot, weekday, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).eq("is_active", true),
       admin.from("class_schedule_block_students").select("block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).lte("start_date", endDate),
-      admin.from("student_class_assignments").select("class_id, student_id, start_date, end_date, status").eq("academy_id", academyId).in("status", ["active", "ended"]).lte("start_date", endDate),
+      admin.from("student_class_assignments").select("id, class_id, student_id, start_date, end_date, status, assignment_role").eq("academy_id", academyId).in("status", ["active", "ended"]).lte("start_date", endDate),
       admin.from("student_supplement_tasks").select("id, class_id, subject_id, student_id, record_date, class_name_snapshot, subject_name_snapshot, classroom_name_snapshot, is_active, cancelled_at, cancel_reason, legacy_supplementary, is_test_supplementary, is_homework_supplementary, test_items, homework_content, test_completed, homework_completed, version").eq("academy_id", academyId).gte("record_date", startDate).lte("record_date", endDate),
       admin.from("daily_record_publications").select("student_id, record_date, status").eq("academy_id", academyId).gte("record_date", startDate).lte("record_date", endDate),
     ]);
-    if (studentsError || attendanceError || subjectsError || consultationsError || resolutionsError || statusHistoryError || expectedReturnHistoryError || scheduleBlocksError || scheduleBlockStudentsError || classAssignmentsError || supplementTasksError || publicationsError) {
-      databaseError(studentsError ?? attendanceError ?? subjectsError ?? consultationsError ?? statusHistoryError ?? publicationsError, "관리자 통계 자료를 불러오지 못했습니다.");
+    if (studentsError || attendanceError || subjectsError || consultationsError || resolutionsError || statusHistoryError || periodStatusHistoryError || expectedReturnHistoryError || scheduleBlocksError || scheduleBlockStudentsError || classAssignmentsError || supplementTasksError || publicationsError) {
+      databaseError(studentsError ?? attendanceError ?? subjectsError ?? consultationsError ?? statusHistoryError ?? periodStatusHistoryError ?? publicationsError, "관리자 통계 자료를 불러오지 못했습니다.");
     }
 
     if (scheduleBlocksError || scheduleBlockStudentsError || classAssignmentsError || supplementTasksError) {
@@ -748,74 +1026,130 @@ export async function GET(request: NextRequest) {
     const scheduleBlockStudentRows = (scheduleBlockStudents ?? []) as ScheduleBlockStudentRow[];
     const classAssignmentRows = (classAssignments ?? []) as ClassAssignmentRow[];
     const statusHistoryRows = (statusHistory ?? []) as StatusHistoryRow[];
+    const periodStatusHistoryRows = (periodStatusHistory ?? []) as StatusHistoryRow[];
     const expectedReturnHistoryRows = (expectedReturnHistory ?? []) as ExpectedReturnHistoryRow[];
-    const consultationRows = (consultations ?? []) as WithdrawalConcernConsultation[];
+    const latestStatusHistoryByStudentMap = latestStatusHistoryByStudent(statusHistoryRows);
+    const monthlyStudentFlow = calculateMonthlyStudentFlow(studentRows, statusHistoryRows, startDate, endDate);
+    const reportStatusByStudentId = new Map<string, string>();
+    for (const student of studentRows) {
+      if (student.registered_at > endDate) continue;
+      reportStatusByStudentId.set(student.id, latestStatusHistoryByStudentMap.get(student.id)?.next_status ?? student.current_status);
+    }
+    const reportStudents = studentRows.filter((student) => reportStatusByStudentId.has(student.id));
+    const consultationRows = (consultations ?? []) as ConsultationRow[];
     const resolutionRows = (resolutions ?? []) as WithdrawalConcernResolution[];
     const consultationsInPeriod = consultationRows.filter((row) => {
       const consultationDate = seoulDate(row.consultation_at ?? row.created_at);
       return consultationDate >= startDate && consultationDate <= endDate;
     });
+    const consultationStudentCount = new Set(consultationsInPeriod.map((row) => row.student_id)).size;
     const activeWithdrawalConcernByStudent = activeWithdrawalConcerns(consultationRows, resolutionRows);
     const activeWithdrawalConcernStudentIds = new Set(
-      [...activeWithdrawalConcernByStudent.keys()].filter((studentId) => studentRows.find((student) => student.id === studentId)?.current_status !== "withdrawn"),
+      [...activeWithdrawalConcernByStudent.keys()].filter((studentId) => reportStatusByStudentId.get(studentId) !== "withdrawn"),
     );
-    const allExpectedSessionKeys = expectedSessionKeys(scheduleBlockRows, scheduleBlockStudentRows, startDate, endDate);
-    const todayExpectedSessionKeys = expectedSessionKeys(scheduleBlockRows, scheduleBlockStudentRows, endDate, endDate);
-    const todayAttendanceRows = attendanceRows.filter((row) => row.record_date === endDate && todayExpectedSessionKeys.has(`${row.block_id}:${row.student_id}:${endDate}`));
+    const allExpectedSessionKeys = expectedSessionKeys(scheduleBlockRows, scheduleBlockStudentRows, classAssignmentRows, startDate, endDate);
+    const todayExpectedSessionKeys = expectedSessionKeys(scheduleBlockRows, scheduleBlockStudentRows, classAssignmentRows, endDate, endDate);
+    const todayAttendanceExpectedSessionKeys = new Set(
+      [...todayExpectedSessionKeys].filter((key) => {
+        const studentId = key.split(":")[1];
+        return !isPausedStatus(reportStatusByStudentId.get(studentId));
+      }),
+    );
+    const todayAttendanceRows = attendanceRows.filter((row) => row.record_date === endDate && todayAttendanceExpectedSessionKeys.has(`${row.block_id}:${row.student_id}:${endDate}`));
     const todayAttendanceKeys = new Set(todayAttendanceRows.map((row) => row.student_id));
     const attendanceByKey = new Map(todayAttendanceRows.map((row) => [`${row.block_id}:${row.student_id}:${row.record_date}`, row]));
-    const attendanceSummaryByStudent = new Map<string, { studentId: string; blockIds: Set<string>; statuses: string[]; hasMissing: boolean }>();
-    for (const key of todayExpectedSessionKeys) {
+    const scheduleBlockById = new Map(scheduleBlockRows.map((block) => [block.id, block]));
+    const attendanceSummaryByStudent = new Map<string, AttendanceSummaryAccumulator>();
+    for (const key of todayAttendanceExpectedSessionKeys) {
       const [blockId, studentId] = key.split(":");
-      const summary = attendanceSummaryByStudent.get(studentId) ?? { studentId, blockIds: new Set<string>(), statuses: [], hasMissing: false };
+      const summary: AttendanceSummaryAccumulator = attendanceSummaryByStudent.get(studentId) ?? {
+        studentId,
+        blockIds: new Set<string>(),
+        statuses: [],
+        hasMissing: false,
+        subjects: new Map<string, AttendanceSubjectAccumulator>(),
+      };
       summary.blockIds.add(blockId);
+      const subjectName = scheduleBlockById.get(blockId)?.subject_name_snapshot?.trim() || "과목 미지정";
+      const subject: AttendanceSubjectAccumulator = summary.subjects.get(subjectName) ?? { statuses: [], hasMissing: false, absenceNotes: new Set<string>() };
       const attendanceRow = attendanceByKey.get(key);
-      if (attendanceRow) summary.statuses.push(attendanceRow.attendance_status);
-      else summary.hasMissing = true;
+      if (attendanceRow) {
+        summary.statuses.push(attendanceRow.attendance_status);
+        subject.statuses.push(attendanceRow.attendance_status);
+        if (attendanceRow.attendance_status !== "present" && attendanceRow.absence_note?.trim()) {
+          subject.absenceNotes.add(attendanceRow.absence_note.trim());
+        }
+      } else {
+        summary.hasMissing = true;
+        subject.hasMissing = true;
+      }
+      summary.subjects.set(subjectName, subject);
       attendanceSummaryByStudent.set(studentId, summary);
     }
     const attendanceSummaries = [...attendanceSummaryByStudent.values()].map((summary) => ({
-      ...summary,
+      studentId: summary.studentId,
+      blockIds: summary.blockIds,
       status: rollupAttendanceStatus(summary.hasMissing, summary.statuses),
+      attendanceBySubject: [...summary.subjects.entries()]
+        .map(([subjectName, subject]) => ({
+          subjectName,
+          status: rollupAttendanceStatus(subject.hasMissing, subject.statuses),
+          absenceNote: [...subject.absenceNotes].join(", ") || null,
+        }))
+        .sort((left, right) => left.subjectName.localeCompare(right.subjectName, "ko")),
     }));
     const todayMissingCount = attendanceSummaries.filter((summary) => summary.status === "미입력").length;
     const subjectRecordKeys = new Set(subjectRows.map((row) => `${row.block_id}:${row.student_id}:${row.record_date}`));
     const missingSubjectKeys = [...allExpectedSessionKeys].filter((key) => !subjectRecordKeys.has(key));
     const consultationStudentIds = new Set(consultationsInPeriod.map((row) => row.student_id).filter((value): value is string => typeof value === "string"));
-    const enrolledStudentIds = new Set(studentRows.filter((student) => student.current_status === "enrolled" || student.current_status === "active").map((student) => student.id));
+    const enrolledStudentIds = new Set([...reportStatusByStudentId.entries()].filter(([, status]) => isEnrolledStatus(status)).map(([studentId]) => studentId));
     const consultationMissingCount = [...enrolledStudentIds].filter((studentId) => !consultationStudentIds.has(studentId)).length;
     const missingSubjectStudentIds = new Set(missingSubjectKeys.map((key) => key.split(":")[1]));
-    const pauseHistoryRows = statusHistoryRows.filter((row) => row.next_status === "paused" || row.next_status === "on_hold");
-    const latestPauseHistoryByStudent = new Map<string, StatusHistoryRow>();
-    for (const row of [...pauseHistoryRows].sort((left, right) => right.effective_date.localeCompare(left.effective_date) || (right.created_at ?? "").localeCompare(left.created_at ?? ""))) {
-      if (!latestPauseHistoryByStudent.has(row.student_id)) latestPauseHistoryByStudent.set(row.student_id, row);
-    }
-    const withdrawnOnEndDate = new Set(statusHistoryRows.filter((row) => row.next_status === "withdrawn" && row.effective_date === endDate).map((row) => row.student_id));
-    const withdrawalHistoryByStudent = new Map<string, StatusHistoryRow>();
-    for (const row of [...statusHistoryRows].filter((item) => item.next_status === "withdrawn").sort((left, right) => right.effective_date.localeCompare(left.effective_date) || (right.created_at ?? "").localeCompare(left.created_at ?? ""))) {
-      if (!withdrawalHistoryByStudent.has(row.student_id)) withdrawalHistoryByStudent.set(row.student_id, row);
-    }
-    const withdrawalOnEndDateByStudent = new Map<string, StatusHistoryRow>();
-    for (const row of [...statusHistoryRows].filter((item) => item.next_status === "withdrawn" && item.effective_date === endDate).sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""))) {
-      if (!withdrawalOnEndDateByStudent.has(row.student_id)) withdrawalOnEndDateByStudent.set(row.student_id, row);
-    }
-    const withdrawnInPeriod = new Set(withdrawalHistoryByStudent.keys());
+    const pausedStudentIds = new Set([...reportStatusByStudentId.entries()].filter(([, status]) => isPausedStatus(status)).map(([studentId]) => studentId));
+    const withdrawnStudentIds = new Set([...reportStatusByStudentId.entries()].filter(([, status]) => status === "withdrawn").map(([studentId]) => studentId));
+    const withdrawnOnEndDateStudentIds = new Set(
+      [...withdrawnStudentIds].filter((studentId) => {
+        const history = latestStatusHistoryByStudentMap.get(studentId);
+        return history?.next_status === "withdrawn" && history.effective_date === endDate;
+      }),
+    );
+    const withdrawalHistoryByStudent = latestStatusHistoryByStudent(periodStatusHistoryRows.filter((row) => row.next_status === "withdrawn"));
+    const withdrawnInPeriod = new Set(
+      [...withdrawalHistoryByStudent.keys()].filter((studentId) => reportStatusByStudentId.get(studentId) === "withdrawn"),
+    );
     const latestExpectedReturnByStudent = new Map<string, ExpectedReturnHistoryRow>();
     for (const row of [...expectedReturnHistoryRows].sort((left, right) => right.effective_date.localeCompare(left.effective_date) || right.created_at.localeCompare(left.created_at))) {
       if (!latestExpectedReturnByStudent.has(row.student_id)) latestExpectedReturnByStudent.set(row.student_id, row);
     }
     const returningSoonRows = studentRows.flatMap((student) => {
-      if (student.current_status !== "paused" && student.current_status !== "on_hold") return [];
+      if (!isPausedStatus(reportStatusByStudentId.get(student.id))) return [];
       const history = latestExpectedReturnByStudent.get(student.id);
       const expectedReturnDate = history?.expected_return_date ?? null;
       if (!expectedReturnDate || expectedReturnDate < endDate || expectedReturnDate > subtractDays(endDate, -5)) return [];
       return [{ student, expectedReturnDate, daysUntilReturn: daysBetween(endDate, expectedReturnDate) }];
     });
     const newStudentsInPeriod = studentRows.filter((student) => student.class_start_date && student.class_start_date >= startDate && student.class_start_date <= endDate);
+    const newStudentsOnEndDate = studentRows.filter((student) => student.class_start_date === endDate);
+    const classMovementAssignmentsInRange = (rangeStartDate: string, rangeEndDate: string) => classAssignmentRows.flatMap((assignment) => {
+      if (assignment.start_date < rangeStartDate || assignment.start_date > rangeEndDate) return [];
+      const previous = classAssignmentRows
+        .filter((candidate) => candidate.student_id === assignment.student_id
+          && candidate.class_id !== assignment.class_id
+          && candidate.end_date === subtractDays(assignment.start_date, 1))
+        .sort((left, right) => right.start_date.localeCompare(left.start_date))[0];
+      return previous ? [{ assignment, previous }] : [];
+    });
+    const classMovementAssignments = classMovementAssignmentsInRange(startDate, endDate);
+    const classMovementAssignmentsOnEndDate = classMovementAssignmentsInRange(endDate, endDate);
+    const classMovementStudentIdsOnEndDate = new Set(
+      classMovementAssignmentsOnEndDate
+        .filter(({ assignment }) => reportStatusByStudentId.has(assignment.student_id))
+        .map(({ assignment }) => assignment.student_id),
+    );
     const supplementRows = (supplementTasks ?? []) as SupplementTaskRow[];
     const supplementSummary = summarizeSupplementTasks(supplementRows);
-    const statusCounts = studentRows.reduce<Record<string, number>>((counts, student) => {
-      counts[student.current_status] = (counts[student.current_status] ?? 0) + 1;
+    const statusCounts = [...reportStatusByStudentId.values()].reduce<Record<string, number>>((counts, status) => {
+      counts[status] = (counts[status] ?? 0) + 1;
       return counts;
     }, {});
     const presentCount = attendanceRows.filter((row) => row.attendance_status === "present").length;
@@ -840,33 +1174,74 @@ export async function GET(request: NextRequest) {
     let detail: { section: ReportDetailSection; item: ReportDetailItem; rows: ReportDetailRow[]; groups?: SupplementGroup[]; withdrawalHistory?: WithdrawalConcernHistoryRow[] } | undefined;
     if (detailSection && detailItem) {
       const studentById = new Map(studentRows.map((student) => [student.id, student]));
-      const toStudentDetail = (student: StudentRow): ReportDetailRow => ({
+      const toStudentDetail = (student: StudentRow, statusOverride?: string): ReportDetailRow => ({
         studentId: student.id,
         studentNo: student.student_no,
         name: student.name,
-        statusLabel: statusLabel(student.current_status),
+        statusLabel: statusLabel(statusOverride ?? reportStatusByStudentId.get(student.id) ?? student.current_status),
       });
-      const toStudentDetailWithSchedule = (student: StudentRow, date: string) => ({
-        ...toStudentDetail(student),
+      const toStudentDetailWithSchedule = (student: StudentRow, date: string, statusOverride?: string) => ({
+        ...toStudentDetail(student, statusOverride),
         classDisplay: scheduleDisplayForStudentDate(student.id, date, scheduleBlockRows, classAssignmentRows) || null,
       });
+      const monthlyFlowDetailRows = (flowItem: MonthlyFlowItem): ReportDetailRow[] => monthlyStudentFlow.rows[flowItem].flatMap((movement) => {
+        const student = studentById.get(movement.studentId);
+        if (!student) return [];
+        return [{
+          ...toStudentDetailWithSchedule(student, movement.date, movement.endingStatus ?? reportStatusByStudentId.get(student.id) ?? student.current_status),
+          date: movement.date,
+          previousStatusLabel: movement.previousStatus ? statusLabel(movement.previousStatus) : "신규 등록",
+          endingStatusLabel: movement.endingStatus ? statusLabel(movement.endingStatus) : "-",
+          expectedReturnDate: movement.expectedReturnDate ?? null,
+          adjustmentAmount: movement.adjustmentAmount,
+          adjustmentReason: movement.adjustmentReason ?? null,
+        }];
+      });
+      const latestConsultationByStudent = new Map<string, ConsultationRow>();
+      for (const consultation of [...consultationsInPeriod].sort((left, right) =>
+        Date.parse(right.consultation_at ?? right.created_at) - Date.parse(left.consultation_at ?? left.created_at),
+      )) {
+        if (!latestConsultationByStudent.has(consultation.student_id)) latestConsultationByStudent.set(consultation.student_id, consultation);
+      }
+      const consultationDetailRows = [...latestConsultationByStudent.entries()].flatMap(([studentId, consultation]) => {
+        const student = studentById.get(studentId);
+        if (!student) return [];
+        const consultationAt = consultation.consultation_at ?? consultation.created_at;
+        const consultationDate = seoulDate(consultationAt);
+        return [{
+          ...toStudentDetailWithSchedule(student, consultationDate),
+          date: consultationDate,
+          consultationAt,
+          consultationContent: consultation.content ?? null,
+          consultationMethod: consultation.method ?? null,
+          consultationStatus: consultation.status ?? "completed",
+          consultationType: consultation.consultation_type ?? "regular",
+        }];
+      });
       const statusStudentRows: Record<string, ReportDetailRow[]> = {
-        enrolled: studentRows
-          .filter((student) => student.current_status === "enrolled" || student.current_status === "active")
-          .map((student) => toStudentDetailWithSchedule(student, endDate)),
-        paused: [...latestPauseHistoryByStudent.entries()].flatMap(([studentId, history]) => {
+        enrolled: reportStudents
+          .filter((student) => isEnrolledStatus(reportStatusByStudentId.get(student.id)))
+          .map((student) => toStudentDetailWithSchedule(student, endDate, reportStatusByStudentId.get(student.id))),
+        paused: [...pausedStudentIds].flatMap((studentId) => {
           const student = studentById.get(studentId);
-          return student ? [{
-            ...toStudentDetailWithSchedule(student, history.effective_date),
-            date: history.effective_date,
-            expectedReturnDate: history.expected_return_date ?? null,
-          }] : [];
+          if (!student) return [];
+          const history = latestStatusHistoryByStudentMap.get(studentId);
+          return [{
+            ...toStudentDetailWithSchedule(student, endDate, reportStatusByStudentId.get(student.id)),
+            date: history?.effective_date ?? endDate,
+            expectedReturnDate: history?.expected_return_date ?? null,
+          }];
         }),
-        withdrawn: [...withdrawalOnEndDateByStudent.entries()].flatMap(([studentId, history]) => {
+        withdrawn: [...withdrawnOnEndDateStudentIds].flatMap((studentId) => {
           const student = studentById.get(studentId);
-          return student ? [{ ...toStudentDetailWithSchedule(student, history.effective_date), date: history.effective_date }] : [];
+          if (!student) return [];
+          const history = latestStatusHistoryByStudentMap.get(studentId);
+          return [{
+            ...toStudentDetailWithSchedule(student, endDate, reportStatusByStudentId.get(student.id)),
+            date: history?.effective_date ?? endDate,
+          }];
         }),
-        new: newStudentsInPeriod.flatMap((student) => student.class_start_date ? [{
+        new: newStudentsOnEndDate.flatMap((student) => student.class_start_date ? [{
           ...toStudentDetailWithSchedule(student, student.class_start_date),
           date: student.class_start_date,
         }] : []),
@@ -880,6 +1255,7 @@ export async function GET(request: NextRequest) {
             ...toStudentDetail(student),
             date: endDate,
             attendanceStatus: summary.status,
+            attendanceBySubject: summary.attendanceBySubject,
             classDisplay: scheduleDisplayForBlocks(scheduleBlockRows, summary.blockIds) || null,
           }];
         });
@@ -903,6 +1279,17 @@ export async function GET(request: NextRequest) {
           classDisplay: scheduleDisplayForBlocks(scheduleBlockRows, missingDetail.blockIds) || null,
         }];
       });
+      const publicationDetailRows = publicationRows
+        .filter((publication) => detailItem === "publication_all" || (detailItem === "publication_published" && publication.status === "published") || (detailItem === "publication_draft" && publication.status === "draft"))
+        .flatMap((publication) => {
+          const student = studentById.get(publication.student_id);
+          if (!student) return [];
+          return [{
+            ...toStudentDetailWithSchedule(student, publication.record_date),
+            date: publication.record_date,
+            publicationStatus: publication.status,
+          }];
+        });
       const withdrawalConcernRows = [...activeWithdrawalConcernByStudent.entries()].flatMap(([studentId, consultation]) => {
         const student = studentById.get(studentId);
         if (!student || student.current_status === "withdrawn") return [];
@@ -933,8 +1320,9 @@ export async function GET(request: NextRequest) {
         .sort((left, right) => right.resolvedDate.localeCompare(left.resolvedDate));
       const isStudentStatusItem = ["enrolled", "paused", "withdrawn", "new"].includes(detailItem);
       const isDailyAttendanceItem = ["expected", "missing", "present", "absent", "unexcused_absent"].includes(detailItem);
-      const isOperationsItem = ["withdrawals", "new_students", "consultation_missing", "subject_missing", "returning_soon", "withdrawal_concern", "supplement_target", "supplement_completed", "supplement_cancelled", "supplement_incomplete"].includes(detailItem);
-      if ((detailSection === "student_status" && !isStudentStatusItem) || (detailSection === "daily_attendance" && !isDailyAttendanceItem) || (detailSection === "operations" && !isOperationsItem)) {
+      const isOperationsItem = ["withdrawals", "new_students", "monthly_new_students", "monthly_pause_returns", "monthly_withdrawal_returns", "monthly_withdrawals", "monthly_pauses", "monthly_adjustments", "consultation_missing", "consultation_records", "subject_missing", "returning_soon", "withdrawal_concern", "class_movement", "supplement_target", "supplement_completed", "supplement_cancelled", "supplement_incomplete"].includes(detailItem);
+      const isPublicationItem = ["publication_all", "publication_published", "publication_draft"].includes(detailItem);
+      if ((detailSection === "student_status" && !isStudentStatusItem) || (detailSection === "daily_attendance" && !isDailyAttendanceItem) || (detailSection === "operations" && !isOperationsItem) || (detailSection === "publication" && !isPublicationItem)) {
         throw new HttpError(400, "invalid_detail", "상세 현황 구분과 항목이 일치하지 않습니다.");
       }
       if (detailSection === "student_status") {
@@ -946,20 +1334,39 @@ export async function GET(request: NextRequest) {
             ? detailSessionRows("미입력")
             : detailSessionRows(detailItem);
         detail = { section: detailSection, item: detailItem, rows };
+      } else if (detailSection === "publication") {
+        detail = { section: detailSection, item: detailItem, rows: publicationDetailRows };
       } else {
         const consultationMissingRows = studentRows
           .filter((student) => enrolledStudentIds.has(student.id) && !consultationStudentIds.has(student.id))
           .map((student) => ({ ...toStudentDetailWithSchedule(student, endDate), date: endDate }));
         const operationRows: Record<string, ReportDetailRow[]> = {
-          withdrawals: [...withdrawalHistoryByStudent.entries()].flatMap(([studentId, history]) => {
+          withdrawals: [...withdrawalHistoryByStudent.entries()].filter(([studentId]) => withdrawnInPeriod.has(studentId)).flatMap(([studentId, history]) => {
             const student = studentById.get(studentId);
             return student ? [{ ...toStudentDetailWithSchedule(student, history.effective_date), date: history.effective_date }] : [];
           }),
           new_students: newStudentsInPeriod.flatMap((student) => student.class_start_date ? [{ ...toStudentDetailWithSchedule(student, student.class_start_date), date: student.class_start_date }] : []),
+          monthly_new_students: monthlyFlowDetailRows("monthly_new_students"),
+          monthly_pause_returns: monthlyFlowDetailRows("monthly_pause_returns"),
+          monthly_withdrawal_returns: monthlyFlowDetailRows("monthly_withdrawal_returns"),
+          monthly_withdrawals: monthlyFlowDetailRows("monthly_withdrawals"),
+          monthly_pauses: monthlyFlowDetailRows("monthly_pauses"),
+          monthly_adjustments: monthlyFlowDetailRows("monthly_adjustments"),
           consultation_missing: consultationMissingRows,
+          consultation_records: consultationDetailRows,
           subject_missing: subjectMissingRows,
           returning_soon: returningSoonRows.map(({ student, expectedReturnDate, daysUntilReturn }) => ({ ...toStudentDetailWithSchedule(student, endDate), expectedReturnDate, daysUntilReturn })),
           withdrawal_concern: withdrawalConcernRows,
+          class_movement: classMovementAssignments.flatMap(({ assignment, previous }) => {
+            const student = studentById.get(assignment.student_id);
+            if (!student) return [];
+            return [{
+              ...toStudentDetail(student),
+              date: assignment.start_date,
+              classDisplay: scheduleDisplayForStudentDate(student.id, assignment.start_date, scheduleBlockRows, classAssignmentRows) || null,
+              previousClassDisplay: scheduleDisplayForStudentDate(student.id, previous.end_date ?? subtractDays(assignment.start_date, 1), scheduleBlockRows, classAssignmentRows) || null,
+            }];
+          }),
           supplement_target: supplementDetails,
           supplement_completed: supplementDetails,
           supplement_cancelled: supplementDetails,
@@ -979,13 +1386,14 @@ export async function GET(request: NextRequest) {
       data: {
         period: { startDate, endDate },
         students: {
-          total: studentRows.length,
-          active: studentRows.filter((student) => student.current_status !== "withdrawn").length,
-          withdrawn: studentRows.filter((student) => student.current_status === "withdrawn").length,
-          enrolled: studentRows.filter((student) => student.current_status === "enrolled" || student.current_status === "active").length,
-          paused: latestPauseHistoryByStudent.size,
-          withdrawnOnDate: withdrawnOnEndDate.size,
-          newOnDate: newStudentsInPeriod.length,
+          total: reportStudents.length,
+          active: reportStudents.filter((student) => reportStatusByStudentId.get(student.id) !== "withdrawn").length,
+          withdrawn: reportStudents.filter((student) => reportStatusByStudentId.get(student.id) === "withdrawn").length,
+          enrolled: reportStudents.filter((student) => isEnrolledStatus(reportStatusByStudentId.get(student.id))).length,
+          paused: pausedStudentIds.size,
+          withdrawnOnEndDate: withdrawnOnEndDateStudentIds.size,
+          newOnEndDate: newStudentsOnEndDate.length,
+          classMovementOnEndDate: classMovementStudentIdsOnEndDate.size,
           statusCounts: Object.entries(statusCounts).map(([status, count]) => ({ status, label: statusLabel(status), count })),
         },
         attendance: {
@@ -1014,8 +1422,8 @@ export async function GET(request: NextRequest) {
           publishedCount: publicationRows.filter((row) => row.status === "published").length,
           draftCount: publicationRows.filter((row) => row.status === "draft").length,
         },
-        consultations: { count: consultationsInPeriod.length },
-        statusChanges: { withdrawals: withdrawnInPeriod.size, total: statusHistory?.length ?? 0 },
+        consultations: { count: consultationStudentCount },
+        statusChanges: { withdrawals: withdrawnInPeriod.size, total: periodStatusHistoryRows.length },
         operations: {
           withdrawals: withdrawnInPeriod.size,
           newStudents: newStudentsInPeriod.length,
@@ -1024,6 +1432,7 @@ export async function GET(request: NextRequest) {
           subjectMissingEntries: missingSubjectKeys.length,
            returningSoon: returningSoonRows.length,
            withdrawalConcern: activeWithdrawalConcernStudentIds.size,
+           classMovement: classMovementAssignments.length,
           supplement: supplementSummary,
         },
         rules,

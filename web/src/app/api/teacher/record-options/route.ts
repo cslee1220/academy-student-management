@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
+import { shouldUseSecureCookie } from "@/lib/auth/cookie-security";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const ACADEMY_CONTEXT_COOKIE = "academy_context";
@@ -39,7 +40,7 @@ function formatSessionLabel(session: SessionRow) {
   return `${session.session_date} · ${session.start_time.slice(0, 5)}-${session.end_time.slice(0, 5)}`;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const supabase = await createSupabaseServerClient();
     const {
@@ -129,7 +130,7 @@ export async function GET() {
           maxAge: 60 * 60 * 24 * 30,
           path: "/",
           sameSite: "lax",
-          secure: process.env.NODE_ENV === "production",
+          secure: shouldUseSecureCookie(request),
         });
       }
       return response;
@@ -190,7 +191,7 @@ export async function GET() {
         maxAge: 60 * 60 * 24 * 30,
         path: "/",
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: shouldUseSecureCookie(request),
       });
     }
     return response;

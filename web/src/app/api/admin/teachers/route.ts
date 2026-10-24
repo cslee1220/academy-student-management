@@ -189,6 +189,7 @@ export async function DELETE(request: NextRequest) {
       throw new HttpError(404, "teacher_account_not_found", "해당 교사 계정을 찾을 수 없습니다.");
     }
 
+
     const { data: profile, error: profileError } = await admin
       .from("profiles")
       .select("display_name, is_login_active")
@@ -196,6 +197,30 @@ export async function DELETE(request: NextRequest) {
       .maybeSingle();
     if (profileError) {
       throw new HttpError(500, "database_error", "교사 프로필을 확인하지 못했습니다.");
+    }
+
+    if (input.useLegacyWritePath !== true) {
+      const deactivatedAt = new Date().toISOString();
+      const { data: transactionData, error: transactionError } = await admin.rpc("deactivate_teacher_account_transaction", {
+        p_academy_id: academyId,
+        p_account_id: account.id,
+        p_actor_profile_id: actorProfileId,
+        p_deactivated_at: deactivatedAt,
+      });
+      if (transactionError || !transactionData) {
+        if (transactionError?.code === "P0002") {
+          throw new HttpError(404, "teacher_account_not_found", "교사 계정을 찾을 수 없습니다.");
+        }
+        throw new HttpError(500, "teacher_account_deactivation_failed", "교사 계정을 비활성화하지 못했습니다.");
+      }
+      return NextResponse.json({
+        data: {
+          id: account.id,
+          profileId: account.profile_id,
+          isLoginActive: false,
+          message: "교사 계정을 비활성화했습니다. 기존 수업기록과 담당 연결은 보존됩니다.",
+        },
+      });
     }
 
     const deactivatedAt = new Date().toISOString();
@@ -314,6 +339,35 @@ export async function POST(request: NextRequest) {
       throw new HttpError(500, "auth_user_creation_failed", "교사 인증 계정을 생성하지 못했습니다.");
     }
     authUserId = authUser.user.id;
+
+    if (input.useLegacyWritePath !== true) {
+      const { data: transactionData, error: transactionError } = await admin.rpc("create_teacher_account_records_transaction", {
+        p_academy_id: academyId,
+        p_auth_user_id: authUserId,
+        p_display_name: displayName,
+        p_login_id: loginId,
+        p_activation_code_hash: hashActivationCode(activationCode),
+        p_activation_expires_at: activationExpiresAt,
+        p_actor_profile_id: actorProfileId,
+      });
+      if (transactionError || !transactionData || typeof transactionData !== "object") {
+        throw new HttpError(500, "teacher_account_creation_failed", "교사 계정 정보를 저장하지 못했습니다.");
+      }
+      const result = transactionData as { profile_id?: unknown; account_id?: unknown };
+      if (typeof result.profile_id !== "string" || typeof result.account_id !== "string") {
+        throw new HttpError(500, "teacher_account_creation_failed", "교사 계정 저장 결과가 올바르지 않습니다.");
+      }
+      profileId = result.profile_id;
+      accountId = result.account_id;
+      return NextResponse.json({
+        data: {
+          loginId,
+          activationCode,
+          activationExpiresAt,
+          message: "활성화 코드는 지금 한 번만 표시됩니다. 교사에게 안전하게 전달해 주세요.",
+        },
+      });
+    }
 
     const { data: profile, error: profileError } = await admin
       .from("profiles")

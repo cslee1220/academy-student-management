@@ -280,14 +280,26 @@ export async function GET(request: NextRequest) {
       const blockIds = [...new Set((subjectRecords ?? []).map((row) => row.block_id))];
       const { data: blocks, error: blockError } = blockIds.length ? await admin.from("class_schedule_blocks").select("id, class_id, class_name_snapshot, classroom_name_snapshot, start_time, end_time").eq("academy_id", academyId).in("id", blockIds) : { data: [], error: null };
       if (blockError) throw blockError;
+      const { data: blockStudents, error: blockStudentsError } = blockIds.length
+        ? await admin.from("class_schedule_block_students").select("block_id, operation_group, start_date, end_date").eq("academy_id", academyId).eq("student_id", studentId).in("block_id", blockIds).eq("is_active", true)
+        : { data: [], error: null };
+      if (blockStudentsError) throw blockStudentsError;
       const blockById = new Map((blocks ?? []).map((row) => [row.id, row]));
       const classIds = [...new Set((blocks ?? []).map((row) => row.class_id))];
-      const { data: homeworkRows, error: homeworkError } = classIds.length ? await admin.from("daily_common_homework").select("class_id, record_date, content, no_homework").eq("academy_id", academyId).in("class_id", classIds).gte("record_date", effectiveStartDate).lte("record_date", effectiveEndDate) : { data: [], error: null };
+      const { data: homeworkRows, error: homeworkError } = classIds.length ? await admin.from("daily_common_homework").select("class_id, record_date, operation_group, content, no_homework").eq("academy_id", academyId).in("class_id", classIds).gte("record_date", effectiveStartDate).lte("record_date", effectiveEndDate) : { data: [], error: null };
       if (homeworkError) throw homeworkError;
-      const homeworkByKey = new Map((homeworkRows ?? []).map((row) => [`${row.class_id}:${row.record_date}`, row]));
+      const homeworkByKey = new Map<string, typeof homeworkRows>();
+      for (const homework of homeworkRows ?? []) {
+        const key = `${homework.class_id}:${homework.record_date}`;
+        homeworkByKey.set(key, [...(homeworkByKey.get(key) ?? []), homework]);
+      }
       responseData.learning = (subjectRecords ?? []).map((row) => {
         const block = blockById.get(row.block_id);
-        const homework = block ? homeworkByKey.get(`${block.class_id}:${row.record_date}`) : null;
+        const groupAssignment = blockStudents?.find((assignment) => assignment.block_id === row.block_id && assignment.start_date <= row.record_date && (!assignment.end_date || assignment.end_date >= row.record_date));
+        const homeworkRowsForDate = block ? homeworkByKey.get(`${block.class_id}:${row.record_date}`) ?? [] : [];
+        const homework = homeworkRowsForDate.find((candidate) => candidate.operation_group === groupAssignment?.operation_group)
+          ?? homeworkRowsForDate.find((candidate) => candidate.operation_group === "common")
+          ?? null;
         return {
           id: row.id,
           date: row.record_date,

@@ -78,7 +78,7 @@ erDiagram
 | 기록 | common_homework | 반 공통 숙제 | academy_id + class_id + session_id |
 | 기록 | teacher_subject_records | 교사별 과목 학습기록 | academy_id + student_id + session_id + subject_id + teacher_id |
 | 기록 | daily_attendance_records | 날짜·운영블록별 출결·저장상태 | academy_id + block_id + student_id + record_date |
-| 기록 | daily_common_homework | 날짜·반별 공통 숙제·저장상태 | academy_id + class_id + record_date |
+| 기록 | daily_common_homework | 날짜·반·운영구분별 공통 숙제·저장상태 | academy_id + class_id + record_date + operation_group(A/B/common) |
 | 기록 | daily_subject_records | 날짜·운영블록별 과목 학습기록·저장상태 | academy_id + block_id + student_id + record_date |
 | 공개 | daily_record_publications | 학생·수업일 단위 보호자 공개 게이트 | academy_id + student_id + record_date |
 | 기록 | test_definitions | 반 전체 테스트 정의 | academy_id + session_id + subject_id + teacher_id + sequence_no |
@@ -95,7 +95,7 @@ erDiagram
 | 알림 | notifications | 역할별 인앱 알림 이력 | academy_id + recipient + created_at |
 | 문의 | inquiries | 학부모 문의 | academy_id + student_id + guardian_id |
 | 문의 | inquiry_messages | 문의·답변 메시지 | inquiry_id + created_at |
-| 인증 | guardian_invites | 보호자 1회용 접속 링크·인증번호 | invite_token_hash + expires_at + used_at + revoked_at |
+| 인증 | guardian_invites | 보호자 접속 링크·인증번호(60일·최대 5회) | invite_token_hash + expires_at + use_count + revoked_at |
 | 인증 | guardian_devices | 보호자 등록 기기·조회 세션(활성 1대) | guardian_id + device_id + is_active |
 | 인증 | push_subscriptions | 기기별 Web Push 구독 | guardian_device_id |
 | 운영 | export_logs | 엑셀·비공개자료 내보내기 이력 | export_no |
@@ -121,7 +121,7 @@ erDiagram
 | profiles | id, auth_user_id, display_name, phone, email |
 | academy_memberships | id, academy_id, profile_id, role(system_admin / academy_admin / teacher), is_active, activated_at, deactivated_at |
 
-보호자는 별도 회원가입이나 비밀번호 없이 7일 유효·1회용 접속 링크와 8자리 인증번호를 함께 확인한 뒤 `guardians`, `guardian_devices` 기준으로 조회합니다. 보호자에게 일반 교사 계정을 만들지 않습니다. 보호자당 활성 기기는 1대이며, 새 기기 인증 시 기존 기기를 비활성화합니다. 학생이 퇴원 처리되면 연결의 `access_revoked_at`을 기록하고, 조회 가능한 재원 자녀가 없는 보호자 계정은 `guardian_access_revoked_at`을 기록합니다.
+보호자는 별도 회원가입이나 비밀번호 없이 60일 유효·최대 5회 사용 가능한 접속 링크와 8자리 인증번호를 함께 확인한 뒤 `guardians`, `guardian_devices` 기준으로 조회합니다. 보호자에게 일반 교사 계정을 만들지 않습니다. 보호자당 활성 기기는 1대이며, 새 기기 인증 시 기존 기기를 비활성화합니다. 학생이 퇴원 처리되면 연결의 `access_revoked_at`을 기록하고, 조회 가능한 재원 자녀가 없는 보호자 계정은 `guardian_access_revoked_at`을 기록합니다. 링크를 재발급하면 기존의 사용 가능한 링크는 취소합니다.
 
 ### 5.3 students와 상태 이력
 
@@ -171,7 +171,7 @@ erDiagram
 | 표 | 핵심 필드 | 상태·제약 |
 |---|---|---|
 | daily_attendance_records | academy_id, block_id, student_id, record_date, attendance_status, absence_note, save_state, version | 운영 블록·학생·날짜당 1건. save_state=draft/final |
-| daily_common_homework | academy_id, class_id, record_date, content, no_homework, save_state, version | 반·날짜당 1건. save_state=draft/final |
+| daily_common_homework | academy_id, class_id, record_date, operation_group, content, no_homework, save_state, version | 반·날짜·운영구분당 1건. operation_group=A/B/common, save_state=draft/final |
 | daily_subject_records | academy_id, block_id, student_id, record_date, subject_id, teacher_id, homework_score, understanding_score, participation_score, is_supplementary, public_note, test_definitions, test_results, save_state, version | 운영 블록·학생·날짜당 1건. save_state=draft/final |
 | daily_record_publications | academy_id, student_id, record_date, status, updated_by_profile_id, updated_at | 학생·수업일당 1건. status=draft/published |
 
@@ -227,7 +227,7 @@ erDiagram
 | 운영 블록 | academy_id + class_id + subject_id + teacher_id + weekday + start_time + effective_start |
 | 운영 블록 학생 | block_id + student_id + start_date (operation_group은 A/B) |
 | 날짜별 출결 | academy_id + block_id + student_id + record_date |
-| 날짜별 공통 숙제 | academy_id + class_id + record_date |
+| 날짜별 공통 숙제 | academy_id + class_id + record_date + operation_group |
 | 날짜별 과목기록 | academy_id + block_id + student_id + record_date |
 | 공지사항 | UUID `id` |
 

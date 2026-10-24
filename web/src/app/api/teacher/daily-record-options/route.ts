@@ -126,30 +126,55 @@ export async function GET(request: NextRequest) {
     const visibleBlocks = [...visibleBlocksByKey.values()];
     const visibleBlockIds = visibleBlocks.map((block) => block.id);
     const { data: assignments, error: assignmentsError } = visibleBlockIds.length
-      ? await supabase
+      ? await admin
           .from("class_schedule_block_students")
           .select("block_id, student_id, operation_group, start_date, end_date")
           .eq("academy_id", academyId)
           .in("block_id", visibleBlockIds)
-          .eq("is_active", true)
       : { data: [], error: null };
     if (assignmentsError) throw assignmentsError;
     const visibleClassIds = [...new Set(visibleBlocks.map((block) => block.class_id))];
-    const { data: classAssignments, error: classAssignmentsError } = visibleClassIds.length
-      ? await supabase
-          .from("student_class_assignments")
-          .select("class_id, student_id, start_date, end_date, status")
-          .eq("academy_id", academyId)
-          .in("class_id", visibleClassIds)
-          .in("status", ["active", "ended"])
-          .lte("start_date", effectiveDate)
-      : { data: [], error: null };
-    if (classAssignmentsError) throw classAssignmentsError;
-    const validClassAssignmentKeys = new Set(
-      (classAssignments ?? [])
+    const [{ data: classAssignments, error: classAssignmentsError }, { data: examAssignments, error: examAssignmentsError }] = visibleClassIds.length
+      ? await Promise.all([
+          admin
+            .from("student_class_assignments")
+            .select("class_id, student_id, start_date, end_date, status, assignment_role")
+            .eq("academy_id", academyId)
+            .in("class_id", visibleClassIds)
+            .in("status", ["active", "ended"])
+            .lte("start_date", effectiveDate),
+          admin
+            .from("student_class_assignments")
+            .select("class_id, student_id, start_date, end_date, status, assignment_role")
+            .eq("academy_id", academyId)
+            .eq("assignment_role", "exam")
+            .in("status", ["active", "ended"])
+            .lte("start_date", effectiveDate),
+        ])
+      : [{ data: [], error: null }, { data: [], error: null }];
+    if (classAssignmentsError || examAssignmentsError) throw classAssignmentsError ?? examAssignmentsError;
+    const examStudentIds = new Set(
+      (examAssignments ?? [])
         .filter((assignment) => !assignment.end_date || assignment.end_date >= effectiveDate)
+        .map((assignment) => assignment.student_id),
+    );
+    const validClassAssignments = (classAssignments ?? []).filter((assignment) => !assignment.end_date || assignment.end_date >= effectiveDate);
+    const studentAssignmentByKey = new Set(
+      validClassAssignments
+        .filter((assignment) => {
+          const classRow = (classesResult.data ?? []).find((row) => row.id === assignment.class_id);
+          return classRow?.category === "exam_prep"
+            ? assignment.assignment_role === "exam"
+            : assignment.assignment_role !== "exam" && !examStudentIds.has(assignment.student_id);
+        })
         .map((assignment) => `${assignment.class_id}:${assignment.student_id}`),
     );
+    const validClassAssignmentKeys = studentAssignmentByKey;
+    /*
+     * The class assignment is the source of truth for the student list. The
+     * block roster is still used for A/B labels when available, but a missing
+     * classroom/roster row must not hide an otherwise valid student.
+     */
     const studentsByBlock = new Map<string, Set<string>>();
     const groupsByBlock = new Map<string, Set<string>>();
     for (const assignment of assignments ?? []) {
@@ -164,6 +189,13 @@ export async function GET(request: NextRequest) {
         groups.add(assignment.operation_group);
         groupsByBlock.set(assignment.block_id, groups);
       }
+    }
+    for (const block of visibleBlocks) {
+      const students = studentsByBlock.get(block.id) ?? new Set<string>();
+      for (const assignment of validClassAssignments) {
+        if (assignment.class_id === block.class_id && validClassAssignmentKeys.has(`${assignment.class_id}:${assignment.student_id}`)) students.add(assignment.student_id);
+      }
+      if (students.size) studentsByBlock.set(block.id, students);
     }
     const rosterBlocks = includeEmpty
       ? visibleBlocks

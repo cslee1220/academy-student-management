@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/authorization";
-import { ensureStudentOperationBlocks, OperationBlockProvisionError, type OperationGroup } from "@/lib/operation-blocks";
+import {
+  closeStudentRosterTransition,
+  ensureStudentOperationBlocks,
+  OperationBlockProvisionError,
+  prepareStudentRosterTransition,
+  type OperationGroup,
+} from "@/lib/operation-blocks";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const UUID_PATTERN =
@@ -216,6 +222,19 @@ function databaseError(error: { code?: string } | null, fallback: string): never
   throw new HttpError(500, "database_error", fallback);
 }
 
+function rpcDatabaseError(error: { code?: string } | null, fallback: string): never {
+  if (error?.code === "40001") {
+    throw new HttpError(409, "resource_changed", "다른 운영자가 먼저 변경했습니다. 목록을 새로고침해 주세요.");
+  }
+  if (error?.code === "P0002") {
+    throw new HttpError(404, "resource_not_found", "요청한 자료를 찾을 수 없습니다.");
+  }
+  if (error?.code === "22023") {
+    throw new HttpError(422, "invalid_request", "학생 상태 변경 조건을 확인해 주세요.");
+  }
+  throw new HttpError(500, "database_error", fallback);
+}
+
 async function writeAudit(
   admin: ReturnType<typeof createSupabaseAdminClient>,
   input: {
@@ -372,10 +391,15 @@ async function revokeGuardianAccessForWithdrawnStudent(
   }
 }
 
+// Kept for legacy rollback compatibility; normal status changes use the
+// transactional RPC below.
+void closeWithdrawnStudentAssignments;
+void revokeGuardianAccessForWithdrawnStudent;
+
 async function getStudent(admin: ReturnType<typeof createSupabaseAdminClient>, academyId: string, studentId: string) {
   const { data, error } = await admin
     .from("students")
-    .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
+    .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, student_phone, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
     .eq("academy_id", academyId)
     .eq("id", studentId)
     .maybeSingle();
@@ -1193,15 +1217,13 @@ export async function GET(request: NextRequest) {
   try {
     const academyIdParam = request.nextUrl.searchParams.get("academyId");
     const requestedAcademyId = academyIdParam ? parseUuid(academyIdParam, "academyId") : undefined;
-    const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
+    const { academyId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
-
-    await rollForwardCurrentTermAssignments(admin, academyId, actorProfileId);
 
     const [studentsResult, assignmentsResult, classesResult, termsResult, yearsResult, linksResult, guardiansResult, historyResult, schoolsResult, invitesResult, levelsResult, classroomsResult, vehiclesResult, operationTypesResult, operationSettingsResult, classSubjectClassroomAssignmentsResult, operationBlocksResult, operationBlockStudentsResult] = await Promise.all([
       admin
         .from("students")
-        .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
+        .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, student_phone, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
         .eq("academy_id", academyId)
         .order("name", { ascending: true }),
       admin
@@ -1244,7 +1266,7 @@ export async function GET(request: NextRequest) {
         .order("name", { ascending: true }),
       admin
         .from("guardian_invites")
-        .select("id, student_id, guardian_id, expires_at, used_at, revoked_at, attempt_count, locked_until, created_at")
+        .select("id, student_id, guardian_id, expires_at, use_count, used_at, revoked_at, attempt_count, locked_until, created_at")
         .eq("academy_id", academyId)
         .order("created_at", { ascending: false }),
       admin
@@ -1388,15 +1410,67 @@ export async function POST(request: NextRequest) {
     const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
 
+    if (resource === "rollover_assignments") {
+      const rolledForwardCount = await rollForwardCurrentTermAssignments(admin, academyId, actorProfileId);
+      return NextResponse.json({ data: { rolledForwardCount } });
+    }
+
     if (resource === "duplicate_check") {
+      const duplicateStudentId = input.id === undefined || input.id === "" ? undefined : parseUuid(input.id, "id");
       const name = parseText(input.name, "학생 이름", 1, 100);
       const schoolId = parseOptionalUuid(input.schoolId, "schoolId");
       const schoolName = parseOptionalText(input.schoolName, "학교명", 100);
       const grade = parseOptionalGrade(input.grade);
       const phone = normalizePhone(input.phone, "보호자1 전화번호");
       const phone2 = normalizePhone(input.phone2, "보호자2 전화번호");
-      const duplicates = await findDuplicateStudents(admin, academyId, { name, schoolId, schoolName, grade, phone, phone2 });
+      const duplicates = await findDuplicateStudents(admin, academyId, { id: duplicateStudentId, name, schoolId, schoolName, grade, phone, phone2 });
       return NextResponse.json({ data: { duplicates } });
+    }
+
+    if (resource === "status_history") {
+      const historyId = parseUuid(input.id, "id");
+      const studentId = parseUuid(input.studentId, "studentId");
+      const expectedReturnDate = parseOptionalDate(input.expectedReturnDate, "복귀 예정일");
+      const student = await getStudent(admin, academyId, studentId);
+      if (student.current_status !== "paused") {
+        throw new HttpError(409, "student_not_paused", "현재 휴원 중인 학생만 복귀 예정일을 수정할 수 있습니다.");
+      }
+      const { data: history, error: historyError } = await admin
+        .from("student_status_history")
+        .select("id, student_id, previous_status, next_status, effective_date, expected_return_date")
+        .eq("academy_id", academyId)
+        .eq("id", historyId)
+        .eq("student_id", studentId)
+        .maybeSingle();
+      if (historyError) databaseError(historyError, "휴원 이력을 확인하지 못했습니다.");
+      if (!history || history.next_status !== "paused") {
+        throw new HttpError(404, "status_history_not_found", "현재 휴원 상태의 변경 이력을 찾을 수 없습니다.");
+      }
+      if (expectedReturnDate && expectedReturnDate < history.effective_date) {
+        throw new HttpError(422, "invalid_range", "복귀 예정일은 휴원 적용일 이후여야 합니다.");
+      }
+      const { data: updatedHistory, error: updateError } = await admin
+        .from("student_status_history")
+        .update({ expected_return_date: expectedReturnDate })
+        .eq("academy_id", academyId)
+        .eq("id", historyId)
+        .eq("student_id", studentId)
+        .eq("next_status", "paused")
+        .select("id, student_id, previous_status, next_status, effective_date, withdrawal_type, reason, expected_return_date, changed_by_profile_id, created_at")
+        .maybeSingle();
+      if (updateError) databaseError(updateError, "복귀 예정일을 저장하지 못했습니다.");
+      if (!updatedHistory) throw new HttpError(409, "resource_changed", "다른 운영자가 휴원 정보를 먼저 변경했습니다. 최신 정보를 다시 조회해 주세요.");
+      await writeAudit(admin, {
+        academyId,
+        actorProfileId,
+        targetTable: "student_status_history",
+        targetId: historyId,
+        fieldKey: "expected_return_date",
+        oldValue: { expected_return_date: history.expected_return_date },
+        newValue: { expected_return_date: expectedReturnDate },
+        reason: "운영자가 휴원 학생의 복귀 예정일을 수정했습니다.",
+      });
+      return NextResponse.json({ data: { history: updatedHistory } });
     }
 
     if (resource === "students") {
@@ -1415,8 +1489,12 @@ export async function POST(request: NextRequest) {
       const grade = parseOptionalGrade(input.grade);
       const registeredAt = getSeoulDate();
       const classStartDate = input.classStartDate === undefined || input.classStartDate === "" ? registeredAt : parseDate(input.classStartDate, "수업시작일");
+      if (classStartDate < registeredAt) {
+        throw new HttpError(422, "invalid_range", "수업 시작일은 등록일보다 빠를 수 없습니다.");
+      }
       const level = parseOptionalText(input.level, "레벨", 50);
       await ensureLevel(admin, academyId, level);
+      const studentPhone = normalizePhone(input.studentPhone, "학생 전화번호");
       const guardian1Name = parseOptionalText(input.guardian1Name, "보호자1 이름", 50);
       const phone = normalizePhone(input.phone, "보호자1 전화번호");
       const phone2 = normalizePhone(input.phone2, "보호자2 전화번호");
@@ -1449,6 +1527,7 @@ export async function POST(request: NextRequest) {
           level,
           classroom_id: classroomId,
           vehicle_id: vehicleId,
+          student_phone: studentPhone,
           guardian1_name: guardian1Name,
           phone,
           phone2,
@@ -1457,7 +1536,7 @@ export async function POST(request: NextRequest) {
           phone2_relationship: phone2Relationship,
           current_status: currentStatus,
         })
-        .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
+        .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, student_phone, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
         .single();
       if (studentError || !student) databaseError(studentError, "학생을 등록하지 못했습니다.");
 
@@ -1659,6 +1738,9 @@ export async function POST(request: NextRequest) {
       const assignmentId = parseUuid(input.assignmentId, "assignmentId");
       const studentId = parseUuid(input.studentId, "studentId");
       const startDate = parseDate(input.startDate, "반배정일");
+      const requestedTargetClassId = input.targetClassId === undefined || input.targetClassId === ""
+        ? undefined
+        : parseUuid(input.targetClassId, "targetClassId");
       const reason = parseOptionalText(input.reason, "반배정일 변경 사유", 500);
       const forceConflict = input.forceConflict === true;
       const today = getSeoulDate();
@@ -1677,7 +1759,13 @@ export async function POST(request: NextRequest) {
       if (currentAssignment.student_id !== student.id) throw new HttpError(409, "assignment_mismatch", "학생과 반 배정 정보가 일치하지 않습니다.");
       if (currentAssignment.status !== "active") throw new HttpError(409, "assignment_not_active", "활성 상태의 예정 반 배정만 반배정일을 변경할 수 있습니다.");
       if (currentAssignment.start_date <= today) throw new HttpError(409, "assignment_already_started", "이미 시작한 반은 이 화면에서 반배정일을 변경할 수 없습니다.");
-      if (startDate === currentAssignment.start_date) throw new HttpError(422, "same_assignment_date", "변경할 반배정일이 기존 날짜와 같습니다.");
+      const targetClassId = requestedTargetClassId ?? currentAssignment.class_id;
+      const targetClass = targetClassId === currentAssignment.class_id
+        ? null
+        : await getClass(admin, academyId, targetClassId);
+      if (startDate === currentAssignment.start_date && targetClassId === currentAssignment.class_id) {
+        throw new HttpError(422, "same_assignment", "변경할 반 또는 반배정일이 기존 내용과 같습니다.");
+      }
 
       const term = await getTerm(admin, academyId, currentAssignment.term_id);
       if (term.is_archived) throw new HttpError(409, "archived_term", "보관된 학기의 반배정일은 변경할 수 없습니다.");
@@ -1715,26 +1803,64 @@ export async function POST(request: NextRequest) {
         studentId,
         term,
       });
+      const targetOperationRows = targetClassId === currentAssignment.class_id
+        ? operationRows
+        : await getStudentOperationBlockRows(admin, {
+          academyId,
+          classId: targetClassId,
+          studentId,
+          term,
+        });
+      const rosterTransitionPlan = await prepareStudentRosterTransition(admin, {
+        academyId,
+        studentId,
+        sourceClassId: currentAssignment.class_id,
+        targetClassId,
+        moveDate: startDate,
+      });
+      if (rosterTransitionPlan.hasRecord) {
+        throw new HttpError(409, "class_record_exists_on_assignment_date", "변경할 반배정일에 기존 수업기록 또는 출결이 있어 반과 날짜를 변경할 수 없습니다. 기록과 이력을 보존하려면 다른 날짜를 선택해 주세요.");
+      }
       const rowsToMove = operationRows.filter((row) => row.is_active && row.start_date === currentAssignment.start_date);
-      const operationBlockConflict = operationRows.some((row) => row.is_active && row.start_date === startDate && !rowsToMove.some((rowToMove) => rowToMove.id === row.id));
+      const operationBlockConflict = targetOperationRows.some((row) => row.is_active && row.start_date === startDate && (targetClassId !== currentAssignment.class_id || !rowsToMove.some((rowToMove) => rowToMove.id === row.id)));
       if (operationBlockConflict) {
-        throw new HttpError(409, "operation_block_conflict", `${startDate}에 이미 같은 반의 수업 운영 연결이 있습니다. 기존 연결을 삭제하거나 병합하지 않고 충돌을 해결한 뒤 다시 저장해 주세요.`);
+        throw new HttpError(409, "operation_block_conflict", `${startDate}에 이미 해당 반의 수업 운영 연결이 있습니다. 기존 연결을 삭제하거나 병합하지 않고 충돌을 해결한 뒤 다시 저장해 주세요.`);
       }
 
       const operationGroup = operationRows.find((row) => row.is_active)?.operation_group ?? await getAssignmentOperationGroup(admin, academyId, studentId, currentAssignment.class_id, term);
+      let rosterChange: RosterMoveResult | null = null;
       try {
         const { data: updatedAssignment, error: assignmentError } = await admin
           .from("student_class_assignments")
-          .update({ start_date: startDate })
+          .update({ class_id: targetClassId, start_date: startDate })
           .eq("academy_id", academyId)
           .eq("id", assignmentId)
           .eq("status", "active")
-          .select("id, student_id, class_id, term_id, operation_type_id, start_date, end_date, status")
+          .select("id, student_id, class_id, term_id, operation_type_id, start_date, end_date, status, assignment_role, exam_operation_id")
           .maybeSingle();
         if (assignmentError) databaseError(assignmentError, "반배정일을 수정하지 못했습니다.");
         if (!updatedAssignment) throw new HttpError(409, "resource_changed", "다른 운영자가 먼저 변경했습니다. 학생 정보를 새로고침해 주세요.");
 
-        if (rowsToMove.length) {
+        if (targetClassId !== currentAssignment.class_id) {
+          rosterChange = await syncMovedStudentRosters(admin, {
+            academyId,
+            studentId,
+            oldAssignmentId: assignmentId,
+            newAssignmentId: assignmentId,
+            targetClassId,
+            termId: currentAssignment.term_id,
+            targetClassName: targetClass?.name ?? "변경 반",
+            moveDate: startDate,
+          });
+          await closeStudentRosterTransition(admin, rosterTransitionPlan);
+          await ensureStudentOperationBlocks(admin, {
+            academyId,
+            classId: targetClassId,
+            termId: currentAssignment.term_id,
+            operationGroup,
+            studentIds: [studentId],
+          });
+        } else if (rowsToMove.length) {
           for (const row of rowsToMove) {
             const { error } = await admin
               .from("class_schedule_block_students")
@@ -1758,13 +1884,14 @@ export async function POST(request: NextRequest) {
           actorProfileId,
           targetTable: "student_class_assignments",
           targetId: assignmentId,
-          fieldKey: "future_assignment_start_date_changed",
+          fieldKey: targetClassId === currentAssignment.class_id ? "future_assignment_start_date_changed" : "future_assignment_class_and_start_date_changed",
           oldValue: currentAssignment,
-          newValue: { ...updatedAssignment, reason, force_conflict: forceConflict },
-          reason: reason ?? "운영자가 예정 반의 반배정일을 변경했습니다.",
+          newValue: { ...updatedAssignment, target_class_name: targetClass?.name ?? null, reason, force_conflict: forceConflict },
+          reason: reason ?? (targetClassId === currentAssignment.class_id ? "운영자가 예정 반의 반배정일을 변경했습니다." : "운영자가 예정 반과 반배정일을 변경했습니다."),
         });
         return NextResponse.json({ data: { assignment: updatedAssignment } });
       } catch (error) {
+        if (rosterChange) await rollbackMovedStudentRosters(admin, academyId, rosterChange);
         await restoreStudentOperationBlockRows(admin, {
           academyId,
           classId: currentAssignment.class_id,
@@ -1772,9 +1899,18 @@ export async function POST(request: NextRequest) {
           term,
           snapshot: operationRows,
         });
+        if (targetClassId !== currentAssignment.class_id) {
+          await restoreStudentOperationBlockRows(admin, {
+            academyId,
+            classId: targetClassId,
+            studentId,
+            term,
+            snapshot: targetOperationRows,
+          });
+        }
         await admin
           .from("student_class_assignments")
-          .update({ start_date: currentAssignment.start_date, end_date: currentAssignment.end_date, status: currentAssignment.status })
+          .update({ class_id: currentAssignment.class_id, start_date: currentAssignment.start_date, end_date: currentAssignment.end_date, status: currentAssignment.status })
           .eq("academy_id", academyId)
           .eq("id", assignmentId);
         throw error;
@@ -1841,6 +1977,16 @@ export async function POST(request: NextRequest) {
         studentId,
         term,
       });
+      const rosterTransitionPlan = await prepareStudentRosterTransition(admin, {
+        academyId,
+        studentId,
+        sourceClassId: currentAssignment.class_id,
+        targetClassId,
+        moveDate,
+      });
+      if (rosterTransitionPlan.hasRecord) {
+        throw new HttpError(409, "class_record_exists_on_move_date", "이동일에 기존 반의 출결 또는 수업기록이 있어 해당 날짜로 반을 이동할 수 없습니다. 기록과 이력을 보존하려면 다음 날부터 선택해 주세요.");
+      }
 
       const endDate = addDays(moveDate, -1);
       const { data: closedAssignment, error: closeError } = await admin
@@ -1886,14 +2032,7 @@ export async function POST(request: NextRequest) {
           operationGroup,
           studentIds: [studentId],
         });
-        for (const row of oldOperationBlockRows.filter((item) => item.is_active)) {
-          const { error } = await admin
-            .from("class_schedule_block_students")
-            .update({ is_active: false, end_date: row.start_date < moveDate ? endDate : null })
-            .eq("academy_id", academyId)
-            .eq("id", row.id);
-          if (error) databaseError(error, "기존 반의 학생 운영 블록을 종료하지 못했습니다.");
-        }
+        await closeStudentRosterTransition(admin, rosterTransitionPlan);
         rosterChange = await syncMovedStudentRosters(admin, {
           academyId,
           studentId,
@@ -1954,6 +2093,268 @@ export async function POST(request: NextRequest) {
           added_roster_count: (rosterChange?.insertedRosterIds.length ?? 0) + (rosterChange?.restoredTargetRows.length ?? 0),
         },
       });
+    }
+
+    if (resource === "reentry_assignment") {
+      const studentId = parseUuid(input.studentId, "studentId");
+      const targetClassId = parseUuid(input.classId, "classId");
+      const startDate = input.startDate === undefined || input.startDate === ""
+        ? getSeoulDate()
+        : parseDate(input.startDate, "재원 적용일");
+      const previousStatus = parseText(input.previousStatus, "이전 재원 상태", 1, 30);
+      const operationGroup = parseOperationGroup(input.operationGroup);
+      if (!["paused", "on_hold", "withdrawn"].includes(previousStatus)) {
+        throw new HttpError(409, "invalid_reentry_status", "휴원 또는 퇴원 학생만 재원 복귀 배정을 생성할 수 있습니다.");
+      }
+
+      const [student, term, targetClass, latestHistoryResult] = await Promise.all([
+        getStudent(admin, academyId, studentId),
+        getCurrentTerm(admin, academyId),
+        getClass(admin, academyId, targetClassId),
+        admin
+          .from("student_status_history")
+          .select("previous_status, next_status, effective_date, created_at")
+          .eq("academy_id", academyId)
+          .eq("student_id", studentId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+      if (latestHistoryResult.error) databaseError(latestHistoryResult.error, "학생 재원 이력을 확인하지 못했습니다.");
+      if (student.current_status !== "enrolled") {
+        throw new HttpError(409, "student_not_enrolled", "재원 상태로 저장한 뒤 새 정규반을 선택해 주세요.");
+      }
+      if (!latestHistoryResult.data || latestHistoryResult.data.next_status !== "enrolled" || latestHistoryResult.data.previous_status !== previousStatus) {
+        throw new HttpError(409, "reentry_history_mismatch", "최근 재원 복귀 이력과 요청 정보가 일치하지 않습니다. 학생 정보를 다시 조회해 주세요.");
+      }
+      if (startDate < term.start_date || startDate > term.end_date) {
+        throw new HttpError(422, "invalid_range", "재원 적용일은 현재 학기 기간 안에서 선택해 주세요.");
+      }
+
+      const { data: activeAssignments, error: activeAssignmentsError } = await admin
+        .from("student_class_assignments")
+        .select("id, student_id, class_id, term_id, operation_type_id, start_date, end_date, status, assignment_role, exam_operation_id")
+        .eq("academy_id", academyId)
+        .eq("student_id", studentId)
+        .eq("term_id", term.id)
+        .eq("status", "active");
+      if (activeAssignmentsError) databaseError(activeAssignmentsError, "기존 활성 반 배정을 확인하지 못했습니다.");
+
+      const activeClassIds = [...new Set((activeAssignments ?? []).map((assignment) => assignment.class_id))];
+      const activeClassesResult = activeClassIds.length
+        ? await admin.from("classes").select("id, category").eq("academy_id", academyId).in("id", activeClassIds)
+        : { data: [], error: null };
+      if (activeClassesResult.error) databaseError(activeClassesResult.error, "기존 반의 유형을 확인하지 못했습니다.");
+      const classCategoryById = new Map((activeClassesResult.data ?? []).map((classRow) => [classRow.id, classRow.category]));
+      const regularAssignments = (activeAssignments ?? []).filter((assignment) => assignment.assignment_role !== "exam" && classCategoryById.get(assignment.class_id) !== "exam_prep");
+      if (regularAssignments.length === 1 && regularAssignments[0].class_id === targetClassId) {
+        const existingAssignment = regularAssignments[0];
+        const operationRows = await getStudentOperationBlockRows(admin, {
+          academyId,
+          classId: targetClassId,
+          studentId,
+          term,
+        });
+        const effectiveOperationRows = operationRows.filter((row) => row.is_active && row.start_date <= startDate && (!row.end_date || row.end_date >= startDate));
+        const previousOperationGroup = effectiveOperationRows.find((row) => row.operation_group === "B")
+          ? "B"
+          : effectiveOperationRows.length
+            ? "A"
+            : await getAssignmentOperationGroup(admin, academyId, studentId, targetClassId, term);
+        const operationBlockSnapshot = operationRows.map((row) => ({ ...row }));
+
+        try {
+          if (!operationRows.length) {
+            await ensureStudentOperationBlocks(admin, {
+              academyId,
+              classId: targetClassId,
+              termId: term.id,
+              operationGroup,
+              studentIds: [studentId],
+            });
+          } else if (!effectiveOperationRows.length || previousOperationGroup !== operationGroup) {
+            let changedBlockCount = 0;
+            try {
+              const change = await changeStudentOperationGroup(admin, {
+                academyId,
+                assignment: existingAssignment,
+                term,
+                operationGroup,
+                effectiveDate: startDate,
+              });
+              changedBlockCount = change.changedBlockCount;
+            } catch (error) {
+              if (!(error instanceof OperationBlockProvisionError) || error.code !== "operation_blocks_required") throw error;
+              await ensureStudentOperationBlocks(admin, {
+                academyId,
+                classId: targetClassId,
+                termId: term.id,
+                operationGroup,
+                studentIds: [studentId],
+              });
+            }
+            if (previousOperationGroup !== operationGroup) {
+              await writeAudit(admin, {
+                academyId,
+                actorProfileId,
+                targetTable: "student_class_assignments",
+                targetId: existingAssignment.id,
+                fieldKey: "reentry_operation_group_changed",
+                oldValue: { operation_group: previousOperationGroup, effective_date: startDate },
+                newValue: { operation_group: operationGroup, effective_date: startDate, changed_block_count: changedBlockCount },
+                reason: "휴원·퇴원 후 재원 복귀 수업 순서 변경",
+              });
+            }
+          }
+        } catch (error) {
+          if (operationRows.length) {
+            await restoreStudentOperationBlockRows(admin, {
+              academyId,
+              classId: targetClassId,
+              studentId,
+              term,
+              snapshot: operationBlockSnapshot,
+            });
+          }
+          throw error;
+        }
+        return NextResponse.json({ data: { assignment: existingAssignment, operationGroup, reused: true } });
+      }
+      if (regularAssignments.length > 1) {
+        throw new HttpError(409, "multiple_active_regular_assignments", "학생에게 현재 학기의 활성 정규반 배정이 여러 건 있어 먼저 중복 배정을 정리해 주세요.");
+      }
+
+      const operationType = await getRegularOperationType(admin, academyId);
+      const oldOperationBlockSnapshots = await Promise.all(regularAssignments.map(async (assignment) => ({
+        assignment,
+        rows: await getStudentOperationBlockRows(admin, {
+          academyId,
+          classId: assignment.class_id,
+          studentId,
+          term,
+        }),
+      })));
+      const targetOperationBlockSnapshot = await getStudentOperationBlockRows(admin, {
+        academyId,
+        classId: targetClassId,
+        studentId,
+        term,
+      });
+      const closedAssignments: Array<typeof regularAssignments[number]> = [];
+      const rosterChanges: RosterMoveResult[] = [];
+      let newAssignment: {
+        id: string;
+        student_id: string;
+        class_id: string;
+        term_id: string;
+        operation_type_id: string;
+        start_date: string;
+        end_date: string | null;
+        status: string;
+      } | null = null;
+
+      try {
+        for (const assignment of regularAssignments) {
+          const endDate = assignment.start_date > startDate ? assignment.start_date : startDate;
+          const { data: closedAssignment, error: closeError } = await admin
+            .from("student_class_assignments")
+            .update({ status: "ended", end_date: endDate })
+            .eq("academy_id", academyId)
+            .eq("id", assignment.id)
+            .eq("status", "active")
+            .select("id, student_id, class_id, term_id, operation_type_id, start_date, end_date, status, assignment_role, exam_operation_id")
+            .maybeSingle();
+          if (closeError) databaseError(closeError, "기존 정규반 배정을 종료하지 못했습니다.");
+          if (!closedAssignment) throw new HttpError(409, "resource_changed", "다른 운영자가 반 배정을 먼저 변경했습니다. 최신 정보를 다시 조회해 주세요.");
+          closedAssignments.push(assignment);
+          for (const row of oldOperationBlockSnapshots.find((item) => item.assignment.id === assignment.id)?.rows ?? []) {
+            if (!row.is_active) continue;
+            const { error } = await admin
+              .from("class_schedule_block_students")
+              .update({ is_active: false, end_date: row.start_date < startDate ? addDays(startDate, -1) : null })
+              .eq("academy_id", academyId)
+              .eq("id", row.id);
+            if (error) databaseError(error, "기존 정규반 운영 블록 연결을 종료하지 못했습니다.");
+          }
+        }
+
+        const { data: insertedAssignment, error: insertError } = await admin
+          .from("student_class_assignments")
+          .insert({
+            academy_id: academyId,
+            student_id: studentId,
+            class_id: targetClassId,
+            term_id: term.id,
+            operation_type_id: operationType.id,
+            start_date: startDate,
+            end_date: null,
+            status: "active",
+          })
+          .select("id, student_id, class_id, term_id, operation_type_id, start_date, end_date, status")
+          .single();
+        if (insertError || !insertedAssignment) databaseError(insertError, "재원 복귀 정규반 배정을 생성하지 못했습니다.");
+        newAssignment = insertedAssignment;
+
+        await ensureStudentOperationBlocks(admin, {
+          academyId,
+          classId: targetClassId,
+          termId: term.id,
+          operationGroup,
+          studentIds: [studentId],
+        });
+        for (const assignment of closedAssignments) {
+          rosterChanges.push(await syncMovedStudentRosters(admin, {
+            academyId,
+            studentId,
+            oldAssignmentId: assignment.id,
+            newAssignmentId: newAssignment.id,
+            targetClassId,
+            termId: term.id,
+            targetClassName: targetClass.name,
+            moveDate: startDate,
+          }));
+        }
+        await writeAudit(admin, {
+          academyId,
+          actorProfileId,
+          targetTable: "student_class_assignments",
+          targetId: newAssignment.id,
+          fieldKey: "reentry_assignment_created",
+          oldValue: { previous_status: previousStatus, closed_assignments: closedAssignments },
+          newValue: { assignment: newAssignment, target_class_name: targetClass.name, start_date: startDate, operation_group: operationGroup },
+          reason: "휴원·퇴원 후 재원 복귀 정규반 배정",
+        });
+      } catch (error) {
+        for (const change of rosterChanges) await rollbackMovedStudentRosters(admin, academyId, change);
+        await restoreStudentOperationBlockRows(admin, {
+          academyId,
+          classId: targetClassId,
+          studentId,
+          term,
+          snapshot: targetOperationBlockSnapshot,
+        });
+        for (const snapshot of oldOperationBlockSnapshots) {
+          await restoreStudentOperationBlockRows(admin, {
+            academyId,
+            classId: snapshot.assignment.class_id,
+            studentId,
+            term,
+            snapshot: snapshot.rows,
+          });
+        }
+        if (newAssignment) {
+          await admin.from("student_class_assignments").delete().eq("academy_id", academyId).eq("id", newAssignment.id);
+        }
+        for (const assignment of closedAssignments) {
+          await admin
+            .from("student_class_assignments")
+            .update({ status: "active", end_date: assignment.end_date })
+            .eq("academy_id", academyId)
+            .eq("id", assignment.id);
+        }
+        throw error;
+      }
+      return NextResponse.json({ data: { assignment: newAssignment, reused: false } });
     }
 
     if (resource === "assignments") {
@@ -2048,6 +2449,35 @@ export async function PATCH(request: NextRequest) {
     const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
 
+    if (resource === "student_name") {
+      const name = parseText(input.name, "학생 이름", 1, 100);
+      const current = await getStudent(admin, academyId, id);
+      const duplicates = await findDuplicateStudents(admin, academyId, { id, name, schoolId: current.school_id, schoolName: current.school_name, grade: current.grade, phone: current.phone, phone2: current.phone2 });
+      if (duplicates.length) throw new HttpError(409, "duplicate_student", "같은 이름의 학생이 있습니다. 확인하세요");
+      if (current.name === name) return NextResponse.json({ data: current });
+      const { data: student, error: studentError } = await admin
+        .from("students")
+        .update({ name })
+        .eq("academy_id", academyId)
+        .eq("id", id)
+        .eq("name", current.name)
+        .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, student_phone, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
+        .maybeSingle();
+      if (studentError) databaseError(studentError, "학생 이름을 수정하지 못했습니다.");
+      if (!student) throw new HttpError(409, "resource_changed", "다른 운영자가 먼저 학생 이름을 변경했습니다. 목록을 새로고침해 주세요.");
+      await writeAudit(admin, {
+        academyId,
+        actorProfileId,
+        targetTable: "students",
+        targetId: id,
+        fieldKey: "name",
+        oldValue: { name: current.name },
+        newValue: { name: student.name },
+        reason: "운영자가 학생 이름을 수정했습니다.",
+      });
+      return NextResponse.json({ data: student });
+    }
+
     if (resource === "students") {
       const current = await getStudent(admin, academyId, id);
       const studentNo = current.student_no;
@@ -2066,8 +2496,14 @@ export async function PATCH(request: NextRequest) {
       const grade = parseOptionalGrade(input.grade);
        const registeredAt = current.registered_at;
        const classStartDate = input.classStartDate === undefined || input.classStartDate === "" ? current.class_start_date ?? registeredAt : parseDate(input.classStartDate, "수업시작일");
+       if (classStartDate < registeredAt) {
+         throw new HttpError(422, "invalid_range", "수업 시작일은 등록일보다 빠를 수 없습니다.");
+       }
       const level = parseOptionalText(input.level, "레벨", 50);
       await ensureLevel(admin, academyId, level, current.level);
+      const studentPhone = input.studentPhone === undefined
+        ? current.student_phone ?? null
+        : normalizePhone(input.studentPhone, "학생 전화번호");
       const guardian1Name = parseOptionalText(input.guardian1Name, "보호자1 이름", 50);
       const phone = normalizePhone(input.phone, "보호자1 전화번호");
       const phone2 = normalizePhone(input.phone2, "보호자2 전화번호");
@@ -2101,67 +2537,83 @@ export async function PATCH(request: NextRequest) {
         throw new HttpError(422, "invalid_range", "등원예정일은 상태 적용일 이후여야 합니다.");
       }
 
-      const { data: student, error: studentError } = await admin
-        .from("students")
-        .update({
-          student_no: studentNo,
-          name,
-          school_name: schoolName,
-          school_level: schoolLevel,
-          school_id: schoolId,
-          grade,
-          registered_at: registeredAt,
-          class_start_date: classStartDate,
-          level,
-          classroom_id: classroomId,
-          vehicle_id: vehicleId,
-          guardian1_name: guardian1Name,
-          phone,
-          phone2,
-          phone_relationship: phoneRelationship,
-          guardian2_name: guardian2Name,
-          phone2_relationship: phone2Relationship,
-          current_status: nextStatus,
-        })
-        .eq("academy_id", academyId)
-        .eq("id", id)
-        .eq("current_status", current.current_status)
-        .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, guardian1_name, phone, phone_relationship, guardian2_name, phone2, phone2_relationship, current_status, created_at, updated_at")
-        .maybeSingle();
-      if (studentError) databaseError(studentError, "학생을 수정하지 못했습니다.");
-      if (!student) throw new HttpError(409, "resource_changed", "다른 운영자가 먼저 변경했습니다. 목록을 새로고침해 주세요.");
-
+      let student = current;
       if (statusChanged && effectiveDate) {
-        const { error: historyError } = await admin.from("student_status_history").insert({
-          academy_id: academyId,
-          student_id: id,
-          previous_status: current.current_status,
-          next_status: nextStatus,
-          effective_date: effectiveDate,
-          withdrawal_type: withdrawalType,
-          reason: statusReason,
-          expected_return_date: expectedReturnDate,
-          changed_by_profile_id: actorProfileId,
+        const { error: transitionError } = await admin.rpc("transition_student_status_transaction", {
+          p_academy_id: academyId,
+          p_student_id: id,
+          p_previous_status: current.current_status,
+          p_next_status: nextStatus,
+          p_effective_date: effectiveDate,
+          p_withdrawal_type: withdrawalType,
+          p_reason: statusReason,
+          p_expected_return_date: expectedReturnDate,
+          p_student_patch: {
+            student_no: studentNo,
+            name,
+            school_name: schoolName,
+            school_level: schoolLevel,
+            school_id: schoolId,
+            grade,
+            class_start_date: classStartDate,
+            level,
+            classroom_id: classroomId,
+            vehicle_id: vehicleId,
+            student_phone: studentPhone,
+            guardian1_name: guardian1Name,
+            phone,
+            phone_relationship: phoneRelationship,
+            guardian2_name: guardian2Name,
+            phone2,
+            phone2_relationship: phone2Relationship,
+          },
+          p_actor_profile_id: actorProfileId,
         });
-        if (historyError) {
-          await admin.from("students").update({ current_status: current.current_status }).eq("academy_id", academyId).eq("id", id);
-          databaseError(historyError, "학생 상태 이력을 저장하지 못했습니다.");
-        }
+        if (transitionError) rpcDatabaseError(transitionError, "학생 상태 변경을 저장하지 못했습니다.");
+        student = await getStudent(admin, academyId, id);
+      } else {
+        const { data: updatedStudent, error: studentError } = await admin
+          .from("students")
+          .update({
+            student_no: studentNo,
+            name,
+            school_name: schoolName,
+            school_level: schoolLevel,
+            school_id: schoolId,
+            grade,
+            registered_at: registeredAt,
+            class_start_date: classStartDate,
+            level,
+            classroom_id: classroomId,
+            vehicle_id: vehicleId,
+            student_phone: studentPhone,
+            guardian1_name: guardian1Name,
+            phone,
+            phone2,
+            phone_relationship: phoneRelationship,
+            guardian2_name: guardian2Name,
+            phone2_relationship: phone2Relationship,
+            current_status: nextStatus,
+          })
+          .eq("academy_id", academyId)
+          .eq("id", id)
+          .eq("current_status", current.current_status)
+        .select("id, student_no, name, school_name, school_level, school_id, grade, registered_at, class_start_date, level, classroom_id, vehicle_id, student_phone, guardian1_name, phone, phone2, phone_relationship, guardian2_name, phone2_relationship, current_status, created_at, updated_at")
+          .maybeSingle();
+        if (studentError) databaseError(studentError, "학생을 수정하지 못했습니다.");
+        if (!updatedStudent) throw new HttpError(409, "resource_changed", "다른 운영자가 먼저 변경했습니다. 목록을 새로고침해 주세요.");
+        student = updatedStudent;
+        await writeAudit(admin, {
+          academyId,
+          actorProfileId,
+          targetTable: "students",
+          targetId: id,
+          fieldKey: "updated",
+          oldValue: current,
+          newValue: student,
+          reason: "운영자가 학생 정보를 수정했습니다.",
+        });
       }
-      if (statusChanged && nextStatus === "withdrawn" && effectiveDate) {
-        await closeWithdrawnStudentAssignments(admin, academyId, id, effectiveDate);
-        await revokeGuardianAccessForWithdrawnStudent(admin, academyId, id);
-      }
-      await writeAudit(admin, {
-        academyId,
-        actorProfileId,
-        targetTable: "students",
-        targetId: id,
-        fieldKey: statusChanged ? "updated_and_status_changed" : "updated",
-        oldValue: current,
-        newValue: student,
-        reason: statusChanged ? statusReason ?? "학생 상태를 변경했습니다." : "운영자가 학생 정보를 수정했습니다.",
-      });
       return NextResponse.json({ data: student });
     }
 

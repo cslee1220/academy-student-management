@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -79,6 +80,32 @@ export async function POST(request: NextRequest) {
     const { error: authError } = await admin.auth.admin.updateUserById(account.auth_user_id, { password });
     if (authError) {
       throw new HttpError(500, "auth_update_failed", "비밀번호를 설정하지 못했습니다.");
+    }
+
+    if (input.useLegacyWritePath !== true) {
+      const activatedAt = new Date().toISOString();
+      const { error: transactionError } = await admin.rpc("activate_teacher_account_transaction", {
+        p_account_id: account.id,
+        p_activated_at: activatedAt,
+      });
+      if (!transactionError) {
+        return NextResponse.json({ data: { message: "비밀번호가 설정되었습니다. 로그인해 주세요." } });
+      }
+
+      let compensationSucceeded = false;
+      try {
+        const compensation = await admin.auth.admin.updateUserById(account.auth_user_id, {
+          password: randomBytes(32).toString("base64url"),
+          ban_duration: "876000h",
+        });
+        compensationSucceeded = !compensation.error;
+      } catch {
+        compensationSucceeded = false;
+      }
+      if (compensationSucceeded) {
+        throw new HttpError(503, "activation_compensated", "계정 활성화 저장에 실패하여 접근을 자동 차단했습니다. 운영자에게 재활성화를 요청해 주세요.");
+      }
+      throw new HttpError(503, "activation_compensation_failed", "계정 활성화 및 보상 처리가 모두 실패했습니다. 운영자 확인이 필요합니다.");
     }
 
     const now = new Date().toISOString();

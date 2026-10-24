@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import PwaInstallPrompt from "@/components/pwa-install-prompt";
+import WebPushRegistration from "@/components/web-push-registration";
 
 type Snapshot = {
   id: string;
@@ -43,8 +44,53 @@ function textValue(value: unknown) {
   return typeof value === "string" ? value : "-";
 }
 
+function commonHomeworkLabel(snapshot: Snapshot) {
+  if (snapshot.label_snapshot === "문법/영작숙제" || snapshot.label_snapshot === "독해/듣기숙제" || snapshot.label_snapshot === "공통숙제") {
+    return snapshot.label_snapshot;
+  }
+  const subjectName = typeof snapshot.value_json.subjectName === "string" ? snapshot.value_json.subjectName : "";
+  if (subjectName.includes("문법") || subjectName.includes("영작")) return "문법/영작숙제";
+  if (subjectName.includes("독해") || subjectName.includes("듣기")) return "독해/듣기숙제";
+  return "공통숙제";
+}
+
 function scoreValue(value: unknown) {
-  return typeof value === "number" ? String(value) : "미입력";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return value.trim();
+  return "미입력";
+}
+
+type QualitativeScoreField = "homeworkScore" | "understandingScore" | "participationScore";
+
+const QUALITATIVE_SCORE_LABELS: Record<QualitativeScoreField, Record<number, string>> = {
+  homeworkScore: {
+    1: "숙제이행도 노력 필요",
+    2: "숙제이행도 성장 중",
+    3: "숙제이행도 양호",
+    4: "숙제이행도 우수",
+    5: "숙제이행도 매우 우수",
+  },
+  understandingScore: {
+    1: "수업이해도 노력 필요",
+    2: "수업이해도 성장 중",
+    3: "수업이해도 양호",
+    4: "수업이해도 우수",
+    5: "수업이해도 매우 우수",
+  },
+  participationScore: {
+    1: "수업참여도 노력 필요",
+    2: "수업참여도 성장 중",
+    3: "수업참여도 양호",
+    4: "수업참여도 우수",
+    5: "수업참여도 매우 우수",
+  },
+};
+
+function qualitativeScoreText(field: QualitativeScoreField, value: unknown) {
+  const score = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isInteger(score) && score >= 1 && score <= 5
+    ? QUALITATIVE_SCORE_LABELS[field][score]
+    : scoreValue(value);
 }
 
 function SnapshotCard({ snapshot }: { snapshot: Snapshot }) {
@@ -53,19 +99,20 @@ function SnapshotCard({ snapshot }: { snapshot: Snapshot }) {
     const status = value.status === "present" ? "출석" : value.status === "absent" ? "결석" : "무단결석";
     return <p className="text-sm text-slate-700">{status}</p>;
   }
-  if (snapshot.item_key === "common_homework") {
+  if (snapshot.item_key === "common_homework" || snapshot.item_key.startsWith("common_homework:")) {
     return <p className="text-sm leading-6 text-slate-700">{value.noHomework ? "숙제 없음" : textValue(value.content)}</p>;
   }
   if (snapshot.item_key.startsWith("subject:")) {
+    const supplementItems = subjectSupplementLabels(snapshot);
     const scoreItems = [
-      ["숙제", value.homeworkScore],
-      ["이해도", value.understandingScore],
-      ["참여도", value.participationScore],
-    ].filter(([, score]) => score !== undefined);
+      ["homeworkScore", value.homeworkScore],
+      ["understandingScore", value.understandingScore],
+      ["participationScore", value.participationScore],
+    ].filter(([, score]) => score !== undefined) as Array<[QualitativeScoreField, unknown]>;
     return (
       <div className="space-y-2 text-sm text-slate-700">
-        {scoreItems.length ? <p>{scoreItems.map(([label, score]) => `${label} ${scoreValue(score)}`).join(" · ")}</p> : null}
-        {value.isSupplementary ? <p className="font-semibold text-amber-700">보충학습 대상</p> : null}
+        {scoreItems.length ? <p>{scoreItems.map(([field, score]) => qualitativeScoreText(field, score)).join(" · ")}</p> : null}
+        {supplementItems.length ? <div className="space-y-1 font-semibold text-amber-700">{supplementItems.map((item) => <p key={item}>{item}</p>)}</div> : null}
         {value.publicNote ? <p className="leading-6">{textValue(value.publicNote)}</p> : null}
       </div>
     );
@@ -84,20 +131,47 @@ function subjectName(snapshot: Snapshot) {
   return typeof snapshot.value_json.subjectName === "string" ? snapshot.value_json.subjectName : "과목";
 }
 
-function subjectFieldValues(subjects: Snapshot[], field: "homeworkScore" | "understandingScore" | "participationScore") {
+function subjectSupplementLabels(snapshot: Snapshot) {
+  const value = snapshot.value_json;
+  const subject = subjectName(snapshot);
+  const labels: string[] = [];
+  const testDate = typeof value.testSupplementDate === "string" && value.testSupplementDate ? ` · 예정일 ${value.testSupplementDate}` : "";
+  const homeworkDate = typeof value.homeworkSupplementDate === "string" && value.homeworkSupplementDate ? ` · 예정일 ${value.homeworkSupplementDate}` : "";
+  if (value.isTestSupplementary === true) labels.push(`${subject} 테스트 보충${testDate}`);
+  if (value.isHomeworkSupplementary === true) {
+    const content = typeof value.homeworkSupplementContent === "string" && value.homeworkSupplementContent.trim() ? `: ${value.homeworkSupplementContent}` : "";
+    labels.push(`${subject} 과제보충${homeworkDate}${content}`);
+  }
+  if (!labels.length && value.isSupplementary === true) labels.push(`${subject} 보충학습`);
+  return labels;
+}
+
+function supplementSummary(subjects: Snapshot[]) {
+  const values = subjects.flatMap((snapshot) => subjectSupplementLabels(snapshot));
+  return values.length ? values.join(" / ") : "없음";
+}
+
+function subjectFieldValues(subjects: Snapshot[], field: QualitativeScoreField) {
   const values = subjects
     .map((snapshot) => {
       const value = snapshot.value_json[field];
-      return value === undefined ? null : subjectName(snapshot) + ": " + scoreValue(value);
+      return value === undefined ? null : subjectName(snapshot) + ": " + qualitativeScoreText(field, value);
     })
     .filter((value): value is string => Boolean(value));
   return values.length ? values.join(" / ") : "-";
 }
 
+function testName(snapshot: Snapshot) {
+  const value = snapshot.value_json;
+  if (typeof value.name === "string" && value.name.trim()) return value.name.trim();
+  if (snapshot.label_snapshot && snapshot.label_snapshot !== "테스트") return snapshot.label_snapshot;
+  return "테스트";
+}
+
 function testValues(tests: Snapshot[]) {
   const values = tests.map((snapshot) => {
     const value = snapshot.value_json;
-    const name = typeof value.name === "string" ? value.name : "단어테스트";
+    const name = testName(snapshot);
     return value.score === null || value.score === undefined
       ? name + ": 미응시" + (value.nonAttemptReason ? " (" + textValue(value.nonAttemptReason) + ")" : "")
       : name + ": " + scoreValue(value.score) + " / " + scoreValue(value.maxScore);
@@ -114,8 +188,7 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
   const subjectAttendances = snapshots.filter((snapshot) => snapshot.item_key.startsWith("attendance:"));
   const tests = snapshots.filter((snapshot) => snapshot.item_key.startsWith("test:"));
   const subjects = snapshots.filter((snapshot) => snapshot.item_key.startsWith("subject:"));
-  const commonHomework = snapshots.find((snapshot) => snapshot.item_key === "common_homework");
-  const supplementarySubjects = subjects.filter((snapshot) => snapshot.value_json.isSupplementary === true);
+  const commonHomeworks = snapshots.filter((snapshot) => snapshot.item_key === "common_homework" || snapshot.item_key.startsWith("common_homework:"));
   const subjectNotes = subjects
     .map((snapshot) => {
       const note = snapshot.value_json.publicNote;
@@ -130,21 +203,28 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
         ? "무단결석"
         : "-";
   const subjectAttendanceValue = subjectAttendances.length
-    ? subjectAttendances.map((snapshot) => {
-        const subject = typeof snapshot.value_json.subjectName === "string" ? snapshot.value_json.subjectName : "과목";
-        return `${subject}: ${attendanceLabel(snapshot.value_json.status)}`;
-      }).join(" / ")
+    ? [...new Set(subjectAttendances.map((snapshot) => {
+        const rawValueSubject = typeof snapshot.value_json.subjectName === "string" ? snapshot.value_json.subjectName.trim() : "";
+        const valueSubject = rawValueSubject && !["과목", "출결", "출석"].includes(rawValueSubject)
+          ? rawValueSubject
+          : "";
+        const snapshotSubject = typeof snapshot.label_snapshot === "string"
+          && snapshot.label_snapshot.trim()
+          && !["과목", "출결", "출석"].includes(snapshot.label_snapshot.trim())
+          ? snapshot.label_snapshot.trim()
+          : "";
+        const subject = valueSubject || snapshotSubject;
+        const status = attendanceLabel(snapshot.value_json.status);
+        return subject ? `${subject}: ${status}` : status;
+      }))].join(" / ")
     : attendanceValue;
   const cells = [
     { label: "출석", value: subjectAttendanceValue },
-    { label: "단어테스트", value: testValues(tests) },
+    { label: "테스트 결과", value: testValues(tests) },
     { label: "숙제", value: subjectFieldValues(subjects, "homeworkScore") },
     { label: "이해도", value: subjectFieldValues(subjects, "understandingScore") },
     { label: "참여도", value: subjectFieldValues(subjects, "participationScore") },
-    {
-      label: "나머지/보충",
-      value: supplementarySubjects.length ? supplementarySubjects.map(subjectName).join(" / ") : "없음",
-    },
+    { label: "나머지/보충", value: supplementSummary(subjects) },
   ];
 
   return (
@@ -160,10 +240,17 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
         </div>
       </div>
 
-      {commonHomework ? (
+      {commonHomeworks.length ? (
         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-sm font-bold text-slate-800">공통숙제</p>
-          <div className="mt-2"><SnapshotCard snapshot={commonHomework} /></div>
+          <div className="mt-2 space-y-3">
+            {commonHomeworks.map((snapshot) => (
+              <div key={snapshot.id} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                <p className="text-xs font-bold text-indigo-700">{commonHomeworkLabel(snapshot)}</p>
+                <div className="mt-1"><SnapshotCard snapshot={snapshot} /></div>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
 
@@ -227,6 +314,7 @@ export default function ParentPage() {
   return (
     <div className="mx-auto max-w-6xl px-6 py-12">
       <PwaInstallPrompt />
+      <WebPushRegistration />
       <nav className="mb-5 flex flex-wrap gap-2"><Link href="/parent/summary" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">학습 요약</Link><Link href="/parent/announcements" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">공지·알림</Link><Link href="/parent/inquiries" className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">문의</Link></nav>
       <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div>

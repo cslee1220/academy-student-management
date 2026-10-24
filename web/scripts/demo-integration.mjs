@@ -26,8 +26,8 @@ loadLocalEnv();
 
 const config = {
   baseUrl: process.env.INTEGRATION_BASE_URL ?? "http://localhost:3000",
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321",
-  serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseUrl: process.env.INTEGRATION_SUPABASE_URL ?? "http://127.0.0.1:54321",
+  serviceRoleKey: process.env.INTEGRATION_SUPABASE_SERVICE_ROLE_KEY,
   academyId: process.env.INTEGRATION_ACADEMY_ID ?? "21000000-0000-4000-8000-000000000001",
   adminEmail: process.env.INTEGRATION_ADMIN_EMAIL ?? "demo-admin@test.invalid",
   adminPassword: process.env.INTEGRATION_ADMIN_PASSWORD,
@@ -37,7 +37,7 @@ const config = {
 
 if (!config.serviceRoleKey || !config.adminPassword || !config.teacherPassword) {
   throw new Error(
-    "SUPABASE_SERVICE_ROLE_KEY, INTEGRATION_ADMIN_PASSWORD, INTEGRATION_TEACHER_PASSWORD 환경변수가 필요합니다.",
+    "INTEGRATION_SUPABASE_SERVICE_ROLE_KEY, INTEGRATION_ADMIN_PASSWORD, INTEGRATION_TEACHER_PASSWORD 환경변수가 필요합니다.",
   );
 }
 
@@ -409,6 +409,7 @@ async function removeLegacyFixture(fixture) {
   }
   await deleteRows("student_class_assignments", (query) => query.eq("academy_id", config.academyId).in("id", fixture.classAssignmentIds ?? []));
   await deleteRows("student_status_history", (query) => query.eq("academy_id", config.academyId).in("student_id", fixture.studentIds ?? []));
+  await deleteRows("student_risk_results", (query) => query.eq("academy_id", config.academyId).in("student_id", fixture.studentIds ?? []));
   await deleteRows("students", (query) => query.eq("academy_id", config.academyId).in("id", fixture.studentIds ?? []));
 }
 
@@ -523,6 +524,9 @@ async function main() {
     });
     const inviteData = inviteResponse.payload?.data;
     assert(inviteData?.inviteUrl && inviteData?.authCode, "보호자 초대 링크 또는 인증번호가 발급되지 않았습니다.");
+    const inviteLifetimeMs = new Date(inviteData.expiresAt).getTime() - Date.now();
+    assert(inviteLifetimeMs >= 59 * 24 * 60 * 60 * 1000 && inviteLifetimeMs <= 61 * 24 * 60 * 60 * 1000, "보호자 초대 링크 유효기간이 60일이 아닙니다.");
+    assert(inviteData.maxUses === 5, "보호자 초대 링크 최대 사용 횟수가 5회가 아닙니다.");
     const guardianToken = new URL(inviteData.inviteUrl).searchParams.get("token");
     assert(guardianToken, "발급된 초대 링크에서 토큰을 찾지 못했습니다.");
     const createdGuardianRows = await rows("guardians", (query) => query.eq("phone", testPhone));
@@ -547,15 +551,20 @@ async function main() {
     const replay = await request("/api/guardian/activate", {
       jar: new Map(),
       method: "POST",
-      allowStatuses: [410],
       body: {
         token: guardianToken,
         authCode: inviteData.authCode,
         deviceId: `integration-replay-${randomUUID()}`,
       },
     });
-    assert(replay.status === 410 && replay.payload?.error?.code === "invite_expired", "사용된 초대 링크 재사용이 차단되지 않았습니다.");
-    logPass("초대 링크 1회 사용 제한");
+    assert(replay.status === 200, "초대 링크의 두 번째 사용이 허용되지 않았습니다.");
+    const partiallyUsedInvite = (await rows("guardian_invites", (query) => query
+      .eq("guardian_id", temporaryGuardianId)
+      .eq("student_id", studentIds[0])
+      .order("created_at", { ascending: false })
+      .limit(1)))[0];
+    assert(partiallyUsedInvite?.use_count === 2 && partiallyUsedInvite.used_at === null, "초대 링크 사용 횟수가 2/5로 저장되지 않았습니다.");
+    logPass("초대 링크 5회 사용 정책", "같은 링크의 2회차 인증 허용 확인");
 
     const reissueResponse = await request("/api/admin/guardians/reissue", {
       jar: adminJar,
@@ -566,6 +575,18 @@ async function main() {
     assert(reissuedInvite?.inviteUrl && reissuedInvite?.authCode, "보호자 접속 링크 재발급에 실패했습니다.");
     const reissuedToken = new URL(reissuedInvite.inviteUrl).searchParams.get("token");
     assert(reissuedToken, "재발급된 접속 링크에서 토큰을 찾지 못했습니다.");
+    const canceledOriginal = await request("/api/guardian/activate", {
+      jar: new Map(),
+      method: "POST",
+      allowStatuses: [410],
+      body: {
+        token: guardianToken,
+        authCode: inviteData.authCode,
+        deviceId: `integration-canceled-${randomUUID()}`,
+      },
+    });
+    assert(canceledOriginal.status === 410 && canceledOriginal.payload?.error?.code === "invite_expired", "재발급 후 기존 초대 링크가 취소되지 않았습니다.");
+    logPass("재발급 시 기존 링크 취소", "기존 사용 가능 링크의 재접속 차단 확인");
     const replacementGuardianJar = new Map();
     const replacementActivation = await request("/api/guardian/activate", {
       jar: replacementGuardianJar,
@@ -580,6 +601,28 @@ async function main() {
     const oldDeviceHome = await request("/api/guardian/home", { jar: guardianJar, allowStatuses: [401] });
     assert(oldDeviceHome.status === 401, `새 기기 인증 후 기존 기기가 차단되지 않았습니다. status=${oldDeviceHome.status} payload=${JSON.stringify(oldDeviceHome.payload)}`);
     logPass("접속 링크 재발급·1기기 제한", "새 기기 활성화 후 기존 기기 차단 확인");
+
+    const revokeLinkResult = await admin
+      .from("student_guardians")
+      .update({ access_revoked_at: new Date().toISOString() })
+      .eq("academy_id", config.academyId)
+      .eq("guardian_id", temporaryGuardianId)
+      .eq("student_id", studentIds[0])
+      .eq("is_active", true);
+    if (revokeLinkResult.error) throw new Error(`개별 보호자 링크 해지 테스트 준비 실패: ${revokeLinkResult.error.message}`);
+    const revokedHome = await request("/api/guardian/home", { jar: replacementGuardianJar, allowStatuses: [403] });
+    assert(revokedHome.status === 403 && revokedHome.payload?.error?.code === "guardian_access_revoked", "개별 보호자 링크가 취소된 뒤 홈 조회가 차단되지 않았습니다.");
+    const revokedInquiries = await request("/api/guardian/inquiries", { jar: replacementGuardianJar });
+    assert((revokedInquiries.payload?.data?.inquiries ?? []).length === 0, "개별 보호자 링크가 취소된 뒤 문의 목록이 남아 있습니다.");
+    const restoreLinkResult = await admin
+      .from("student_guardians")
+      .update({ access_revoked_at: null })
+      .eq("academy_id", config.academyId)
+      .eq("guardian_id", temporaryGuardianId)
+      .eq("student_id", studentIds[0])
+      .eq("is_active", true);
+    if (restoreLinkResult.error) throw new Error(`개별 보호자 링크 해지 테스트 복원 실패: ${restoreLinkResult.error.message}`);
+    logPass("개별 보호자 링크 해지 차단", "홈·문의에서 해지된 학생을 제외");
 
     const revokeInviteResponse = await request("/api/admin/guardians/reissue", {
       jar: adminJar,

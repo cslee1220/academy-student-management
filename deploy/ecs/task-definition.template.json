@@ -1,0 +1,57 @@
+{
+  "family": "__REQUIRED_TASK_FAMILY__",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "executionRoleArn": "__REQUIRED_EXECUTION_ROLE_ARN__",
+  "taskRoleArn": "__REQUIRED_TASK_ROLE_ARN__",
+  "containerDefinitions": [
+    {
+      "name": "academy-student-management",
+      "image": "__REQUIRED_ECR_IMAGE_URI__",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "8080" },
+        { "name": "HOSTNAME", "value": "0.0.0.0" },
+        { "name": "NEXT_PUBLIC_SUPABASE_URL", "value": "__REQUIRED_SUPABASE_URL__" },
+        { "name": "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "value": "__REQUIRED_SUPABASE_PUBLISHABLE_KEY__" },
+        { "name": "APP_BASE_URL", "value": "__REQUIRED_APP_BASE_URL__" }
+      ],
+      "secrets": [
+        {
+          "name": "SUPABASE_SERVICE_ROLE_KEY",
+          "valueFrom": "__REQUIRED_SERVICE_ROLE_SECRET_ARN__"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/api/health > /dev/null || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 15
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "__REQUIRED_LOG_GROUP_NAME__",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "false"
+        }
+      }
+    }
+  ]
+}

@@ -1,7 +1,9 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 
 export const GUARDIAN_PASSWORD_MIN_LENGTH = 8;
-export const GUARDIAN_INVITE_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+export const GUARDIAN_INVITE_VALIDITY_DAYS = 60;
+export const GUARDIAN_INVITE_MAX_USES = 5;
+export const GUARDIAN_INVITE_VALIDITY_MS = GUARDIAN_INVITE_VALIDITY_DAYS * 24 * 60 * 60 * 1000;
 const GUARDIAN_AUTH_CODE_LENGTH = 8;
 
 export function createGuardianInviteToken(): string {

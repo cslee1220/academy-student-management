@@ -11,6 +11,7 @@ type OverviewData = {
     consultation: { assignedStudentCount: number; recordedStudentCount: number; missingStudentCount: number; recordCount: number };
     subjectMissing: { expectedEntryCount: number; recordedEntryCount: number; missingEntryCount: number; missingStudentCount: number };
     paused: { studentCount: number };
+    classMovement: { studentCount: number };
   };
 };
 
@@ -79,7 +80,7 @@ export default function TeacherRecordsOverview() {
       </div>
 
       {error ? <p className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</p> : null}
-      {summary ? <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      {summary ? <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
         <Link href={detailHref("attendance", linkDateQuery.startDate, linkDateQuery.endDate, linkDateQuery.attendanceDate)} className="rounded-xl border border-sky-200 bg-white p-4 transition hover:border-sky-400 hover:bg-sky-50">
           <p className="text-sm font-bold text-sky-700">당일 출결</p>
           <p className="mt-2 text-2xl font-bold text-slate-950">{summary.attendance.inputStudentCount}/{summary.attendance.expectedStudentCount}명</p>
@@ -98,12 +99,17 @@ export default function TeacherRecordsOverview() {
         <Link href={detailHref("consultation", linkDateQuery.startDate, linkDateQuery.endDate, linkDateQuery.attendanceDate)} className="rounded-xl border border-violet-200 bg-white p-4 transition hover:border-violet-400 hover:bg-violet-50">
           <p className="text-sm font-bold text-violet-700">상담현황</p>
           <p className="mt-2 text-2xl font-bold text-slate-950">{summary.consultation.recordedStudentCount}/{summary.consultation.assignedStudentCount}명</p>
-          <p className="mt-1 text-xs text-slate-500">기록 {summary.consultation.recordCount}건 · 미기록 {summary.consultation.missingStudentCount}명</p>
+          <p className="mt-1 text-xs text-slate-500">상담 완료학생 · 미완료 {summary.consultation.missingStudentCount}명</p>
         </Link>
         <Link href={detailHref("subject_missing", linkDateQuery.startDate, linkDateQuery.endDate, linkDateQuery.attendanceDate)} className="rounded-xl border border-orange-200 bg-white p-4 transition hover:border-orange-400 hover:bg-orange-50">
           <p className="text-sm font-bold text-orange-700">과목 미기록</p>
           <p className="mt-2 text-2xl font-bold text-slate-950">{summary.subjectMissing.missingStudentCount}명</p>
           <p className="mt-1 text-xs text-slate-500">미기록 {summary.subjectMissing.missingEntryCount}건</p>
+        </Link>
+        <Link href={detailHref("class_movement", linkDateQuery.startDate, linkDateQuery.endDate, linkDateQuery.attendanceDate)} className="rounded-xl border border-violet-300 bg-white p-4 transition hover:border-violet-500 hover:bg-violet-50">
+          <p className="text-sm font-bold text-violet-700">반이동 현황</p>
+          <p className="mt-2 text-2xl font-bold text-slate-950">{summary.classMovement.studentCount}명</p>
+          <p className="mt-1 text-xs text-slate-500">당일 반 이동 학생</p>
         </Link>
         <Link href={detailHref("paused", linkDateQuery.startDate, linkDateQuery.endDate, linkDateQuery.attendanceDate)} className="rounded-xl border border-amber-300 bg-white p-4 transition hover:border-amber-500 hover:bg-amber-50">
           <p className="text-sm font-bold text-amber-700">휴원학생</p>

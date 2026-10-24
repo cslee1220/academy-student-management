@@ -26,6 +26,7 @@ type DailyBlock = {
   effective_end: string;
   student_count: number;
   operation_groups: string[];
+  is_exam_class: boolean;
 };
 type DailyBlockGroup = {
   key: string;
@@ -41,6 +42,7 @@ type DailyBlockGroup = {
   weekdays: string[];
   student_count: number;
   operation_groups: string[];
+  is_exam_class: boolean;
   blocks: DailyBlock[];
 };
 type TestDefinition = { id: string; sequenceNo: number; name: string; maxScore: string };
@@ -53,6 +55,7 @@ type StudentRow = {
   expected_return_date: string | null;
   operation_group: "A" | "B" | null;
   attendanceStatus: AttendanceStatus;
+  attendanceRecorded: boolean;
   absenceNote: string;
   homeworkScore: string;
   understandingScore: string;
@@ -74,6 +77,10 @@ type SupplementPopup = {
   date: string;
   originalDate: string;
 };
+type HomeworkGroupKey = "A" | "B" | "unassigned";
+type TestGroupKey = HomeworkGroupKey;
+type TestDefinitionsByGroup = Record<TestGroupKey, TestDefinition[]>;
+type HomeworkDraft = { content: string; noHomework: boolean; version: number | null };
 
 const weekdayLabels: Record<string, string> = {
   mon: "월",
@@ -119,6 +126,12 @@ function formatTestDefinitionLabel(definition: TestDefinition, index: number) {
   return definition.name.trim() || `테스트 ${index + 1}`;
 }
 
+function commonHomeworkLabel(subjectName: string) {
+  if (subjectName.includes("문법") || subjectName.includes("영작")) return "문법/영작숙제";
+  if (subjectName.includes("독해") || subjectName.includes("듣기")) return "독해/듣기숙제";
+  return "공통숙제";
+}
+
 function groupDailyBlocks(blocks: DailyBlock[]): DailyBlockGroup[] {
   const groups = new Map<string, DailyBlockGroup>();
   for (const block of blocks) {
@@ -141,6 +154,7 @@ function groupDailyBlocks(blocks: DailyBlock[]): DailyBlockGroup[] {
       current.weekdays = [...new Set([...current.weekdays, block.weekday])].sort((left, right) => weekdayOrder.indexOf(left) - weekdayOrder.indexOf(right));
       current.student_count = Math.max(current.student_count, block.student_count);
       current.operation_groups = [...new Set([...current.operation_groups, ...block.operation_groups])].sort();
+      current.is_exam_class = current.is_exam_class || block.is_exam_class;
       continue;
     }
     groups.set(key, {
@@ -157,6 +171,7 @@ function groupDailyBlocks(blocks: DailyBlock[]): DailyBlockGroup[] {
       weekdays: [block.weekday],
       student_count: block.student_count,
       operation_groups: [...block.operation_groups].sort(),
+      is_exam_class: block.is_exam_class,
       blocks: [block],
     });
   }
@@ -189,8 +204,40 @@ function makeTestDefinitions(value: unknown): TestDefinition[] {
   });
 }
 
+function defaultTestName(subjectName?: string | null) {
+  if (subjectName?.includes("문법") || subjectName?.toLowerCase().includes("grammar")) return "문법테스트";
+  if (subjectName?.includes("독해") || subjectName?.toLowerCase().includes("reading")) return "독해테스트";
+  return "";
+}
+
+function defaultTestDefinitions(groupKey: TestGroupKey, subjectName?: string | null): TestDefinition[] {
+  const name = defaultTestName(subjectName);
+  return name ? [{ id: `default-test-${groupKey}`, sequenceNo: 1, name, maxScore: "25" }] : [];
+}
+
+function studentTestGroupKey(student: Pick<StudentRow, "operation_group">): TestGroupKey {
+  return student.operation_group ?? "unassigned";
+}
+
+function definitionsForLoadedGroup(
+  students: Array<{ operation_group?: "A" | "B" | null; subjectRecord?: Record<string, unknown> | null }>,
+  groupKey: TestGroupKey,
+  subjectName?: string | null,
+) {
+  const existingStudent = students.find((student) =>
+    (student.operation_group ?? "unassigned") === groupKey && Boolean(student.subjectRecord),
+  );
+  return existingStudent?.subjectRecord
+    ? makeTestDefinitions(existingStudent.subjectRecord.test_definitions)
+    : defaultTestDefinitions(groupKey, subjectName);
+}
+
 function blankRow(student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null }, existing: Record<string, unknown> | null | undefined, attendance: Record<string, unknown> | null | undefined, recordDate: string): StudentRow {
   const results = Array.isArray(existing?.test_results) ? existing?.test_results : [];
+  const savedAttendanceStatus = attendance?.attendance_status;
+  const attendanceRecorded = savedAttendanceStatus === "present"
+    || savedAttendanceStatus === "absent"
+    || savedAttendanceStatus === "unexcused_absent";
   return {
     id: student.id,
     student_no: student.student_no,
@@ -199,7 +246,8 @@ function blankRow(student: { id: string; student_no: string; name: string; stude
     status_effective_date: student.status_effective_date ?? null,
     expected_return_date: student.expected_return_date ?? null,
     operation_group: student.operation_group ?? null,
-    attendanceStatus: attendance?.attendance_status === "absent" || attendance?.attendance_status === "unexcused_absent" ? attendance.attendance_status : "present",
+    attendanceStatus: savedAttendanceStatus === "absent" || savedAttendanceStatus === "unexcused_absent" ? savedAttendanceStatus : "present",
+    attendanceRecorded,
     absenceNote: typeof attendance?.absence_note === "string" ? attendance.absence_note : "",
     homeworkScore: existing?.homework_score === null || existing?.homework_score === undefined ? "5" : String(existing.homework_score),
     understandingScore: existing?.understanding_score === null || existing?.understanding_score === undefined ? "5" : String(existing.understanding_score),
@@ -229,6 +277,19 @@ function blankRow(student: { id: string; student_no: string; name: string; stude
   };
 }
 
+function isPausedStudent(student: Pick<StudentRow, "student_status">) {
+  return student.student_status === "paused" || student.student_status === "on_hold";
+}
+
+function homeworkDraft(value: unknown): HomeworkDraft {
+  const row = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return {
+    content: typeof row.content === "string" ? row.content : "",
+    noHomework: row.no_homework === true,
+    version: typeof row.version === "number" ? row.version : null,
+  };
+}
+
 export default function DailyRecordsPage() {
   const router = useRouter();
   const [isRouteChecking, setIsRouteChecking] = useState(true);
@@ -237,9 +298,21 @@ export default function DailyRecordsPage() {
   const [selectedGroupKey, setSelectedGroupKey] = useState("");
   const [recordDate, setRecordDate] = useState(today);
   const [students, setStudents] = useState<StudentRow[]>([]);
-  const [testDefinitions, setTestDefinitions] = useState<TestDefinition[]>([]);
-  const [homework, setHomework] = useState("");
-  const [noHomework, setNoHomework] = useState(false);
+  const [testDefinitionsByGroup, setTestDefinitionsByGroup] = useState<TestDefinitionsByGroup>({
+    A: defaultTestDefinitions("A"),
+    B: defaultTestDefinitions("B"),
+    unassigned: [],
+  });
+  const [expandedTestSettings, setExpandedTestSettings] = useState<Record<TestGroupKey, boolean>>({
+    A: false,
+    B: false,
+    unassigned: false,
+  });
+  const [homeworkByGroup, setHomeworkByGroup] = useState<Record<HomeworkGroupKey, HomeworkDraft>>({
+    A: homeworkDraft(null),
+    B: homeworkDraft(null),
+    unassigned: homeworkDraft(null),
+  });
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [blockLoadMessage, setBlockLoadMessage] = useState("");
@@ -263,13 +336,28 @@ export default function DailyRecordsPage() {
     selectedBlock && recordDate >= selectedBlock.effective_start && recordDate <= selectedBlock.effective_end && weekdayOf(recordDate) === selectedBlock.weekday,
   );
   const studentGroups = useMemo(() => {
+    const unassignedLabel = selectedGroup?.is_exam_class ? "내신대비반" : "미구분";
     const definitions: Array<{ key: "A" | "B" | "unassigned"; label: string; rows: StudentRow[] }> = [
       { key: "A", label: "A그룹", rows: students.filter((student) => student.operation_group === "A") },
       { key: "B", label: "B그룹", rows: students.filter((student) => student.operation_group === "B") },
     ];
     const unassigned = students.filter((student) => !student.operation_group);
-    if (unassigned.length) definitions.push({ key: "unassigned", label: "미구분", rows: unassigned });
+    if (unassigned.length) definitions.push({ key: "unassigned", label: unassignedLabel, rows: unassigned });
     return definitions;
+  }, [selectedGroup?.is_exam_class, students]);
+  const attendanceSummary = useMemo(() => {
+    const pausedCount = students.filter(isPausedStudent).length;
+    const eligibleStudents = students.filter((student) => !isPausedStudent(student));
+    const presentCount = eligibleStudents.filter((student) => student.attendanceRecorded && student.attendanceStatus === "present").length;
+    const notEnteredCount = eligibleStudents.filter((student) => !student.attendanceRecorded).length;
+    return {
+      totalCount: students.length,
+      eligibleCount: eligibleStudents.length,
+      pausedCount,
+      presentCount,
+      notEnteredCount,
+      attendanceRate: eligibleStudents.length ? Math.round((presentCount / eligibleStudents.length) * 100) : 0,
+    };
   }, [students]);
   const supplementPopupStudent = supplementPopup ? students.find((student) => student.id === supplementPopup.studentId) : null;
 
@@ -311,10 +399,18 @@ export default function DailyRecordsPage() {
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message ?? "학생 기록을 불러오지 못했습니다.");
       const data = payload.data;
-      const nextDefinitions = makeTestDefinitions(data.students?.find((student: { subjectRecord?: unknown }) => student.subjectRecord)?.subjectRecord && (data.students.find((student: { subjectRecord?: unknown }) => student.subjectRecord) as { subjectRecord: Record<string, unknown> }).subjectRecord.test_definitions);
-      setTestDefinitions(nextDefinitions);
-      setHomework(typeof data.commonHomework?.content === "string" ? data.commonHomework.content : "");
-      setNoHomework(data.commonHomework?.no_homework === true);
+      const loadedStudents = (data.students ?? []) as Array<{ operation_group?: "A" | "B" | null; subjectRecord?: Record<string, unknown> | null }>;
+      setTestDefinitionsByGroup({
+        A: definitionsForLoadedGroup(loadedStudents, "A", selectedBlock.subject_name_snapshot),
+        B: definitionsForLoadedGroup(loadedStudents, "B", selectedBlock.subject_name_snapshot),
+        unassigned: definitionsForLoadedGroup(loadedStudents, "unassigned", selectedBlock.subject_name_snapshot),
+      });
+      const commonHomeworkByGroup = data.commonHomeworkByGroup ?? {};
+      setHomeworkByGroup({
+        A: homeworkDraft(commonHomeworkByGroup.A),
+        B: homeworkDraft(commonHomeworkByGroup.B),
+        unassigned: homeworkDraft(commonHomeworkByGroup.unassigned),
+      });
       setStudents((data.students ?? []).map((student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null; subjectRecord?: Record<string, unknown> | null; attendance?: Record<string, unknown> | null }) => blankRow(student, student.subjectRecord, student.attendance, recordDate)));
       setMessage("");
     } catch (loadError) {
@@ -383,7 +479,22 @@ export default function DailyRecordsPage() {
   }, [loadRecords]);
 
   function updateStudent(studentId: string, key: keyof StudentRow, value: string | boolean) {
-    setStudents((current) => current.map((student) => student.id === studentId ? { ...student, [key]: value } : student));
+    setStudents((current) => current.map((student) => {
+      if (student.id !== studentId) return student;
+      return {
+        ...student,
+        [key]: value,
+        ...(key === "attendanceStatus" ? { attendanceRecorded: true } : {}),
+      };
+    }));
+    setMessage("");
+  }
+
+  function updateHomework(groupKey: HomeworkGroupKey, key: "content" | "noHomework", value: string | boolean) {
+    setHomeworkByGroup((current) => ({
+      ...current,
+      [groupKey]: { ...current[groupKey], [key]: value },
+    }));
     setMessage("");
   }
 
@@ -460,28 +571,65 @@ export default function DailyRecordsPage() {
     }));
   }
 
-  function updateDefinition(index: number, key: "name" | "maxScore", value: string) {
-    setTestDefinitions((current) => current.map((definition, definitionIndex) => definitionIndex === index ? { ...definition, [key]: value } : definition));
+  function updateDefinition(groupKey: TestGroupKey, index: number, key: "name" | "maxScore", value: string) {
+    setTestDefinitionsByGroup((current) => ({
+      ...current,
+      [groupKey]: current[groupKey].map((definition, definitionIndex) => definitionIndex === index ? { ...definition, [key]: value } : definition),
+    }));
   }
 
-  function addTestDefinition() {
-    setTestDefinitions((current) => {
-      if (current.length >= MAX_TEST_DEFINITIONS) return current;
-      return [...current, { id: `test-${Date.now()}-${current.length + 1}`, sequenceNo: current.length + 1, name: "", maxScore: "" }];
+  function addTestDefinition(groupKey: TestGroupKey) {
+    setTestDefinitionsByGroup((current) => {
+      const definitions = current[groupKey];
+      if (definitions.length >= MAX_TEST_DEFINITIONS) return current;
+      return {
+        ...current,
+        [groupKey]: [...definitions, {
+          id: `test-${groupKey}-${Date.now()}-${definitions.length + 1}`,
+          sequenceNo: definitions.length + 1,
+          name: definitions.length === 0 ? defaultTestName(selectedBlock?.subject_name_snapshot) : "",
+          maxScore: definitions.length === 0 ? "25" : "",
+        }],
+      };
     });
   }
 
-  function removeTestDefinition(definitionId: string) {
-    setTestDefinitions((current) => current.filter((definition) => definition.id !== definitionId).map((definition, index) => ({ ...definition, sequenceNo: index + 1 })));
-    setStudents((current) => current.map((student) => ({
-      ...student,
-      testResults: student.testResults.filter((result) => result.testDefinitionId !== definitionId),
-    })));
+  function removeTestDefinition(groupKey: TestGroupKey, definitionId: string) {
+    setTestDefinitionsByGroup((current) => ({
+      ...current,
+      [groupKey]: current[groupKey]
+        .filter((definition) => definition.id !== definitionId)
+        .map((definition, index) => ({ ...definition, sequenceNo: index + 1 })),
+    }));
+    setStudents((current) => current.map((student) => {
+      if (studentTestGroupKey(student) !== groupKey) return student;
+      return { ...student, testResults: student.testResults.filter((result) => result.testDefinitionId !== definitionId) };
+    }));
+    setMessage("");
+  }
+
+  function toggleTestGroup(groupKey: TestGroupKey, enabled: boolean) {
+    setTestDefinitionsByGroup((current) => ({
+      ...current,
+      [groupKey]: enabled
+        ? current[groupKey].length ? current[groupKey] : defaultTestDefinitions(groupKey, selectedBlock?.subject_name_snapshot)
+        : [],
+    }));
+    if (!enabled) {
+      setStudents((current) => current.map((student) => studentTestGroupKey(student) === groupKey
+        ? { ...student, testResults: [] }
+        : student));
+    }
     setMessage("");
   }
 
   async function saveRecords(saveMode: "draft" | "final") {
     if (!selectedBlock || !dateIsValidForBlock || students.length === 0) return;
+    const writableStudents = students.filter((student) => !isPausedStudent(student));
+    if (writableStudents.length === 0) {
+      setError("휴원 학생은 수업기록을 입력하거나 저장할 수 없습니다.");
+      return;
+    }
     setIsSaving(true);
     setError("");
     setMessage("");
@@ -493,9 +641,13 @@ export default function DailyRecordsPage() {
           blockId: selectedBlock.id,
           recordDate,
           saveMode,
-          testDefinitions: testDefinitions.filter((definition) => definition.name.trim()),
-          commonHomework: { content: homework, noHomework },
-          students: students.map((student) => ({
+          testDefinitionsByGroup: Object.fromEntries(
+            (Object.entries(testDefinitionsByGroup) as Array<[TestGroupKey, TestDefinition[]]>).map(([groupKey, definitions]) => [
+              groupKey,
+              definitions.filter((definition) => definition.name.trim()),
+            ]),
+          ),
+          students: writableStudents.map((student) => ({
             studentId: student.id,
             attendanceStatus: student.attendanceStatus,
             absenceNote: student.absenceNote,
@@ -511,6 +663,14 @@ export default function DailyRecordsPage() {
             publicNote: student.publicNote,
             testResults: student.testResults,
           })),
+          commonHomework: Object.fromEntries(
+            studentGroups
+              .filter((group) => group.rows.length > 0)
+              .map((group) => {
+                const draft = homeworkByGroup[group.key];
+                return [group.key, { content: draft.content, noHomework: draft.noHomework, version: draft.version }];
+              }),
+          ),
         }),
       });
       const payload = await response.json().catch(() => null);
@@ -539,23 +699,6 @@ export default function DailyRecordsPage() {
     return <main className="mx-auto max-w-2xl px-4 py-8 sm:px-6 lg:px-8"><section className="rounded-2xl border border-rose-200 bg-white px-6 py-12 text-center shadow-sm"><p className="text-sm font-bold text-rose-600">TEACHER ACCESS</p><h1 className="mt-2 text-2xl font-bold text-slate-950">교사 화면에 접근할 수 없습니다.</h1><p className="mt-3 text-sm leading-6 text-slate-600">{error || "교사 로그인이 필요합니다."}</p><div className="mt-6 flex justify-center gap-2"><Link href="/login" className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700">교사 로그인</Link><Link href="/" className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">처음 화면</Link></div></section></main>;
   }
 
-  const testColumnClass = testDefinitions.length === 1
-    ? "w-[100px]"
-    : testDefinitions.length === 2
-      ? "w-[140px]"
-      : testDefinitions.length === 3
-        ? "w-[180px]"
-        : "w-[220px]";
-  const tableMinWidthClass = testDefinitions.length === 0
-    ? "min-w-[1010px]"
-    : testDefinitions.length === 1
-      ? "min-w-[1110px]"
-      : testDefinitions.length === 2
-        ? "min-w-[1150px]"
-        : testDefinitions.length === 3
-          ? "min-w-[1190px]"
-          : "min-w-[1230px]";
-
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -564,7 +707,7 @@ export default function DailyRecordsPage() {
           <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">날짜별 수업 기록</h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">수업 묶음과 수업 날짜를 선택하고, 과목별 출결·학습기록을 저장합니다.</p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2"><Link href="/teacher/announcements" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">공지·알림</Link><Link href="/teacher/supplements" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">보충 현황</Link><span className="rounded-full bg-slate-100 px-4 py-2 text-center text-sm font-semibold text-slate-700">모든 과목 최종저장 후 학부모 공개 · 공개 후에도 직접 수정 가능</span></div>
+        <div className="flex flex-wrap items-center justify-end gap-2"><Link href="/teacher/announcements" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">공지·알림</Link><Link href={`/teacher/records/status?kind=supplement&startDate=${recordDate.slice(0, 8)}01&endDate=${recordDate}&attendanceDate=${recordDate}`} className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">보충 현황</Link><span className="rounded-full bg-slate-100 px-4 py-2 text-center text-sm font-semibold text-slate-700">모든 과목 최종저장 후 학부모 공개 · 공개 후에도 직접 수정 가능</span></div>
       </div>
 
       <TeacherRecordsOverview />
@@ -591,88 +734,99 @@ export default function DailyRecordsPage() {
 
       {!selectedGroupKey ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">수업 묶음을 선택해 주세요.</p><p className="mt-2 text-sm text-slate-500">관리자가 등록한 반·과목·담당교사별 운영시간이 표시됩니다.</p></section> : !dateIsValidForBlock ? null : isLoading ? <section className="mt-6 rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">학생 기록을 불러오는 중입니다.</p></section> : <>
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-sm font-bold text-indigo-600">공통 기록</p><h2 className="mt-1 text-xl font-bold text-slate-950">반 공통 숙제</h2></div><span className="text-sm text-slate-500">담당 교사가 저장할 수 있습니다.</span></div>
-          <div className="mt-4 grid gap-3 md:grid-cols-[auto_minmax(0,1fr)] md:items-start"><label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={noHomework} onChange={(event) => setNoHomework(event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label><textarea value={homework} onChange={(event) => setHomework(event.target.value)} disabled={noHomework} placeholder="예: 교재 32쪽 1~5번" className="min-h-24 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-500 disabled:bg-slate-100" /></div>
-        </section>
-
-        <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-sm font-bold text-indigo-600">선택 입력</p><h2 className="mt-1 text-xl font-bold text-slate-950">테스트 설정</h2></div><button type="button" onClick={addTestDefinition} disabled={testDefinitions.length >= MAX_TEST_DEFINITIONS} className="rounded-xl border border-indigo-200 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">테스트 추가</button></div>
-          {testDefinitions.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{testDefinitions.map((definition, index) => <div key={definition.id} className="grid grid-cols-[minmax(0,1fr)_90px_auto] gap-2 rounded-xl bg-slate-50 p-3"><input value={definition.name} onChange={(event) => updateDefinition(index, "name", event.target.value)} placeholder="테스트명" className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-indigo-500" /><input value={definition.maxScore} onChange={(event) => updateDefinition(index, "maxScore", event.target.value)} type="number" min="1" placeholder="만점" className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-indigo-500" /><button type="button" onClick={() => removeTestDefinition(definition.id)} aria-label={`${definition.name || "테스트"} 삭제`} className="h-10 rounded-lg border border-rose-200 px-2 text-xs font-semibold text-rose-700 hover:bg-rose-50">삭제</button></div>)}</div> : <p className="mt-4 rounded-xl bg-slate-50 px-4 py-4 text-sm text-slate-500">테스트가 없으면 추가하지 않아도 됩니다.</p>}
-        </section>
-
-        <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-sm font-bold text-indigo-600">학생별 기록</p><h2 className="mt-1 text-xl font-bold text-slate-950">{students.length}명</h2></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => void saveRecords("draft")} disabled={isSaving || students.length === 0} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">{isSaving ? "저장 중..." : "임시저장"}</button><button type="button" onClick={() => void saveRecords("final")} disabled={isSaving || students.length === 0} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isSaving ? "저장 중..." : "과목 최종저장"}</button></div></div>
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-sm font-bold text-indigo-600">학생별 기록</p><h2 className="mt-1 text-xl font-bold text-slate-950">전체 학생 {attendanceSummary.totalCount}명</h2></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => void saveRecords("draft")} disabled={isSaving || students.every(isPausedStudent)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">{isSaving ? "저장 중..." : "임시저장"}</button><button type="button" onClick={() => void saveRecords("final")} disabled={isSaving || students.every(isPausedStudent)} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isSaving ? "저장 중..." : "과목 최종저장"}</button></div></div>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold"><span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">임시저장 {students.filter((student) => student.saveState === "draft").length}명</span><span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">전체 과목 입력 대기 {students.filter((student) => student.saveState === "final" && student.publicationStatus !== "published").length}명</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">학부모 공개 {students.filter((student) => student.publicationStatus === "published").length}명</span></div>
-          <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
-            <p className="text-sm font-bold text-indigo-900">상담 기록을 남길 학생 선택</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {students.map((student) => <button type="button" key={`consultation-${student.id}`} onClick={() => setConsultationStudent({ id: student.id, name: student.name, studentNo: student.student_no })} className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50">{student.name} · 상담 기록</button>)}
-            </div>
-          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold" aria-label="출결 집계"><span className="rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-800">출결 대상 {attendanceSummary.eligibleCount}명</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">출석 {attendanceSummary.presentCount}명</span><span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">휴원 {attendanceSummary.pausedCount}명</span><span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">출결 미입력 {attendanceSummary.notEnteredCount}명</span><span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-800">출석률 {attendanceSummary.attendanceRate}%</span></div>
           <div className="mt-4 space-y-4">
-            {studentGroups.map((group) => (
-              <div key={group.key} className="overflow-hidden rounded-xl border border-slate-200">
+            {studentGroups.map((group) => {
+              const groupTestDefinitions = testDefinitionsByGroup[group.key];
+              const groupTestColumnClass = groupTestDefinitions.length === 1
+                ? "w-[100px]"
+                : groupTestDefinitions.length === 2
+                  ? "w-[140px]"
+                  : groupTestDefinitions.length === 3
+                    ? "w-[180px]"
+                    : "w-[220px]";
+              const groupTableMinWidthClass = groupTestDefinitions.length === 0
+                ? "min-w-[1010px]"
+                : groupTestDefinitions.length === 1
+                  ? "min-w-[1110px]"
+                  : groupTestDefinitions.length === 2
+                    ? "min-w-[1150px]"
+                    : groupTestDefinitions.length === 3
+                      ? "min-w-[1190px]"
+                      : "min-w-[1230px]";
+              const testSummary = groupTestDefinitions.length
+                ? groupTestDefinitions.map((definition, index) => `${formatTestDefinitionLabel(definition, index)} · ${definition.maxScore || "-"}점`).join(" / ")
+                : "테스트 사용 안 함";
+              return <div key={group.key} className="overflow-hidden rounded-xl border border-slate-200">
                 <div className={`flex items-center justify-between px-4 py-3 ${group.key === "A" ? "bg-indigo-50 text-indigo-900" : group.key === "B" ? "bg-amber-50 text-amber-900" : "bg-slate-50 text-slate-700"}`}>
-                  <h3 className="font-bold">{group.label}</h3>
-                  <span className="text-sm font-semibold">{group.rows.length}명</span>
+                  <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold">{group.label}</h3><span className="text-xs font-semibold opacity-80">{group.rows.length}명</span></div><div className="mt-2 flex flex-wrap items-center gap-2"><span className="max-w-full truncate text-xs font-semibold" title={testSummary}>테스트 · {testSummary}</span><button type="button" onClick={() => setExpandedTestSettings((current) => ({ ...current, [group.key]: !current[group.key] }))} className="rounded-lg border border-white/80 bg-white/80 px-2 py-1 text-xs font-bold text-indigo-700 shadow-sm hover:bg-white">{expandedTestSettings[group.key] ? "설정 닫기" : "설정"}</button>{group.rows.map((student) => <button type="button" key={`consultation-${group.key}-${student.id}`} onClick={() => setConsultationStudent({ id: student.id, name: student.name, studentNo: student.student_no })} className="rounded-lg border border-white/80 bg-white/80 px-2 py-1 text-xs font-bold text-indigo-700 shadow-sm hover:bg-white">{student.name} · 상담</button>)}</div></div>
                 </div>
+                {expandedTestSettings[group.key] ? <div className="border-b border-slate-200 bg-white p-4">
+                  <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">{group.label} 테스트 설정</p><p className="mt-1 text-xs text-slate-500">이 그룹 학생에게만 적용됩니다.</p></div>{group.key === "unassigned" ? null : <label className="flex items-center gap-2 text-xs font-bold text-slate-700"><input type="checkbox" checked={groupTestDefinitions.length > 0} onChange={(event) => toggleTestGroup(group.key, event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 테스트 사용</label>}</div>
+                  {groupTestDefinitions.length ? <div className="mt-3 grid gap-2">{groupTestDefinitions.map((definition, index) => <div key={definition.id} className="grid grid-cols-[minmax(0,1fr)_90px_auto] gap-2 rounded-lg bg-slate-50 p-2"><input value={definition.name} onChange={(event) => updateDefinition(group.key, index, "name", event.target.value)} placeholder="테스트명" className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500" /><input value={definition.maxScore} onChange={(event) => updateDefinition(group.key, index, "maxScore", event.target.value)} type="number" min="1" placeholder="만점" aria-label={`${group.label} 만점`} className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500" /><button type="button" onClick={() => removeTestDefinition(group.key, definition.id)} aria-label={`${definition.name || "테스트"} 삭제`} className="h-9 rounded-lg border border-rose-200 bg-white px-2 text-xs font-semibold text-rose-700 hover:bg-rose-50">삭제</button></div>)}</div> : <p className="mt-3 rounded-lg bg-slate-50 px-3 py-3 text-xs text-slate-500">이 그룹은 테스트 없이 저장됩니다.</p>}
+                  <button type="button" onClick={() => addTestDefinition(group.key)} disabled={groupTestDefinitions.length >= MAX_TEST_DEFINITIONS} className="mt-3 rounded-lg border border-indigo-200 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">테스트 추가</button>
+                </div> : null}
                  <div className="overflow-x-auto">
-                   <table className={`w-full table-fixed border-collapse text-center text-sm [&_th]:text-center [&_th]:text-sm [&_th]:font-bold [&_th_div]:text-sm [&_th_div]:font-bold [&_th_span]:text-sm [&_th_span]:font-bold ${tableMinWidthClass}`}>
-                     <colgroup><col className="w-[140px]" /><col className="w-[112px]" />{testDefinitions.length ? <col className={testColumnClass} /> : null}<col className="w-[205px]" /><col className="w-[190px]" /><col className="w-[360px]" /></colgroup>
-                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{testDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{testDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(testDefinitions[0], 0)}>{formatTestDefinitionLabel(testDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${testDefinitions.length}, minmax(0, 1fr))` }}>{testDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="px-2 py-3 font-semibold">메모<br /><span className="font-normal">과제내용 · 수업메모</span></th></tr></thead>
+                   <table className={`w-full table-fixed border-collapse text-center text-sm [&_th]:text-center [&_th]:text-sm [&_th]:font-bold [&_th_div]:text-sm [&_th_div]:font-bold [&_th_span]:text-sm [&_th_span]:font-bold ${groupTableMinWidthClass}`}>
+                     <colgroup><col className="w-[140px]" /><col className="w-[112px]" />{groupTestDefinitions.length ? <col className={groupTestColumnClass} /> : null}<col className="w-[205px]" /><col className="w-[190px]" /><col className="w-[360px]" /></colgroup>
+                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="px-2 py-3 font-semibold">메모<br /><span className="font-normal">과제내용 · 수업메모</span></th></tr></thead>
                      <tbody>
                        {group.rows.map((student) => {
                          const absent = student.attendanceStatus !== "present";
                          const paused = student.student_status === "paused" || student.student_status === "on_hold";
+                         const operationLabel = student.operation_group ?? (selectedGroup?.is_exam_class ? "내신대비반" : "미구분");
                          return (
                            <tr key={student.id} className="border-t border-slate-100 align-middle">
                              <td className="sticky left-0 z-[1] whitespace-nowrap bg-white px-2 py-2">
                                <div className="flex items-center justify-center gap-1.5">
-                                 <span className="cursor-help text-sm font-bold text-slate-800" title={`학번: ${student.student_no || "없음"} · 운영구분: ${student.operation_group ?? "미구분"}`}>{student.name}</span>
+                                 <span className="cursor-help text-sm font-bold text-slate-800" title={`학번: ${student.student_no || "없음"} · 운영구분: ${operationLabel}`}>{student.name}</span>
                                  {paused ? <span title={`휴원 · 등원 예정 ${student.expected_return_date ?? "미정"}`} className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">휴원</span> : null}
                                  {student.legacySupplementary ? <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">기존 보충</span> : null}
                                </div>
                              </td>
                              <td className="px-2 py-2">
                                <div className="flex items-center justify-center gap-1">
-                                 <select aria-label={`${student.name} 출결`} value={student.attendanceStatus} onChange={(event) => updateStudent(student.id, "attendanceStatus", event.target.value as AttendanceStatus)} className="h-8 w-[76px] rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none focus:border-indigo-500">{Object.entries(attendanceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
-                                 {absent ? <input aria-label={`${student.name} 결석 사유`} value={student.absenceNote} onChange={(event) => updateStudent(student.id, "absenceNote", event.target.value)} placeholder="사유" className="h-8 w-[52px] rounded-lg border border-slate-300 px-1 text-center text-xs font-semibold outline-none focus:border-indigo-500" /> : null}
+                                 <select aria-label={`${student.name} 출결`} value={student.attendanceStatus} onChange={(event) => updateStudent(student.id, "attendanceStatus", event.target.value as AttendanceStatus)} disabled={paused} className="h-8 w-[76px] rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100">{Object.entries(attendanceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+                                 {!student.attendanceRecorded ? <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">미입력</span> : null}
+                                 {absent ? <input aria-label={`${student.name} 결석 사유`} value={student.absenceNote} onChange={(event) => updateStudent(student.id, "absenceNote", event.target.value)} disabled={paused} placeholder="사유" className="h-8 w-[52px] rounded-lg border border-slate-300 px-1 text-center text-xs font-semibold outline-none focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100" /> : null}
                                </div>
                              </td>
-                             {testDefinitions.length ? (
+                             {groupTestDefinitions.length ? (
                                <td className="px-2 py-2">
-                                 <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${testDefinitions.length}, minmax(0, 1fr))` }}>
-                                   {testDefinitions.map((definition) => {
+                                 <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>
+                                   {groupTestDefinitions.map((definition, definitionIndex) => {
                                      const result = student.testResults.find((item) => item.testDefinitionId === definition.id);
-                                     const label = formatTestDefinitionLabel(definition, testDefinitions.indexOf(definition));
-                                     return <input key={definition.id} type="number" min="0" max={definition.maxScore} step="any" aria-label={`${student.name} ${label} 점수 (만점 ${definition.maxScore})`} title={`${label} · 만점 ${definition.maxScore}`} value={result?.score ?? ""} onChange={(event) => updateTestResult(student.id, definition.id, "score", event.target.value, definition.maxScore)} disabled={absent} placeholder="-" className="h-8 w-full min-w-0 rounded-lg border border-slate-300 px-1 text-center text-xs font-bold outline-none focus:border-indigo-500 disabled:bg-slate-100" />;
+                                     const label = formatTestDefinitionLabel(definition, definitionIndex);
+                                     return <input key={definition.id} type="number" min="0" max={definition.maxScore} step="any" aria-label={`${student.name} ${label} 점수 (만점 ${definition.maxScore})`} title={`${label} · 만점 ${definition.maxScore}`} value={result?.score ?? ""} onChange={(event) => updateTestResult(student.id, definition.id, "score", event.target.value, definition.maxScore)} disabled={absent || paused} placeholder="-" className="h-8 w-full min-w-0 rounded-lg border border-slate-300 px-1 text-center text-xs font-bold outline-none focus:border-indigo-500 disabled:bg-slate-100" />;
                                    })}
                                  </div>
                                </td>
                              ) : null}
                              <td className="px-2 py-2">
                                <div className="grid grid-cols-3 gap-1">
-                                 <select aria-label={`${student.name} 숙제 점수`} value={student.homeworkScore} onChange={(event) => updateStudent(student.id, "homeworkScore", event.target.value)} disabled={absent} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
-                                 <select aria-label={`${student.name} 이해도`} value={student.understandingScore} onChange={(event) => updateStudent(student.id, "understandingScore", event.target.value)} disabled={absent} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
-                                 <select aria-label={`${student.name} 참여도`} value={student.participationScore} onChange={(event) => updateStudent(student.id, "participationScore", event.target.value)} disabled={absent} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
+                                 <select aria-label={`${student.name} 숙제 점수`} value={student.homeworkScore} onChange={(event) => updateStudent(student.id, "homeworkScore", event.target.value)} disabled={absent || paused} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
+                                 <select aria-label={`${student.name} 이해도`} value={student.understandingScore} onChange={(event) => updateStudent(student.id, "understandingScore", event.target.value)} disabled={absent || paused} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
+                                 <select aria-label={`${student.name} 참여도`} value={student.participationScore} onChange={(event) => updateStudent(student.id, "participationScore", event.target.value)} disabled={absent || paused} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
                                </div>
                              </td>
                              <td className="px-2 py-2">
                                <div className="grid grid-cols-2 gap-1">
                                  <div className="flex min-w-0 items-center justify-center gap-1 overflow-hidden">
-                                   <label className="flex shrink-0 items-center gap-1 text-xs font-bold text-indigo-700" title="테스트 보충"><input aria-label={`${student.name} 테스트 보충`} type="checkbox" checked={student.isTestSupplementary} onChange={(event) => toggleSupplementType(student.id, "test", event.target.checked)} disabled={absent} className="h-4 w-4 accent-indigo-600" />테</label>
-                                   {student.isTestSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "test")} className="shrink-0 rounded-md border border-indigo-200 bg-indigo-50 px-1 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100" aria-label={`${student.name} 테스트 보충 예정일 수정`}>{formatShortDate(student.testSupplementDate)}</button> : null}
+                                   <label className="flex shrink-0 items-center gap-1 text-xs font-bold text-indigo-700" title="테스트 보충"><input aria-label={`${student.name} 테스트 보충`} type="checkbox" checked={student.isTestSupplementary} onChange={(event) => toggleSupplementType(student.id, "test", event.target.checked)} disabled={absent || paused} className="h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed" />테</label>
+                                   {student.isTestSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "test")} disabled={paused} className="shrink-0 rounded-md border border-indigo-200 bg-indigo-50 px-1 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`${student.name} 테스트 보충 예정일 수정`}>{formatShortDate(student.testSupplementDate)}</button> : null}
                                  </div>
                                  <div className="flex min-w-0 items-center justify-center gap-1 overflow-hidden">
-                                   <label className="flex shrink-0 items-center gap-1 text-xs font-bold text-emerald-700" title="숙제 보충"><input aria-label={`${student.name} 숙제 보충`} type="checkbox" checked={student.isHomeworkSupplementary} onChange={(event) => toggleSupplementType(student.id, "homework", event.target.checked)} disabled={absent} className="h-4 w-4 accent-emerald-600" />숙</label>
-                                   {student.isHomeworkSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "homework")} className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-1 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-100" aria-label={`${student.name} 숙제 보충 예정일 수정`}>{formatShortDate(student.homeworkSupplementDate)}</button> : null}
+                                   <label className="flex shrink-0 items-center gap-1 text-xs font-bold text-emerald-700" title="숙제 보충"><input aria-label={`${student.name} 숙제 보충`} type="checkbox" checked={student.isHomeworkSupplementary} onChange={(event) => toggleSupplementType(student.id, "homework", event.target.checked)} disabled={absent || paused} className="h-4 w-4 accent-emerald-600 disabled:cursor-not-allowed" />숙</label>
+                                   {student.isHomeworkSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "homework")} disabled={paused} className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-1 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`${student.name} 숙제 보충 예정일 수정`}>{formatShortDate(student.homeworkSupplementDate)}</button> : null}
                                  </div>
                                </div>
                              </td>
                              <td className="px-2 py-2">
                                <div className="flex flex-nowrap items-center justify-center gap-1 overflow-x-auto pb-1">
-                                 <input aria-label={`${student.name} 과제보충 내용`} value={student.homeworkSupplementContent} onChange={(event) => updateStudent(student.id, "homeworkSupplementContent", event.target.value)} disabled={absent || !student.isHomeworkSupplementary} placeholder="과제내용" className="h-8 w-[168px] shrink-0 rounded-lg border border-slate-300 px-2 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
-                                 <input aria-label={`${student.name} 수업 메모`} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent} placeholder="수업메모" className="h-8 w-[168px] shrink-0 rounded-lg border border-slate-300 px-2 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
+                                 <input aria-label={`${student.name} 과제보충 내용`} value={student.homeworkSupplementContent} onChange={(event) => updateStudent(student.id, "homeworkSupplementContent", event.target.value)} disabled={absent || paused || !student.isHomeworkSupplementary} placeholder="과제내용" className="h-8 w-[168px] shrink-0 rounded-lg border border-slate-300 px-2 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
+                                 <input aria-label={`${student.name} 수업 메모`} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent || paused} placeholder="수업메모" className="h-8 w-[168px] shrink-0 rounded-lg border border-slate-300 px-2 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
                                </div>
                              </td>
                            </tr>
@@ -681,8 +835,12 @@ export default function DailyRecordsPage() {
                      </tbody>
                    </table>
                  </div>
-              </div>
-            ))}
+                   <div className="border-t border-slate-200 bg-slate-50/70 p-4">
+                   <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">공통 기록</p><h4 className="mt-1 text-base font-bold text-slate-900">{group.label} {commonHomeworkLabel(selectedGroup?.subject_name_snapshot ?? "")} </h4></div><span className="text-xs text-slate-500">반·날짜·과목별로 따로 저장됩니다.</span></div>
+                   <div className="mt-3 grid gap-3 md:grid-cols-[auto_minmax(0,1fr)] md:items-start"><label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={homeworkByGroup[group.key].noHomework} onChange={(event) => updateHomework(group.key, "noHomework", event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label><textarea value={homeworkByGroup[group.key].content} onChange={(event) => updateHomework(group.key, "content", event.target.value)} disabled={homeworkByGroup[group.key].noHomework} placeholder="예: 교재 32쪽 1~5번" className="min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-indigo-500 disabled:bg-slate-100" /></div>
+                 </div>
+              </div>;
+            })}
           </div>
           {students.length === 0 ? <p className="mt-5 rounded-xl bg-slate-50 px-4 py-5 text-center text-sm text-slate-500">이 날짜에 배정된 학생이 없습니다.</p> : null}
        </section>
@@ -691,7 +849,7 @@ export default function DailyRecordsPage() {
       <ConsultationRecordDialog
         key={consultationStudent?.id ?? "empty"}
         student={consultationStudent}
-        blockId={selectedBlock?.id ?? ""}
+        classId={selectedBlock?.class_id ?? ""}
         recordDate={recordDate}
         onClose={() => setConsultationStudent(null)}
         onSaved={() => {

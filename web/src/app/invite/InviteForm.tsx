@@ -141,7 +141,7 @@ export default function InviteForm() {
       </form>
 
       <p className="mt-5 text-center text-sm leading-6 text-slate-500">
-        접속 링크와 인증번호는 운영자가 발급한 기간 동안 한 번만 사용할 수 있습니다. 현재 단계에서는 SMS·이메일 발송을 사용하지 않습니다.
+        접속 링크와 인증번호는 발급일로부터 60일 동안 최대 5회 사용할 수 있습니다. 재발급하면 기존 링크는 취소됩니다. 현재 단계에서는 SMS·이메일 발송을 사용하지 않습니다.
       </p>
     </div>
   );

@@ -26,15 +26,15 @@ loadLocalEnv();
 
 const config = {
   baseUrl: process.env.INTEGRATION_BASE_URL ?? "http://localhost:3000",
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321",
-  serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseUrl: process.env.INTEGRATION_SUPABASE_URL ?? "http://127.0.0.1:54321",
+  serviceRoleKey: process.env.INTEGRATION_SUPABASE_SERVICE_ROLE_KEY,
   academyId: process.env.INTEGRATION_ACADEMY_ID ?? "21000000-0000-4000-8000-000000000001",
   adminEmail: process.env.INTEGRATION_ADMIN_EMAIL ?? "demo-admin@test.invalid",
   adminPassword: process.env.INTEGRATION_ADMIN_PASSWORD,
 };
 
 if (!config.serviceRoleKey || !config.adminPassword) {
-  throw new Error("SUPABASE_SERVICE_ROLE_KEY와 INTEGRATION_ADMIN_PASSWORD 환경변수가 필요합니다.");
+  throw new Error("INTEGRATION_SUPABASE_SERVICE_ROLE_KEY와 INTEGRATION_ADMIN_PASSWORD 환경변수가 필요합니다.");
 }
 
 const admin = createClient(config.supabaseUrl, config.serviceRoleKey, {

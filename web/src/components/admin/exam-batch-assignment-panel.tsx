@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { isAssignmentValidOnDate } from "@/lib/assignment-resolution";
 import { redirectAdminOnAuthFailure } from "@/lib/admin-session";
 
 type Student = { id: string; student_no: string; name: string; school_name: string | null; grade: string | null; current_status: string; currentAssignment: Assignment | null };
@@ -27,9 +28,9 @@ function persistedExamMapping(batchData: BatchData, asOfDate: string) {
   const mapping: Record<string, string> = {};
   for (const student of batchData.students) {
     const examAssignments = batchData.assignments
-      .filter((row) => row.student_id === student.id && row.status === "active" && row.assignment_role === "exam" && (!row.end_date || row.end_date >= asOfDate));
+      .filter((row) => row.student_id === student.id && row.assignment_role === "exam" && (row.status === "active" || row.status === "ended") && (!row.end_date || row.end_date >= asOfDate));
     const assignment = examAssignments
-      .filter((row) => row.start_date <= asOfDate)
+      .filter((row) => isAssignmentValidOnDate(row, asOfDate))
       .sort((left, right) => right.start_date.localeCompare(left.start_date))[0]
       ?? examAssignments.filter((row) => row.start_date > asOfDate).sort((left, right) => left.start_date.localeCompare(right.start_date))[0];
     if (assignment) mapping[student.id] = assignment.class_id;
@@ -55,6 +56,10 @@ export default function ExamBatchAssignmentPanel() {
   const [changeStudentId, setChangeStudentId] = useState("");
   const [changeClassId, setChangeClassId] = useState("");
   const [changeDate, setChangeDate] = useState("");
+  const [selectedChangeStudentIds, setSelectedChangeStudentIds] = useState<Record<string, boolean>>({});
+  const [batchCurrentExamClassId, setBatchCurrentExamClassId] = useState("");
+  const [batchChangeClassId, setBatchChangeClassId] = useState("");
+  const [batchChangeDate, setBatchChangeDate] = useState("");
 
   const returnDate = endDate ? addDays(endDate, 1) : "";
   const classById = useMemo(() => new Map((data?.classes ?? []).map((row) => [row.id, row])), [data?.classes]);
@@ -76,8 +81,43 @@ export default function ExamBatchAssignmentPanel() {
     return names;
   }, [classroomById, data?.classroomAssignments, data?.subject?.id]);
   const examClasses = useMemo(() => (data?.classes ?? []).filter((row) => row.category === "exam_prep" && row.is_active), [data?.classes]);
+  const currentExamAssignmentByStudent = useMemo(() => {
+    const result = new Map<string, Assignment>();
+    for (const assignment of data?.assignments ?? []) {
+      if (assignment.assignment_role !== "exam" || !isAssignmentValidOnDate(assignment, asOfDate)) continue;
+      const current = result.get(assignment.student_id);
+      if (!current || assignment.start_date > current.start_date) result.set(assignment.student_id, assignment);
+    }
+    return result;
+  }, [asOfDate, data?.assignments]);
+  const existingExamAssignmentByStudent = useMemo(() => {
+    const operationId = changeOperationId || data?.operations.find((operation) => operation.name === "내신" && operation.start_date === startDate)?.id;
+    const result = new Map<string, string>();
+    if (!operationId) return result;
+    for (const assignment of data?.assignments ?? []) {
+      if (assignment.assignment_role !== "exam" || assignment.exam_operation_id !== operationId || !isAssignmentValidOnDate(assignment, asOfDate)) continue;
+      result.set(assignment.student_id, assignment.class_id);
+    }
+    return result;
+  }, [asOfDate, changeOperationId, data?.assignments, data?.operations, startDate]);
+  const currentExamClassOptions = (() => {
+    const classIds = Array.from(new Set(Array.from(currentExamAssignmentByStudent.values()).map((assignment) => assignment.class_id)));
+    return classIds
+      .map((classId) => ({ classId, label: classLabel(classId), count: Array.from(currentExamAssignmentByStudent.values()).filter((assignment) => assignment.class_id === classId).length }))
+      .sort((left, right) => left.label.localeCompare(right.label, "ko", { numeric: true }));
+  })();
+  const selectedBatchCurrentExamClassId = currentExamClassOptions.some((option) => option.classId === batchCurrentExamClassId)
+    ? batchCurrentExamClassId
+    : currentExamClassOptions[0]?.classId ?? "";
+  const selectedChangeOperation = data?.operations.find((operation) => operation.id === changeOperationId) ?? null;
+  const changeDateMinimum = selectedChangeOperation?.start_date ?? today;
+  const changeDateMaximum = selectedChangeOperation?.end_date ?? undefined;
+  const batchChangeStudents = [...(data?.students ?? [])]
+    .filter((student) => currentExamAssignmentByStudent.get(student.id)?.class_id === selectedBatchCurrentExamClassId)
+    .sort((left, right) => left.name.localeCompare(right.name, "ko"));
   const selectedCount = Object.values(selectedStudentIds).filter(Boolean).length;
   const assignedCount = Object.values(mapping).filter(Boolean).length;
+  const pendingAssignedCount = Object.entries(mapping).filter(([studentId, classId]) => Boolean(classId) && !existingExamAssignmentByStudent.has(studentId)).length;
   const visibleStudents = data?.students ?? [];
   const allStudentsSelected = visibleStudents.length > 0 && visibleStudents.every((student) => selectedStudentIds[student.id]);
 
@@ -144,7 +184,11 @@ export default function ExamBatchAssignmentPanel() {
       setData(result.data);
       setMapping(persistedExamMapping(result.data, asOfDate));
       setSelectedStudentIds({});
-      setChangeOperationId(result.data.operations[0]?.id ?? "");
+      setSelectedChangeStudentIds({});
+      setBatchCurrentExamClassId("");
+      const activeOperation = result.data.operations.find((operation) => operation.status === "active" && operation.start_date <= asOfDate && operation.end_date >= asOfDate)
+        ?? result.data.operations[0];
+      setChangeOperationId(activeOperation?.id ?? "");
       setChangeStudentId("");
       setMessage(messageOverride ?? `${result.data.students.length}명의 대상 학생을 불러왔습니다.`);
     } catch (reason) {
@@ -182,6 +226,12 @@ export default function ExamBatchAssignmentPanel() {
       return false;
     }
     setPreviewMessage(`확정 대상 ${mappedCount}명 · 조회 대상 ${data.students.length}명 · 내신 ${startDate}~${endDate} · 복귀 ${returnDate} · 정원 제한 없음. 이대로 확정할 수 있습니다.`);
+    if (!pendingAssignedCount) {
+      setError("이미 확정된 내신 학생만 있습니다. 기존 학생의 반을 변경하려면 내신 기간 중 반 변경 기능을 사용하세요.");
+      setPreviewMessage("");
+      return false;
+    }
+    setPreviewMessage(`신규 확정 대상 ${pendingAssignedCount}명 · 기존 확정 대상 ${Math.max(0, mappedCount - pendingAssignedCount)}명 · 조회 대상 ${data.students.length}명 · 내신 ${startDate}~${endDate} · 복귀 ${returnDate} · 정원 제한 없음. 이대로 확정할 수 있습니다.`);
     return true;
   }
 
@@ -191,7 +241,13 @@ export default function ExamBatchAssignmentPanel() {
     setError("");
     setMessage("");
     try {
-      const mappings = data.students.filter((student) => Boolean(mapping[student.id])).map((student) => ({ studentId: student.id, examClassId: mapping[student.id] }));
+      const allMappings = data.students.filter((student) => Boolean(mapping[student.id])).map((student) => ({ studentId: student.id, examClassId: mapping[student.id] }));
+      const changedExistingStudent = allMappings.find((item) => existingExamAssignmentByStudent.has(item.studentId) && existingExamAssignmentByStudent.get(item.studentId) !== item.examClassId);
+      if (changedExistingStudent) {
+        throw new Error("이미 확정된 학생의 반 변경은 내신 기간 중 반 변경 기능을 사용하세요.");
+      }
+      const mappings = allMappings.filter((item) => !existingExamAssignmentByStudent.has(item.studentId));
+      if (!mappings.length) throw new Error("추가로 배정할 학생이 없습니다.");
       const successMessage = `내신 ${mappings.length}명 배정을 확정했습니다. 복귀일 ${returnDate}부터 학생별 원래 반을 자동 적용합니다.`;
       const requestKey = typeof window !== "undefined" && window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${mappings.map((item) => item.studentId).join(",")}`;
       const response = await fetch("/api/admin/students/exam-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "confirm", requestKey, startDate, endDate, returnDate, mappings }) });
@@ -222,6 +278,35 @@ export default function ExamBatchAssignmentPanel() {
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "내신 반을 변경하지 못했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function changeExamClassBatch() {
+    const studentIds = Object.keys(selectedChangeStudentIds).filter((studentId) => selectedChangeStudentIds[studentId]);
+    if (!studentIds.length || !batchChangeClassId || !batchChangeDate || !changeOperationId) {
+      setError("내신 운영·학생·변경 반·적용일을 모두 선택해 주세요.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/students/exam-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "change_class_batch", operationId: changeOperationId, changes: studentIds.map((studentId) => ({ studentId, examClassId: batchChangeClassId, changeDate: batchChangeDate })) }),
+      });
+      const result = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+      if (redirectAdminOnAuthFailure(response)) return;
+      if (!response.ok) throw new Error(result?.error?.message ?? "내신 반을 일괄 변경하지 못했습니다.");
+      setMessage(`${studentIds.length}명의 내신 반을 ${batchChangeDate}부터 변경했습니다.`);
+      setSelectedChangeStudentIds({});
+      setBatchChangeClassId("");
+      setBatchChangeDate("");
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "내신 반을 일괄 변경하지 못했습니다.");
     } finally {
       setLoading(false);
     }
@@ -258,7 +343,15 @@ export default function ExamBatchAssignmentPanel() {
 
       {data ? <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-bold">학생별 내신 반 지정</h3><p className="mt-1 text-sm text-slate-500">조회 {data.students.length}명 · 현재 선택 {selectedCount}명 · 확정 대상 {assignedCount}명 · 내신 과목 {data.subject?.name ?? "미등록"}</p></div><div className="flex gap-2"><button type="button" onClick={validatePreview} className="rounded-xl border border-indigo-300 px-4 py-3 text-sm font-bold text-indigo-700">배정 미리 검증</button><button type="button" onClick={() => void confirm()} disabled={loading || !data.students.length} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white disabled:bg-slate-300">{loading ? "내신 배정 확정 중..." : "지정 학생 일괄 배정 확정"}</button></div></div><div className="mt-5 rounded-xl border border-indigo-100 bg-indigo-50/60 p-4"><div className="flex flex-wrap items-end gap-3"><label className="min-w-[260px] flex-1 text-sm font-semibold text-slate-700">선택 학생을 배정할 내신반·강의실<select value={bulkExamClassId} onChange={(event) => setBulkExamClassId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">내신반 선택</option>{examClasses.map((row) => <option key={row.id} value={row.id}>{classLabel(row.id)}</option>)}</select></label><button type="button" onClick={assignSelectedStudents} disabled={loading || !selectedCount || !bulkExamClassId} className="h-11 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white disabled:bg-slate-300">선택 학생 일괄 지정</button></div><p className="mt-2 text-xs leading-5 text-slate-600">학생을 여러 명 선택한 뒤 내신반을 지정합니다. 인원 제한은 적용하지 않으며, 다른 내신반은 학생을 다시 선택해 지정할 수 있습니다.</p></div><div className="mt-5 overflow-x-auto"><table className="w-full min-w-[820px] text-left text-sm"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="w-12 px-3 py-3 font-semibold"><input type="checkbox" checked={allStudentsSelected} onChange={toggleAllStudents} aria-label="조회된 학생 전체 선택" /></th><th className="px-3 py-3 font-semibold">학생</th><th className="px-3 py-3 font-semibold">학교·학년</th><th className="px-3 py-3 font-semibold">내신 시작일 현재 기존 반</th><th className="px-3 py-3 font-semibold">배정 내신반·강의실</th></tr></thead><tbody>{data.students.map((student) => <tr key={student.id} className="border-b border-slate-100"><td className="px-3 py-3"><input type="checkbox" checked={Boolean(selectedStudentIds[student.id])} onChange={() => toggleStudentSelection(student.id)} aria-label={`${student.name} 선택`} /></td><td className="px-3 py-3 font-semibold">{student.student_no} · {student.name}</td><td className="px-3 py-3">{student.school_name ?? "-"} · {student.grade ?? "-"}</td><td className="px-3 py-3">{classLabel(student.currentAssignment?.class_id)}</td><td className="px-3 py-3 font-semibold text-indigo-700">{mapping[student.id] ? classLabel(mapping[student.id]) : "미지정"}</td></tr>)}</tbody></table></div></div> : null}
 
-      <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-6 shadow-sm sm:p-8"><div><h3 className="text-lg font-bold text-slate-900">내신 기간 중 반 변경</h3><p className="mt-1 text-sm leading-6 text-slate-600">내신 기간 중 학생별 내신 반을 바꿀 때 사용합니다. 기존 내신 기록은 보존하고 변경일 전날 기존 내신 배정을 종료한 뒤 새 내신 반을 적용합니다.</p></div><div className="mt-5 grid gap-3 md:grid-cols-4 md:items-end"><label className="text-sm font-semibold text-slate-700">내신 운영<select value={changeOperationId} onChange={(event) => setChangeOperationId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">선택</option>{(data?.operations ?? []).map((operation) => <option key={operation.id} value={operation.id}>{operation.name} · {operation.start_date}~{operation.end_date}</option>)}</select></label><label className="text-sm font-semibold text-slate-700">학생<select value={changeStudentId} onChange={(event) => setChangeStudentId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">선택</option>{(data?.students ?? []).map((student) => <option key={student.id} value={student.id}>{student.name} · {student.school_name ?? "학교 없음"}</option>)}</select></label><label className="text-sm font-semibold text-slate-700">변경 내신 반<select value={changeClassId} onChange={(event) => setChangeClassId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">선택</option>{examClasses.map((row) => <option key={row.id} value={row.id}>{classLabel(row.id)}</option>)}</select></label><label className="text-sm font-semibold text-slate-700">적용일<input type="date" value={changeDate} onChange={(event) => setChangeDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label></div><button type="button" onClick={() => void changeExamClass()} disabled={loading || !changeOperationId || !changeStudentId || !changeClassId || !changeDate} className="mt-4 rounded-xl bg-amber-600 px-4 py-3 text-sm font-bold text-white disabled:bg-slate-300">학생별 내신 반 변경</button></div>
+      <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-6 shadow-sm sm:p-8"><div><h3 className="text-lg font-bold text-slate-900">내신 기간 중 반 변경</h3><p className="mt-1 text-sm leading-6 text-slate-600">내신 시작일 당일은 해당 학생의 내신 기록이 없을 때만 변경할 수 있습니다. 내신 기록이 있으면 다음 날부터 변경할 수 있으며, 기존 기록은 보존됩니다.</p></div><div className="mt-5 grid gap-3 md:grid-cols-4 md:items-end"><label className="text-sm font-semibold text-slate-700">내신 운영<select value={changeOperationId} onChange={(event) => { setChangeOperationId(event.target.value); setChangeDate(""); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">선택</option>{(data?.operations ?? []).map((operation) => <option key={operation.id} value={operation.id}>{operation.name} · {operation.start_date}~{operation.end_date}</option>)}</select></label><label className="text-sm font-semibold text-slate-700">학생<select value={changeStudentId} onChange={(event) => setChangeStudentId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">선택</option>{(data?.students ?? []).map((student) => <option key={student.id} value={student.id}>{student.name} · {student.school_name ?? "학교 없음"}</option>)}</select></label><label className="text-sm font-semibold text-slate-700">변경 내신 반<select value={changeClassId} onChange={(event) => setChangeClassId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">선택</option>{examClasses.map((row) => <option key={row.id} value={row.id}>{classLabel(row.id)}</option>)}</select></label><label className="text-sm font-semibold text-slate-700">적용일<input type="date" value={changeDate} min={changeDateMinimum} max={changeDateMaximum} onChange={(event) => setChangeDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label></div><button type="button" onClick={() => void changeExamClass()} disabled={loading || !changeOperationId || !changeStudentId || !changeClassId || !changeDate} className="mt-4 rounded-xl bg-amber-600 px-4 py-3 text-sm font-bold text-white disabled:bg-slate-300">학생별 내신 반 변경</button></div>
+      <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-6 shadow-sm sm:p-8">
+        <h3 className="text-lg font-bold text-slate-900">여러 학생 내신 반 일괄 변경</h3>
+        <p className="mt-1 text-sm leading-6 text-slate-600">현재 내신반을 하나 선택하면 해당 반 학생만 표시됩니다. 선택한 내신 운영에 속한 학생만 체크할 수 있습니다.</p>
+        <div className="mt-4 grid gap-3 md:grid-cols-3 md:items-end"><label className="text-sm font-semibold text-slate-700">현재 내신반<select value={selectedBatchCurrentExamClassId} onChange={(event) => { setBatchCurrentExamClassId(event.target.value); setSelectedChangeStudentIds({}); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">반 선택</option>{currentExamClassOptions.map((option) => <option key={option.classId} value={option.classId}>{option.label} · {option.count}명</option>)}</select></label><div className="rounded-xl bg-white/70 px-4 py-3 text-sm text-slate-600">{selectedBatchCurrentExamClassId ? `현재 반 학생 ${batchChangeStudents.length}명` : "현재 내신반을 선택해 주세요."}</div><div className="text-right text-sm font-semibold text-amber-800">선택 {Object.values(selectedChangeStudentIds).filter(Boolean).length}명</div></div>
+        <div className="mt-4 space-y-2">{selectedBatchCurrentExamClassId ? batchChangeStudents.map((student) => { const selectedOperation = data?.operations.find((operation) => operation.id === changeOperationId); const selectable = existingExamAssignmentByStudent.has(student.id) && selectedOperation?.status === "active"; return <label key={student.id} className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-sm ${selectable ? "border-slate-200 bg-white" : "border-slate-100 bg-slate-50 text-slate-500"}`}><input type="checkbox" checked={Boolean(selectedChangeStudentIds[student.id])} disabled={!selectable} onChange={(event) => setSelectedChangeStudentIds((current) => ({ ...current, [student.id]: event.target.checked }))} /> <span className="font-semibold">{student.student_no} · {student.name}</span><span className="ml-auto text-xs">{selectable ? "선택 가능" : existingExamAssignmentByStudent.has(student.id) ? "종료된 운영" : "다른 내신 운영"}</span></label>; }) : null}{selectedBatchCurrentExamClassId && !batchChangeStudents.length ? <p className="rounded-lg bg-white/70 px-4 py-4 text-center text-sm text-slate-500">해당 내신반에 기준일 현재 유효한 학생이 없습니다.</p> : null}</div>
+        <div className="mt-4 grid gap-3 md:grid-cols-3 md:items-end"><label className="text-sm font-semibold text-slate-700">변경 내신 반<select value={batchChangeClassId} onChange={(event) => setBatchChangeClassId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">선택</option>{examClasses.map((row) => <option key={row.id} value={row.id}>{classLabel(row.id)}</option>)}</select></label><label className="text-sm font-semibold text-slate-700">적용일<input type="date" value={batchChangeDate} min={changeDateMinimum} max={changeDateMaximum} onChange={(event) => setBatchChangeDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 text-sm" /></label><button type="button" onClick={() => void changeExamClassBatch()} disabled={loading || !Object.values(selectedChangeStudentIds).some(Boolean) || !batchChangeClassId || !batchChangeDate || !changeOperationId} className="h-11 rounded-xl bg-amber-700 px-4 py-3 text-sm font-bold text-white disabled:bg-slate-300">선택 학생 일괄 변경</button></div>
+      </div>
+
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <h3 className="text-lg font-bold">내신 운영 현황</h3>
         <p className="mt-1 text-sm text-slate-500">상태는 날짜에 따라 자동 반영됩니다. 시작 전 운영만 취소할 수 있습니다.</p>

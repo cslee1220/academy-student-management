@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { isExpiredWebPushError, isWebPushConfigured, sendWebPush } from "@/lib/web-push";
+
 type NotificationRecipient = {
   recipient_type: "academy_admin" | "teacher" | "guardian";
   recipient_id: string;
@@ -48,7 +50,54 @@ export async function insertNotifications(admin: AdminClient, input: Notificatio
   }));
   const { data, error } = await admin.from("notifications").insert(rows).select("id, recipient_type, recipient_id");
   if (error) throw error;
-  return data ?? [];
+  const inserted = data ?? [];
+  if (isWebPushConfigured()) {
+    try {
+      await sendGuardianPushNotifications(admin, input, inserted);
+    } catch (pushError) {
+      console.error("[web-push] notification fan-out failed", pushError);
+    }
+  }
+  return inserted;
+}
+
+async function sendGuardianPushNotifications(
+  admin: AdminClient,
+  input: NotificationInput,
+  notifications: InsertedNotification[],
+) {
+  const guardianIds = [...new Set(notifications
+    .filter((notification) => notification.recipient_type === "guardian")
+    .map((notification) => notification.recipient_id))];
+  if (!guardianIds.length) return;
+
+  const { data: subscriptions, error } = await admin
+    .from("push_subscriptions")
+    .select("id, guardian_id, endpoint, p256dh, auth")
+    .eq("academy_id", input.academyId)
+    .in("guardian_id", guardianIds)
+    .is("revoked_at", null);
+  if (error) throw error;
+
+  await Promise.all((subscriptions ?? []).map(async (subscription) => {
+    try {
+      await sendWebPush({
+        endpoint: subscription.endpoint,
+        keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+      }, {
+        title: input.title,
+        body: input.body,
+        url: input.targetPath,
+      });
+      await admin.from("push_subscriptions").update({ last_seen_at: new Date().toISOString() }).eq("id", subscription.id);
+    } catch (error) {
+      if (isExpiredWebPushError(error)) {
+        await admin.from("push_subscriptions").update({ revoked_at: new Date().toISOString() }).eq("id", subscription.id);
+      } else {
+        console.error("[web-push] notification delivery failed", { subscriptionId: subscription.id, error });
+      }
+    }
+  }));
 }
 
 async function academyStaffRecipients(admin: AdminClient, academyId: string): Promise<NotificationRecipient[]> {

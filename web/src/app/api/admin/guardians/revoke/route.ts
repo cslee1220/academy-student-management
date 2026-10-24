@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/authorization";
+import { GUARDIAN_INVITE_MAX_USES } from "@/lib/auth/guardian-account";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const UUID_PATTERN =
@@ -56,18 +57,36 @@ export async function POST(request: NextRequest) {
       .eq("guardian_id", guardianId)
       .eq("student_id", studentId)
       .is("used_at", null)
+      .lt("use_count", GUARDIAN_INVITE_MAX_USES)
       .is("revoked_at", null)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
     if (inviteError || !invite) {
-      throw new HttpError(404, "invite_not_found", "취소할 미사용 초대를 찾지 못했습니다.");
+      throw new HttpError(404, "invite_not_found", "취소할 사용 가능한 초대를 찾지 못했습니다.");
+    }
+
+    if (input?.useLegacyWritePath !== true) {
+      const { data: revokedInviteId, error: revokeError } = await admin.rpc("revoke_guardian_invite_transaction", {
+        p_academy_id: academyId,
+        p_guardian_id: guardianId,
+        p_student_id: studentId,
+        p_actor_profile_id: profileId,
+      });
+      if (revokeError) {
+        if (revokeError.code === "P0002") {
+          throw new HttpError(404, "invite_not_found", "초대 링크를 찾을 수 없습니다.");
+        }
+        throw new HttpError(500, "invite_revoke_failed", "보호자 초대를 취소하지 못했습니다.");
+      }
+      return NextResponse.json({ data: { inviteId: revokedInviteId ?? invite.id, message: "보호자 초대를 취소했습니다." } });
     }
 
     const { error: updateError } = await admin
       .from("guardian_invites")
       .update({ revoked_at: new Date().toISOString() })
       .eq("id", invite.id)
+      .lt("use_count", GUARDIAN_INVITE_MAX_USES)
       .is("used_at", null)
       .is("revoked_at", null);
     if (updateError) {
@@ -80,7 +99,7 @@ export async function POST(request: NextRequest) {
       target_id: invite.id,
       field_key: "guardian_invite_revoked",
       new_value_json: { student_id: studentId, guardian_id: guardianId },
-      reason: "운영자가 보호자 미사용 초대를 취소했습니다.",
+      reason: "운영자가 보호자 사용 가능한 초대를 취소했습니다.",
       actor_profile_id: profileId,
     });
     if (auditError) {

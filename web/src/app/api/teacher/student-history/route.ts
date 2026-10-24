@@ -50,6 +50,7 @@ type ScheduleBlockRow = {
 
 type DailyRosterRow = {
   block_id: string;
+  operation_group: "A" | "B" | null;
   start_date: string;
   end_date: string | null;
   is_active: boolean;
@@ -142,7 +143,7 @@ async function loadCurrentStudents(admin: ReturnType<typeof createSupabaseAdminC
 
   const { data: rosters, error: rosterError } = await admin
     .from("class_schedule_block_students")
-    .select("block_id, student_id, start_date, end_date, is_active")
+    .select("block_id, student_id, operation_group, start_date, end_date, is_active")
     .eq("academy_id", academyId)
     .in("block_id", blockIds)
     .eq("is_active", true)
@@ -241,7 +242,7 @@ export async function GET(request: NextRequest) {
         if (termId) query = query.eq("term_id", termId);
         return query;
       })(),
-      admin.from("class_schedule_block_students").select("block_id, start_date, end_date, is_active").eq("academy_id", academyId).eq("student_id", studentId),
+      admin.from("class_schedule_block_students").select("block_id, operation_group, start_date, end_date, is_active").eq("academy_id", academyId).eq("student_id", studentId),
       (() => {
         const query = admin.from("daily_attendance_records").select("id, block_id, record_date, attendance_status, absence_note, save_state").eq("academy_id", academyId).eq("student_id", studentId).eq("save_state", "final").order("record_date", { ascending: false });
         return applyDateRange(query, startDate, endDate, "record_date");
@@ -473,14 +474,24 @@ export async function GET(request: NextRequest) {
     const dailyHomeworkClassIds = [...new Set(allBlocks.filter((block) => dailyRosterByBlock.has(block.id)).map((block) => block.class_id))];
     const { data: dailyHomework, error: dailyHomeworkError } = dailyHomeworkClassIds.length
       ? await (() => {
-        const query = admin.from("daily_common_homework").select("id, class_id, record_date, content, no_homework, save_state").eq("academy_id", academyId).in("class_id", dailyHomeworkClassIds).eq("save_state", "final");
+        const query = admin.from("daily_common_homework").select("id, class_id, record_date, operation_group, content, no_homework, save_state").eq("academy_id", academyId).in("class_id", dailyHomeworkClassIds).eq("save_state", "final");
         return applyDateRange(query, startDate, endDate, "record_date");
       })()
       : { data: [], error: null };
     if (dailyHomeworkError) throw dailyHomeworkError;
-    const dailyHomeworkRows = (dailyHomework ?? []).map((row) => {
-      const block = allBlocks.find((candidate) => candidate.class_id === row.class_id && dailyRosterByBlock.has(candidate.id) && isOnDate(candidate.effective_start, candidate.effective_end, row.record_date) && candidate.weekday === weekdayOf(row.record_date) && isOnDate(dailyRosterByBlock.get(candidate.id)?.start_date ?? row.record_date, dailyRosterByBlock.get(candidate.id)?.end_date ?? null, row.record_date));
+    const dailyHomeworkByClassDate = new Map<string, typeof dailyHomework>();
+    for (const row of dailyHomework ?? []) {
+      const key = `${row.class_id}:${row.record_date}`;
+      dailyHomeworkByClassDate.set(key, [...(dailyHomeworkByClassDate.get(key) ?? []), row]);
+    }
+    const dailyHomeworkRows = [...dailyHomeworkByClassDate.entries()].map(([key, rows]) => {
+      const [classId, recordDate] = key.split(":");
+      const block = allBlocks.find((candidate) => candidate.class_id === classId && dailyRosterByBlock.has(candidate.id) && isOnDate(candidate.effective_start, candidate.effective_end, recordDate) && candidate.weekday === weekdayOf(recordDate) && isOnDate(dailyRosterByBlock.get(candidate.id)?.start_date ?? recordDate, dailyRosterByBlock.get(candidate.id)?.end_date ?? null, recordDate));
       if (!block) return null;
+      const operationGroup = dailyRosterByBlock.get(block.id)?.operation_group;
+      const row = rows.find((candidate) => candidate.operation_group === operationGroup)
+        ?? rows.find((candidate) => candidate.operation_group === "common");
+      if (!row) return null;
       return {
         id: row.id,
         source: "daily",

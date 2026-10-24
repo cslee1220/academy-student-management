@@ -34,7 +34,24 @@ function errorResponse(error: unknown) {
 export async function GET() {
   try {
     const { supabase, guardian } = await guardianContext();
-    const { data: inquiries, error: inquiriesError } = await supabase.from("inquiries").select("id, student_id, status, created_at, updated_at").eq("academy_id", guardian.academy_id).eq("guardian_id", guardian.id).order("created_at", { ascending: false });
+    const { data: links, error: linksError } = await supabase
+      .from("student_guardians")
+      .select("student_id")
+      .eq("academy_id", guardian.academy_id)
+      .eq("guardian_id", guardian.id)
+      .eq("is_active", true)
+      .is("access_revoked_at", null);
+    if (linksError) throw linksError;
+    const linkedStudentIds = [...new Set((links ?? []).map((link) => link.student_id))];
+    if (!linkedStudentIds.length) return NextResponse.json({ data: { inquiries: [] } });
+
+    const { data: inquiries, error: inquiriesError } = await supabase
+      .from("inquiries")
+      .select("id, student_id, status, created_at, updated_at")
+      .eq("academy_id", guardian.academy_id)
+      .eq("guardian_id", guardian.id)
+      .in("student_id", linkedStudentIds)
+      .order("created_at", { ascending: false });
     if (inquiriesError) throw inquiriesError;
     const inquiryIds = (inquiries ?? []).map((row) => row.id);
     const studentIds = [...new Set((inquiries ?? []).map((row) => row.student_id))];
@@ -58,7 +75,15 @@ export async function POST(request: NextRequest) {
     if (!body || Array.isArray(body) || typeof body.studentId !== "string" || typeof body.body !== "string" || !body.body.trim()) throw new HttpError(400, "invalid_request", "자녀와 문의 내용을 입력해 주세요.");
     if (body.body.trim().length > 5000) throw new HttpError(422, "invalid_body", "문의 내용은 5,000자 이하로 입력해 주세요.");
     const { supabase, guardian } = await guardianContext();
-    const { data: link, error: linkError } = await supabase.from("student_guardians").select("student_id").eq("academy_id", guardian.academy_id).eq("guardian_id", guardian.id).eq("student_id", body.studentId).eq("is_active", true).maybeSingle();
+    const { data: link, error: linkError } = await supabase
+      .from("student_guardians")
+      .select("student_id")
+      .eq("academy_id", guardian.academy_id)
+      .eq("guardian_id", guardian.id)
+      .eq("student_id", body.studentId)
+      .eq("is_active", true)
+      .is("access_revoked_at", null)
+      .maybeSingle();
     if (linkError) throw linkError;
     if (!link) throw new HttpError(403, "student_not_linked", "연결된 자녀만 문의할 수 있습니다.");
     const { data: student, error: studentError } = await supabase.from("students").select("id, name").eq("academy_id", guardian.academy_id).eq("id", body.studentId).maybeSingle();

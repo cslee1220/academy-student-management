@@ -43,6 +43,190 @@ function earlierDate(left: string, right: string) {
   return left <= right ? left : right;
 }
 
+export type StudentOperationRosterRow = {
+  id: string;
+  block_id: string;
+  student_id: string;
+  operation_group: OperationGroup | null;
+  start_date: string;
+  end_date: string | null;
+  is_active: boolean;
+};
+
+export type StudentRosterTransitionPlan = {
+  academyId: string;
+  studentId: string;
+  sourceClassId: string;
+  targetClassId: string;
+  moveDate: string;
+  sourceBlockIds: string[];
+  targetBlockIds: string[];
+  sourceRows: StudentOperationRosterRow[];
+  targetRows: StudentOperationRosterRow[];
+  hasRecord: boolean;
+};
+
+async function loadStudentRosterTransitionScope(
+  admin: AdminClient,
+  input: { academyId: string; studentId: string; classIds: string[]; moveDate: string },
+) {
+  const classIds = [...new Set(input.classIds)];
+  const { data: blocks, error: blocksError } = await admin
+    .from("class_schedule_blocks")
+    .select("id, class_id")
+    .eq("academy_id", input.academyId)
+    .in("class_id", classIds)
+    .eq("is_active", true)
+    .lte("effective_start", input.moveDate)
+    .gte("effective_end", input.moveDate);
+  if (blocksError) databaseError(blocksError, "학생 반 이동의 운영 블록을 확인하지 못했습니다.");
+  const blockRows = blocks ?? [];
+  const blockIds = blockRows.map((block) => block.id);
+  if (!blockIds.length) {
+    return { blocks: blockRows, blockIds, rosters: [] as StudentOperationRosterRow[] };
+  }
+  const { data: rosters, error: rostersError } = await admin
+    .from("class_schedule_block_students")
+    .select("id, block_id, student_id, operation_group, start_date, end_date, is_active")
+    .eq("academy_id", input.academyId)
+    .eq("student_id", input.studentId)
+    .in("block_id", blockIds)
+    .lte("start_date", input.moveDate);
+  if (rostersError) databaseError(rostersError, "학생 반 이동의 학생 운영 연결을 확인하지 못했습니다.");
+  return { blocks: blockRows, blockIds, rosters: (rosters ?? []) as StudentOperationRosterRow[] };
+}
+
+export async function prepareStudentRosterTransition(
+  admin: AdminClient,
+  input: { academyId: string; studentId: string; sourceClassId: string; targetClassId: string; moveDate: string },
+): Promise<StudentRosterTransitionPlan> {
+  const scope = await loadStudentRosterTransitionScope(admin, {
+    academyId: input.academyId,
+    studentId: input.studentId,
+    classIds: [input.sourceClassId, input.targetClassId],
+    moveDate: input.moveDate,
+  });
+  const sourceBlockIds = scope.blocks.filter((block) => block.class_id === input.sourceClassId).map((block) => block.id);
+  const targetBlockIds = scope.blocks.filter((block) => block.class_id === input.targetClassId).map((block) => block.id);
+  const classIds = [...new Set([input.sourceClassId, input.targetClassId])];
+  const recordBlockIds = [...new Set([...sourceBlockIds, ...targetBlockIds])];
+  const { data: sessions, error: sessionsError } = await admin
+    .from("class_sessions")
+    .select("id")
+    .eq("academy_id", input.academyId)
+    .in("class_id", classIds)
+    .eq("session_date", input.moveDate);
+  if (sessionsError) databaseError(sessionsError, "학생 반 이동일의 기존 수업 회차를 확인하지 못했습니다.");
+  const sessionIds = (sessions ?? []).map((session) => session.id);
+  let hasRecord = false;
+  if (recordBlockIds.length || sessionIds.length) {
+    const [attendanceResult, subjectResult] = recordBlockIds.length
+      ? await Promise.all([
+          admin
+            .from("daily_attendance_records")
+            .select("id")
+            .eq("academy_id", input.academyId)
+            .eq("student_id", input.studentId)
+            .eq("record_date", input.moveDate)
+            .in("block_id", recordBlockIds)
+            .limit(1),
+          admin
+            .from("daily_subject_records")
+            .select("id")
+            .eq("academy_id", input.academyId)
+            .eq("student_id", input.studentId)
+            .eq("record_date", input.moveDate)
+            .in("block_id", recordBlockIds)
+            .limit(1),
+        ])
+      : [{ data: [], error: null }, { data: [], error: null }];
+    const [legacyAttendanceResult, legacySubjectResult] = sessionIds.length
+      ? await Promise.all([
+          admin
+            .from("attendance_records")
+            .select("id")
+            .eq("academy_id", input.academyId)
+            .eq("student_id", input.studentId)
+            .in("session_id", sessionIds)
+            .limit(1),
+          admin
+            .from("teacher_subject_records")
+            .select("id")
+            .eq("academy_id", input.academyId)
+            .eq("student_id", input.studentId)
+            .in("session_id", sessionIds)
+            .limit(1),
+        ])
+      : [{ data: [], error: null }, { data: [], error: null }];
+    if (attendanceResult.error || subjectResult.error || legacyAttendanceResult.error || legacySubjectResult.error) {
+      databaseError(attendanceResult.error ?? subjectResult.error ?? legacyAttendanceResult.error ?? legacySubjectResult.error, "학생 반 이동일의 기존 기록을 확인하지 못했습니다.");
+    }
+    hasRecord = Boolean(attendanceResult.data?.length || subjectResult.data?.length || legacyAttendanceResult.data?.length || legacySubjectResult.data?.length);
+  }
+  return {
+    academyId: input.academyId,
+    studentId: input.studentId,
+    sourceClassId: input.sourceClassId,
+    targetClassId: input.targetClassId,
+    moveDate: input.moveDate,
+    sourceBlockIds,
+    targetBlockIds,
+    sourceRows: scope.rosters.filter((row) => sourceBlockIds.includes(row.block_id)),
+    targetRows: scope.rosters.filter((row) => targetBlockIds.includes(row.block_id)),
+    hasRecord,
+  };
+}
+
+export async function closeStudentRosterTransition(
+  admin: AdminClient,
+  plan: StudentRosterTransitionPlan,
+) {
+  const endDate = previousDay(plan.moveDate);
+  for (const row of plan.sourceRows) {
+    if (!row.is_active && !row.end_date) continue;
+    if (row.end_date && row.end_date < plan.moveDate) continue;
+    const update = row.start_date < plan.moveDate
+      ? { is_active: false, end_date: endDate }
+      : { is_active: false, end_date: null };
+    const { error } = await admin
+      .from("class_schedule_block_students")
+      .update(update)
+      .eq("academy_id", plan.academyId)
+      .eq("id", row.id);
+    if (error) databaseError(error, "기존 반의 학생 운영 연결을 종료하지 못했습니다.");
+  }
+}
+
+export async function restoreStudentRosterTransition(
+  admin: AdminClient,
+  plan: StudentRosterTransitionPlan,
+) {
+  const scope = await loadStudentRosterTransitionScope(admin, {
+    academyId: plan.academyId,
+    studentId: plan.studentId,
+    classIds: [plan.sourceClassId, plan.targetClassId],
+    moveDate: plan.moveDate,
+  });
+  const snapshotById = new Map([...plan.sourceRows, ...plan.targetRows].map((row) => [row.id, row]));
+  for (const row of scope.rosters) {
+    const previous = snapshotById.get(row.id);
+    const update = previous
+      ? {
+          operation_group: previous.operation_group,
+          start_date: previous.start_date,
+          end_date: previous.end_date,
+          is_active: previous.is_active,
+        }
+      : { is_active: false, end_date: null };
+    const { error } = await admin
+      .from("class_schedule_block_students")
+      .update(update)
+      .eq("academy_id", plan.academyId)
+      .eq("id", row.id);
+    if (error) databaseError(error, "학생 반 이동의 운영 연결을 복구하지 못했습니다.");
+  }
+}
+
 /* Legacy two-period student provisioning implementation retained in source history for reference only.
 export async function legacyEnsureStudentOperationBlocks(
   admin: AdminClient,

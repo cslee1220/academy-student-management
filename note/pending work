@@ -1,5 +1,16 @@
 # 보류 작업
 
+## 2026-10-12 현재 상태
+
+- 로컬 Supabase를 최신 migration과 seed 기준으로 reset했고 `db lint` 및 pgTAP 7개 파일 149개 테스트가 통과했습니다. 부분 저장 롤백, stale version 재시도 거부, 보충 task 동시 rollback 테스트를 추가했습니다.
+- `npm run test:fixtures`, `npm run test:integration`, `npm run test:daily-integration`, `npm run test:academic-periods`, `npm run test:screens`가 통과했습니다.
+- `npm run lint`, `npm run build`가 통과했습니다.
+- 통합 테스트 스크립트는 원격 `NEXT_PUBLIC_SUPABASE_URL`·`SUPABASE_SERVICE_ROLE_KEY`를 사용하지 않고, 로컬 전용 `INTEGRATION_SUPABASE_URL`·`INTEGRATION_SUPABASE_SERVICE_ROLE_KEY`를 사용합니다.
+- 아래의 이전 보류 기록 중 Docker 미설치·로컬 DB 미검증 내용은 역사 기록이며 현재 상태와 다릅니다.
+- Chrome headless 390×844에서 교사·운영자 모바일 화면, 키보드 입력, 1.5초 지연 응답, overflow, 오프라인 안내, API 오류 상태 검증이 통과했습니다.
+- 임시 일별 수업 fixture를 생성한 뒤 Chrome headless 390×844에서 학생 기록표 가로 스크롤과 페이지 전체 overflow 없음을 확인했고, fixture·임시 계정은 자동 정리했습니다.
+- 남은 검증은 원격/staging migration 적용, 실제 Android/iOS 기기·Safari/Chrome 및 PWA 오프라인·Web Push 실기기, 복구 후 Supabase Auth/API smoke test, npm audit high 5건의 Next 호환 패치 확인입니다.
+
 ## 보류 사유
 
 - 로컬 Supabase migration/RLS 실행 검증이 미완료입니다.

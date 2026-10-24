@@ -26,8 +26,8 @@ loadLocalEnv();
 
 const config = {
   baseUrl: process.env.INTEGRATION_BASE_URL ?? "http://localhost:3000",
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321",
-  serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseUrl: process.env.INTEGRATION_SUPABASE_URL ?? "http://127.0.0.1:54321",
+  serviceRoleKey: process.env.INTEGRATION_SUPABASE_SERVICE_ROLE_KEY,
   academyId: process.env.INTEGRATION_ACADEMY_ID ?? "21000000-0000-4000-8000-000000000001",
   adminEmail: process.env.INTEGRATION_ADMIN_EMAIL ?? "demo-admin@test.invalid",
   adminPassword: process.env.INTEGRATION_ADMIN_PASSWORD,
@@ -36,7 +36,7 @@ const config = {
 
 if (!config.serviceRoleKey || !config.adminPassword || !config.teacherPassword) {
   throw new Error(
-    "SUPABASE_SERVICE_ROLE_KEY, INTEGRATION_ADMIN_PASSWORD, INTEGRATION_TEACHER_PASSWORD 환경변수가 필요합니다.",
+    "INTEGRATION_SUPABASE_SERVICE_ROLE_KEY, INTEGRATION_ADMIN_PASSWORD, INTEGRATION_TEACHER_PASSWORD 환경변수가 필요합니다.",
   );
 }
 
@@ -470,7 +470,9 @@ async function main() {
           publicNote,
           testResults: [],
         }],
-        commonHomework: { content: "일별 통합 테스트 숙제", noHomework: false },
+        commonHomework: {
+          A: { content: "일별 통합 테스트 숙제", noHomework: false, version: null },
+        },
       },
     });
   }
@@ -598,6 +600,22 @@ async function main() {
     assert(before.payload?.data?.students?.some((student) => student.id === selected.student.id), "두 과목에 공통 배정된 학생이 일별 기록 조회에 포함되지 않았습니다.");
     logPass("교사 일별 기록 초기 조회");
 
+    const duplicateStudentRequest = await request(`/api/teacher/daily-records?academyId=${config.academyId}&blockId=${selected.block.id}&recordDate=${selected.recordDate}`, {
+      jar: teacherJar,
+      method: "POST",
+      body: {
+        academyId: config.academyId,
+        blockId: selected.block.id,
+        recordDate: selected.recordDate,
+        saveMode: "draft",
+        students: [{ studentId: selected.student.id }, { studentId: selected.student.id }],
+        testDefinitions: [],
+      },
+      allowStatuses: [409],
+    });
+    assert(duplicateStudentRequest.status === 409 && duplicateStudentRequest.payload?.error?.code === "duplicate_student", "같은 학생을 중복으로 보낸 일별 기록 저장 요청이 차단되지 않았습니다.");
+    logPass("일별 기록 중복 학생 요청 차단");
+
     const beforeTeacherOverview = await request(`/api/teacher/overview?startDate=${selected.recordDate}&endDate=${selected.recordDate}&attendanceDate=${selected.recordDate}`, { jar: teacherJar });
     const beforeAdminReport = await request(`/api/admin/reports?academyId=${config.academyId}&startDate=${selected.recordDate}&endDate=${selected.recordDate}`, { jar: adminJar });
     const beforeTeacherSummary = beforeTeacherOverview.payload?.data?.summary;
@@ -676,7 +694,7 @@ async function main() {
       assert(finalSaveResult.payload?.data?.attendance?.length === 1, "최종저장 출결 결과가 없습니다.");
       assert(finalSaveResult.payload?.data?.subjectRecords?.length === 1, "최종저장 과목기록 결과가 없습니다.");
     }
-    assert(finalSaveResult?.payload?.data?.commonHomework?.content === "일별 통합 테스트 숙제", "최종저장 공통 숙제 결과가 올바르지 않습니다.");
+    assert(finalSaveResult?.payload?.data?.commonHomeworkByGroup?.A?.content === "일별 통합 테스트 숙제", "최종저장 공통 숙제 결과가 올바르지 않습니다.");
     assert(finalSaveResult?.payload?.data?.publication?.publishedStudentCount === 1, "모든 과목 최종저장 후 공개 게이트가 열리지 않았습니다.");
     logPass("교사 일별 기록 최종저장", "모든 과목 블록·출결·과목기록·공통 숙제");
 
@@ -696,6 +714,12 @@ async function main() {
       .eq("student_id", selected.student.id)
       .eq("record_date", selected.recordDate);
     if (stalePublicationError) throw stalePublicationError;
+    const readOnlyCheck = await request(`/api/teacher/daily-records?academyId=${config.academyId}&blockId=${selected.block.id}&recordDate=${selected.recordDate}`, { jar: teacherJar });
+    const staleStudent = readOnlyCheck.payload?.data?.students?.find((student) => student.id === selected.student.id);
+    assert(staleStudent?.publication_status === "draft", "daily records GET unexpectedly changed a stale publication gate.");
+    for (const block of selected.blocks) {
+      await saveDailyRecord(block.id, "final", "일별 공개 후 직접 수정 기록");
+    }
     const healed = await request(`/api/teacher/daily-records?academyId=${config.academyId}&blockId=${selected.block.id}&recordDate=${selected.recordDate}`, { jar: teacherJar });
     const healedStudent = healed.payload?.data?.students?.find((student) => student.id === selected.student.id);
     assert(healedStudent?.publication_status === "published", "final records did not recover a stale draft publication gate.");
@@ -725,7 +749,7 @@ async function main() {
       assert(dailyPublication.snapshots.some((snapshot) => snapshot.item_key === `subject:${blockId}`), "보호자 화면에 모든 과목기록이 표시되지 않았습니다.");
       assert(dailyPublication.snapshots.some((snapshot) => snapshot.item_key === `attendance:${blockId}`), "보호자 화면에 모든 과목 출결이 표시되지 않았습니다.");
     }
-    assert(dailyPublication.snapshots.some((snapshot) => snapshot.item_key === "common_homework"), "보호자 화면에 일별 공통 숙제가 표시되지 않았습니다.");
+    assert(dailyPublication.snapshots.some((snapshot) => snapshot.item_key.startsWith("common_homework:")), "보호자 화면에 일별 공통 숙제가 표시되지 않았습니다.");
     logPass("최종저장 공개 게이트", "모든 과목 출결·과목기록·공통 숙제");
   } catch (error) {
     console.error(`[FAIL] ${error instanceof Error ? error.message : String(error)}`);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { shouldUseSecureCookie } from "@/lib/auth/cookie-security";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -75,7 +76,7 @@ export async function POST(request: NextRequest) {
         maxAge: 60 * 60 * 24 * 30,
         path: "/",
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: shouldUseSecureCookie(request),
       });
     }
     return response;

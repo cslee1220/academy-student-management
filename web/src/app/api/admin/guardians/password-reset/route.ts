@@ -5,6 +5,7 @@ import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/a
 import {
   createGuardianAuthCode,
   createGuardianInviteToken,
+  GUARDIAN_INVITE_MAX_USES,
   GUARDIAN_INVITE_VALIDITY_MS,
   hashGuardianAuthCode,
   hashGuardianInviteToken,
@@ -102,6 +103,7 @@ export async function POST(request: NextRequest) {
       .eq("guardian_id", guardianId)
       .eq("student_id", studentId)
       .is("used_at", null)
+      .lt("use_count", GUARDIAN_INVITE_MAX_USES)
       .is("revoked_at", null);
     if (revokeError) {
       throw new HttpError(500, "invite_revoke_failed", "기존 재설정 링크를 취소하지 못했습니다.");
@@ -166,6 +168,8 @@ export async function POST(request: NextRequest) {
         inviteUrl: `${request.nextUrl.origin}/invite?token=${encodeURIComponent(inviteToken)}&mode=password_reset`,
         authCode,
         expiresAt,
+        useCount: 0,
+        maxUses: GUARDIAN_INVITE_MAX_USES,
         inviteType: "password_reset",
         message: "기존 비밀번호를 무효화하고 새 비밀번호 재설정 링크를 발급했습니다.",
       },

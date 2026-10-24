@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type ConsultationStudent = {
   id: string;
@@ -8,9 +8,18 @@ type ConsultationStudent = {
   studentNo: string;
 };
 
+type ExamConsultationOption = {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  return_date: string;
+  classId: string;
+};
+
 type ConsultationRecordDialogProps = {
   student: ConsultationStudent | null;
-  blockId: string;
+  classId: string;
   recordDate: string;
   onClose: () => void;
   onSaved: () => void;
@@ -30,12 +39,45 @@ function toSeoulIso(value: string) {
   return new Date(`${value}:00+09:00`).toISOString();
 }
 
-export default function ConsultationRecordDialog({ student, blockId, recordDate, onClose, onSaved }: ConsultationRecordDialogProps) {
+export default function ConsultationRecordDialog({ student, classId, recordDate, onClose, onSaved }: ConsultationRecordDialogProps) {
   const [consultationAt, setConsultationAt] = useState(defaultConsultationAt);
   const [content, setContent] = useState("");
   const [withdrawalConcern, setWithdrawalConcern] = useState(false);
+  const [consultationType, setConsultationType] = useState<"regular" | "exam">("regular");
+  const [examOptions, setExamOptions] = useState<ExamConsultationOption[]>([]);
+  const [examOperationId, setExamOperationId] = useState("");
+  const [isLoadingExamOptions, setIsLoadingExamOptions] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!student || consultationType !== "exam") return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      if (!active) return;
+      setIsLoadingExamOptions(true);
+      setError("");
+      void fetch(`/api/teacher/consultations?studentId=${encodeURIComponent(student.id)}`, { cache: "no-store" })
+        .then(async (response) => {
+          const payload = await response.json().catch(() => null) as { data?: { options?: ExamConsultationOption[] }; error?: { message?: string } } | null;
+          if (!response.ok) throw new Error(payload?.error?.message ?? "내신 상담 운영을 불러오지 못했습니다.");
+          if (!active) return;
+          const options = payload?.data?.options ?? [];
+          setExamOptions(options);
+          setExamOperationId((current) => options.some((option) => option.id === current) ? current : options[0]?.id ?? "");
+        })
+        .catch((reason) => {
+          if (active) setError(reason instanceof Error ? reason.message : "내신 상담 운영을 불러오지 못했습니다.");
+        })
+        .finally(() => {
+          if (active) setIsLoadingExamOptions(false);
+        });
+    }, 0);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [consultationType, student]);
 
   if (!student) return null;
   const currentStudent = student;
@@ -43,6 +85,11 @@ export default function ConsultationRecordDialog({ student, blockId, recordDate,
   async function save() {
     if (!content.trim()) {
       setError("상담내용을 입력해 주세요.");
+      return;
+    }
+    const examOption = examOptions.find((option) => option.id === examOperationId);
+    if (consultationType === "exam" && (!examOption || !examOperationId)) {
+      setError("내신 상담 운영을 선택해 주세요.");
       return;
     }
     setIsSaving(true);
@@ -53,8 +100,10 @@ export default function ConsultationRecordDialog({ student, blockId, recordDate,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           studentId: currentStudent.id,
-          blockId,
+          classId: consultationType === "exam" ? examOption?.classId : classId,
           recordDate,
+          consultationType,
+          examOperationId: consultationType === "exam" ? examOperationId : null,
           consultationAt: toSeoulIso(consultationAt),
           content,
           withdrawalConcern,
@@ -82,6 +131,18 @@ export default function ConsultationRecordDialog({ student, blockId, recordDate,
         </div>
 
         <div className="mt-5 space-y-4">
+          <label className="block text-sm font-semibold text-slate-700">상담 유형
+            <select value={consultationType} onChange={(event) => setConsultationType(event.target.value as "regular" | "exam")} className="mt-1 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500">
+              <option value="regular">정규반 상담</option>
+              <option value="exam">내신대비 상담</option>
+            </select>
+          </label>
+          {consultationType === "exam" ? <label className="block text-sm font-semibold text-slate-700">내신 운영
+            <select value={examOperationId} onChange={(event) => setExamOperationId(event.target.value)} disabled={isLoadingExamOptions || !examOptions.length} className="mt-1 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500 disabled:bg-slate-100">
+              {!examOptions.length ? <option value="">참여 내신 운영 없음</option> : null}
+              {examOptions.map((option) => <option key={option.id} value={option.id}>{option.name} · {option.start_date}~{option.end_date}</option>)}
+            </select>
+          </label> : null}
           <label className="block text-sm font-semibold text-slate-700">상담일시
             <input type="datetime-local" value={consultationAt} onChange={(event) => setConsultationAt(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-slate-300 px-3 font-normal outline-none focus:border-indigo-500" />
           </label>

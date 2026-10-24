@@ -127,9 +127,6 @@ function parseOperationSchedules(value: unknown) {
     }
     const startTime = parseRequiredTime(input.startTime, `${index + 1}번째 운영 시작시간`);
     const endTime = parseRequiredTime(input.endTime, `${index + 1}번째 운영 종료시간`);
-    const effectiveStart = parseDate(input.effectiveStart, `${index + 1}번째 유효 시작일`);
-    const effectiveEnd = parseDate(input.effectiveEnd, `${index + 1}번째 유효 종료일`);
-    ensureDateRange(effectiveStart, effectiveEnd, `${index + 1}번째 운영시간표 유효기간`);
     if (startTime >= endTime) {
       throw new HttpError(422, "invalid_schedule", "운영 시작시간은 종료시간보다 빨라야 합니다.");
     }
@@ -138,8 +135,6 @@ function parseOperationSchedules(value: unknown) {
       weekdays: [...weekdays].sort((a, b) => OPERATION_WEEKDAYS.indexOf(a as (typeof OPERATION_WEEKDAYS)[number]) - OPERATION_WEEKDAYS.indexOf(b as (typeof OPERATION_WEEKDAYS)[number])),
       start_time: startTime,
       end_time: endTime,
-      effective_start: effectiveStart,
-      effective_end: effectiveEnd,
     };
   });
 }
@@ -693,13 +688,27 @@ export async function POST(request: NextRequest) {
     if (resource === "operation_settings") {
       const schedules = parseOperationSchedules(input.schedules);
       const studentClassGridColumns = parseStudentClassGridColumns(input.studentClassGridColumns);
-      const [{ data: currentSettings, error: currentSettingsError }, { data: currentSchedules, error: currentSchedulesError }] = await Promise.all([
+      const [{ data: currentSettings, error: currentSettingsError }, { data: currentSchedules, error: currentSchedulesError }, { data: currentTerm, error: currentTermError }] = await Promise.all([
         admin.from("academy_operation_settings").select("academy_id, student_class_grid_columns, updated_at").eq("academy_id", academyId).maybeSingle(),
         admin.from("academy_operation_schedules").select("id, weekdays, start_time, end_time, effective_start, effective_end, is_active, updated_at").eq("academy_id", academyId).eq("is_active", true).order("start_time", { ascending: true }),
+        admin.from("terms").select("start_date, end_date").eq("academy_id", academyId).eq("is_current", true).eq("is_archived", false).order("start_date", { ascending: false }).limit(1).maybeSingle(),
       ]);
-      if (currentSettingsError || currentSchedulesError) throw new HttpError(500, "database_error", "공통 수업 운영 설정 자료를 확인하지 못했습니다.");
+      if (currentSettingsError || currentSchedulesError || currentTermError) throw new HttpError(500, "database_error", "공통 수업 운영 설정 자료를 확인하지 못했습니다.");
 
       const currentScheduleRows = currentSchedules ?? [];
+      const fallbackPeriod = currentTerm ?? (currentScheduleRows[0]
+        ? { start_date: currentScheduleRows[0].effective_start, end_date: currentScheduleRows[0].effective_end }
+        : null);
+      const schedulesWithEffectivePeriod = schedules.map((schedule, index) => {
+        const existingSchedule = schedule.id ? currentScheduleRows.find((currentSchedule) => currentSchedule.id === schedule.id) : null;
+        const effectiveStart = existingSchedule?.effective_start ?? fallbackPeriod?.start_date;
+        const effectiveEnd = existingSchedule?.effective_end ?? fallbackPeriod?.end_date;
+        if (!effectiveStart || !effectiveEnd) {
+          throw new HttpError(422, "academic_period_required", `${index + 1}번째 운영시간표를 저장하려면 먼저 현재 학기를 설정해 주세요.`);
+        }
+        ensureDateRange(effectiveStart, effectiveEnd, `${index + 1}번째 운영시간표 운영기간`);
+        return { ...schedule, effective_start: effectiveStart, effective_end: effectiveEnd };
+      });
       const currentScheduleIds = new Set(currentScheduleRows.map((schedule) => schedule.id));
       const submittedIds = new Set(schedules.flatMap((schedule) => schedule.id ? [schedule.id] : []));
       const unknownSchedule = schedules.find((schedule) => schedule.id && !currentScheduleIds.has(schedule.id));
@@ -719,7 +728,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      for (const schedule of schedules) {
+      for (const schedule of schedulesWithEffectivePeriod) {
         if (schedule.id) {
           const { error: updateError } = await admin
             .from("academy_operation_schedules")

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
 import { AuthorizationError, requireAcademyMembership } from "@/lib/auth/authorization";
+import { resolveEffectiveAssignment } from "@/lib/assignment-resolution";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -11,7 +12,19 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 const ATTENDANCE = ["present", "absent", "unexcused_absent"] as const;
 type AttendanceStatus = (typeof ATTENDANCE)[number];
+type TestGroupKey = "A" | "B" | "unassigned";
+type TestDefinitionsByGroup = Record<TestGroupKey, unknown[]>;
 type AdminClient = ReturnType<typeof createSupabaseAdminClient>;
+type DailyAssignment = {
+  id: string;
+  student_id: string;
+  class_id: string;
+  start_date: string;
+  end_date: string | null;
+  status: string;
+  assignment_role: "regular" | "exam" | "return" | null;
+  exam_operation_id?: string | null;
+};
 
 class HttpError extends Error {
   constructor(
@@ -50,6 +63,10 @@ function parseDate(value: unknown, fieldName = "recordDate") {
     throw new HttpError(400, "invalid_request", `${fieldName}이 올바른 날짜가 아닙니다.`);
   }
   return value;
+}
+
+function isValidOnDate(startDate: string, endDate: string | null, targetDate: string) {
+  return startDate <= targetDate && (!endDate || endDate >= targetDate);
 }
 
 function parseSupplementDate(value: unknown, recordDate: string, fieldName: string, enabled: boolean) {
@@ -95,25 +112,101 @@ function parseJsonArray(value: unknown, fieldName: string, maxItems: number) {
   return value;
 }
 
-function validateTestScoresWithinMaximum(testDefinitions: unknown[], studentInputs: Record<string, unknown>[]) {
-  const maximumByDefinitionId = new Map<string, number>();
-  for (const definition of testDefinitions) {
-    if (!definition || typeof definition !== "object" || Array.isArray(definition)) continue;
-    const row = definition as Record<string, unknown>;
-    const definitionId = typeof row.id === "string" ? row.id : "";
-    const maximum = Number(row.maxScore);
-    if (definitionId && Number.isFinite(maximum)) maximumByDefinitionId.set(definitionId, maximum);
+function parseTestDefinitionsByGroup(value: unknown): TestDefinitionsByGroup {
+  if (value === undefined || value === null) {
+    return { A: [], B: [], unassigned: [] };
+  }
+  if (Array.isArray(value)) {
+    const legacyDefinitions = parseJsonArray(value, "테스트 설정", 10);
+    return { A: legacyDefinitions, B: legacyDefinitions, unassigned: legacyDefinitions };
+  }
+  if (typeof value !== "object" || JSON.stringify(value).length > 40000) {
+    throw new HttpError(422, "invalid_test_definitions", "그룹별 테스트 설정 형식이 올바르지 않습니다.");
+  }
+
+  const groupedDefinitions: TestDefinitionsByGroup = { A: [], B: [], unassigned: [] };
+  for (const [groupKey, definitions] of Object.entries(value)) {
+    if (!(groupKey in groupedDefinitions)) {
+      throw new HttpError(422, "invalid_test_group", "테스트 그룹이 올바르지 않습니다.");
+    }
+    groupedDefinitions[groupKey as TestGroupKey] = parseJsonArray(definitions, `${groupKey}그룹 테스트 설정`, 10);
+  }
+  return groupedDefinitions;
+}
+
+function parseGroupedHomework(value: unknown) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(422, "invalid_homework", "그룹별 공통 숙제 형식이 올바르지 않습니다.");
+  }
+
+  const groupedHomework: Record<string, { content: string | null; no_homework: boolean; version: number | null }> = {};
+  for (const [groupKey, rawValue] of Object.entries(value)) {
+    if (!["A", "B", "unassigned", "common"].includes(groupKey)) {
+      throw new HttpError(422, "invalid_homework_group", "공통 숙제 그룹이 올바르지 않습니다.");
+    }
+    if (!rawValue || typeof rawValue !== "object" || Array.isArray(rawValue)) {
+      throw new HttpError(422, "invalid_homework", "그룹별 공통 숙제 형식이 올바르지 않습니다.");
+    }
+    const row = rawValue as Record<string, unknown>;
+    const versionValue = row.version;
+    const version = versionValue === undefined || versionValue === null || versionValue === "" ? null : Number(versionValue);
+    if (version !== null && (!Number.isInteger(version) || version < 0)) {
+      throw new HttpError(422, "invalid_homework_version", "공통 숙제 버전이 올바르지 않습니다.");
+    }
+    groupedHomework[groupKey] = {
+      content: parseOptionalText(row.content, `${groupKey}그룹 공통 숙제`, 5000),
+      no_homework: row.noHomework === true,
+      version,
+    };
+  }
+  return groupedHomework;
+}
+
+function mapGroupedHomework(rows: Array<{ subject_id?: string | null; operation_group?: string | null }>, subjectId: string) {
+  const subjectRows = rows.filter((row) => row.subject_id === subjectId);
+  const legacyRows = rows.filter((row) => !row.subject_id);
+  const subjectByGroup = new Map(subjectRows.map((row) => [row.operation_group ?? "common", row]));
+  const legacyByGroup = new Map(legacyRows.map((row) => [row.operation_group ?? "common", row]));
+  const getByGroup = (group: string) => subjectByGroup.get(group) ?? legacyByGroup.get(group) ?? null;
+  const common = getByGroup("common");
+  const fallbackForGroup = (group: "A" | "B") =>
+    common ? { ...common, operation_group: group, version: 0 } : null;
+  return {
+    A: getByGroup("A") ?? fallbackForGroup("A"),
+    B: getByGroup("B") ?? fallbackForGroup("B"),
+    unassigned: common,
+  };
+}
+
+function validateTestScoresWithinMaximum(
+  testDefinitionsByGroup: TestDefinitionsByGroup,
+  studentInputs: Record<string, unknown>[],
+  operationGroupByStudent: Map<string, string | null>,
+) {
+  const maximumByGroupAndDefinitionId = new Map<string, number>();
+  for (const groupKey of ["A", "B", "unassigned"] as const) {
+    for (const definition of testDefinitionsByGroup[groupKey]) {
+      if (!definition || typeof definition !== "object" || Array.isArray(definition)) continue;
+      const row = definition as Record<string, unknown>;
+      const definitionId = typeof row.id === "string" ? row.id : "";
+      const maximum = Number(row.maxScore);
+      if (definitionId && Number.isFinite(maximum)) maximumByGroupAndDefinitionId.set(`${groupKey}:${definitionId}`, maximum);
+    }
   }
 
   for (const student of studentInputs) {
     if (!Array.isArray(student.testResults)) continue;
+    const groupKey: TestGroupKey = operationGroupByStudent.get(String(student.studentId)) === "A" || operationGroupByStudent.get(String(student.studentId)) === "B"
+      ? operationGroupByStudent.get(String(student.studentId)) as "A" | "B"
+      : "unassigned";
     for (const result of student.testResults) {
       if (!result || typeof result !== "object" || Array.isArray(result)) continue;
       const row = result as Record<string, unknown>;
       if (row.score === undefined || row.score === null || row.score === "") continue;
       const score = Number(row.score);
       const definitionId = typeof row.testDefinitionId === "string" ? row.testDefinitionId : "";
-      const maximum = maximumByDefinitionId.get(definitionId);
+      const maximum = maximumByGroupAndDefinitionId.get(`${groupKey}:${definitionId}`);
       if (maximum !== undefined && Number.isFinite(score) && score > maximum) {
         throw new HttpError(422, "test_score_exceeds_maximum", `테스트 점수는 만점(${maximum})을 초과할 수 없습니다.`);
       }
@@ -329,11 +422,10 @@ async function getPublishableStudentIds(
       .in("student_id", studentIds),
     admin
       .from("class_schedule_block_students")
-      .select("block_id, student_id, start_date, end_date, is_active")
+      .select("block_id, student_id, start_date, end_date")
       .eq("academy_id", academyId)
       .in("block_id", expectedBlockIds)
       .in("student_id", studentIds)
-      .eq("is_active", true)
       .lte("start_date", recordDate),
   ]);
   if (expectedSubjectsError || expectedAttendanceError || expectedRostersError) {
@@ -390,6 +482,8 @@ async function publishCompleteDailyRecords(
   return publishedStudentIds;
 }
 
+void publishCompleteDailyRecords;
+
 export async function GET(request: NextRequest) {
   try {
     const academyValue = request.nextUrl.searchParams.get("academyId") ?? undefined;
@@ -399,40 +493,50 @@ export async function GET(request: NextRequest) {
     const block = await getBlockForDate(supabase, academyId, profileId, blockId, recordDate);
     const admin = createSupabaseAdminClient();
 
-    const [{ data: classAssignments, error: classAssignmentsError }, { data: blockAssignments, error: blockAssignmentsError }] = await Promise.all([
-      supabase
+    const [{ data: classAssignments, error: classAssignmentsError }, { data: examAssignments, error: examAssignmentsError }, { data: blockAssignments, error: blockAssignmentsError }] = await Promise.all([
+      admin
         .from("student_class_assignments")
-        .select("student_id, start_date, end_date, status")
+        .select("id, student_id, class_id, start_date, end_date, status, assignment_role, exam_operation_id")
         .eq("academy_id", academyId)
         .eq("class_id", block.class_id)
         .in("status", ["active", "ended"])
         .lte("start_date", recordDate),
-      supabase
+      admin
+        .from("student_class_assignments")
+        .select("id, student_id, class_id, start_date, end_date, status, assignment_role, exam_operation_id")
+        .eq("academy_id", academyId)
+        .eq("assignment_role", "exam")
+        .in("status", ["active", "ended"])
+        .lte("start_date", recordDate),
+      admin
         .from("class_schedule_block_students")
         .select("student_id, operation_group, start_date, end_date")
         .eq("academy_id", academyId)
-        .eq("block_id", blockId)
-        .eq("is_active", true),
+        .eq("block_id", blockId),
     ]);
-    if (classAssignmentsError || blockAssignmentsError) throw classAssignmentsError ?? blockAssignmentsError;
+    if (classAssignmentsError || examAssignmentsError || blockAssignmentsError) throw classAssignmentsError ?? examAssignmentsError ?? blockAssignmentsError;
     const activeClassAssignments = (classAssignments ?? []).filter(
-      (assignment) => !assignment.end_date || assignment.end_date >= recordDate,
+      (assignment) => isValidOnDate(assignment.start_date, assignment.end_date, recordDate),
+    );
+    const allAssignments = [...(classAssignments ?? []), ...(examAssignments ?? [])] as DailyAssignment[];
+    const effectiveAssignmentByStudent = new Map<string, DailyAssignment>();
+    for (const assignment of allAssignments) {
+      const effective = resolveEffectiveAssignment(allAssignments.filter((candidate) => candidate.student_id === assignment.student_id), recordDate);
+      if (effective) effectiveAssignmentByStudent.set(assignment.student_id, effective);
+    }
+    const effectiveClassAssignmentStudentIds = new Set(
+      activeClassAssignments
+        .filter((assignment) => {
+          const effective = effectiveAssignmentByStudent.get(assignment.student_id);
+          if (!effective) return false;
+          return effective.id === assignment.id && effective.class_id === block.class_id && (block.is_exam_class ? effective.assignment_role === "exam" : effective.assignment_role !== "exam");
+        })
+        .map((assignment) => assignment.student_id),
     );
     const activeBlockAssignments = (blockAssignments ?? []).filter(
-      (assignment) => assignment.start_date <= recordDate && (!assignment.end_date || assignment.end_date >= recordDate),
+      (assignment) => isValidOnDate(assignment.start_date, assignment.end_date, recordDate),
     );
-    const validClassAssignmentKeys = new Set(activeClassAssignments.map((assignment) => assignment.student_id));
-    const studentIds = [...new Set(
-      activeBlockAssignments
-        .filter((assignment) => validClassAssignmentKeys.has(assignment.student_id))
-        .map((assignment) => assignment.student_id),
-    )];
-    // A previous concurrent final-save could leave all rows final while the
-    // publication gate stayed draft. Reconcile that gate whenever the teacher
-    // opens the record so the guardian view is restored without exposing drafts.
-    if (studentIds.length) {
-      await publishCompleteDailyRecords(admin, academyId, block.class_id, recordDate, studentIds, profileId);
-    }
+    const studentIds = [...effectiveClassAssignmentStudentIds];
     const operationGroupByStudent = new Map(
       activeBlockAssignments.map((assignment) => [assignment.student_id, assignment.operation_group] as const),
     );
@@ -442,7 +546,7 @@ export async function GET(request: NextRequest) {
         : Promise.resolve({ data: [], error: null }),
       supabase.from("daily_attendance_records").select("id, student_id, attendance_status, absence_note, version, updated_at").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
       supabase.from("daily_subject_records").select("id, student_id, subject_id, teacher_id, homework_score, understanding_score, participation_score, is_supplementary, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, public_note, test_definitions, test_results, save_state, version, updated_at").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
-      supabase.from("daily_common_homework").select("id, class_id, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).maybeSingle(),
+      supabase.from("daily_common_homework").select("id, class_id, subject_id, operation_group, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).order("operation_group", { ascending: true }),
     ]);
     if (studentsResult.error || attendanceResult.error || subjectResult.error || homeworkResult.error) throw new Error("daily record query failed");
     const statusHistoryResult = studentIds.length
@@ -475,7 +579,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       data: {
         block,
-        commonHomework: homeworkResult.data ?? null,
+        commonHomeworkByGroup: mapGroupedHomework(homeworkResult.data ?? [], block.subject_id),
         students: (studentsResult.data ?? []).map((student) => ({
           ...student,
           student_status: statusByStudent.get(student.id)?.next_status ?? student.current_status,
@@ -512,39 +616,89 @@ export async function POST(request: NextRequest) {
     const block = await getBlockForDate(supabase, academyId, profileId, blockId, recordDate);
     const admin = createSupabaseAdminClient();
 
-    const { data: assignments, error: assignmentsError } = await supabase
+    const [{ data: assignments, error: assignmentsError }, { data: examAssignments, error: examAssignmentsError }] = await Promise.all([
+      admin
         .from("student_class_assignments")
-        .select("student_id, start_date, end_date, status")
+        .select("id, student_id, class_id, start_date, end_date, status, assignment_role, exam_operation_id")
         .eq("academy_id", academyId)
         .eq("class_id", block.class_id)
         .in("status", ["active", "ended"])
-        .lte("start_date", recordDate);
-    if (assignmentsError) throw assignmentsError;
+        .lte("start_date", recordDate),
+      admin
+        .from("student_class_assignments")
+        .select("id, student_id, class_id, start_date, end_date, status, assignment_role, exam_operation_id")
+        .eq("academy_id", academyId)
+        .eq("assignment_role", "exam")
+        .in("status", ["active", "ended"])
+        .lte("start_date", recordDate),
+    ]);
+    if (assignmentsError || examAssignmentsError) throw assignmentsError ?? examAssignmentsError;
+    const allAssignments = [...(assignments ?? []), ...(examAssignments ?? [])] as DailyAssignment[];
+    const effectiveAssignmentByStudent = new Map<string, DailyAssignment>();
+    for (const assignment of allAssignments) {
+      const effective = resolveEffectiveAssignment(allAssignments.filter((candidate) => candidate.student_id === assignment.student_id), recordDate);
+      if (effective) effectiveAssignmentByStudent.set(assignment.student_id, effective);
+    }
     const assignedStudentIds = new Set(
       (assignments ?? [])
-        .filter((assignment) => !assignment.end_date || assignment.end_date >= recordDate)
+        .filter((assignment) => {
+          const effective = effectiveAssignmentByStudent.get(assignment.student_id);
+          if (!effective) return false;
+          return effective.id === assignment.id && effective.class_id === block.class_id && (block.is_exam_class ? effective.assignment_role === "exam" : effective.assignment_role !== "exam");
+        })
         .map((assignment) => assignment.student_id),
     );
       const studentIds = studentInputs.map((student) => parseUuid(student.studentId, "studentId"));
+      if (new Set(studentIds).size !== studentIds.length) {
+        throw new HttpError(409, "duplicate_student", "같은 학생을 한 번의 저장 요청에 중복으로 포함할 수 없습니다.");
+      }
       const { data: blockAssignments, error: blockAssignmentsError } = await admin
         .from("class_schedule_block_students")
-        .select("student_id, start_date, end_date")
+        .select("student_id, operation_group, start_date, end_date")
         .eq("academy_id", academyId)
         .eq("block_id", blockId)
-        .eq("is_active", true)
         .lte("start_date", recordDate);
       if (blockAssignmentsError) throw blockAssignmentsError;
-      const blockStudentIds = new Set(
+      const operationGroupByStudent = new Map(
         (blockAssignments ?? [])
-          .filter((assignment) => !assignment.end_date || assignment.end_date >= recordDate)
-          .map((assignment) => assignment.student_id),
+          .filter((assignment) => isValidOnDate(assignment.start_date, assignment.end_date, recordDate))
+          .map((assignment) => [assignment.student_id, assignment.operation_group] as const),
       );
-      if (studentIds.some((studentId) => !assignedStudentIds.has(studentId) || !blockStudentIds.has(studentId))) {
+      if (studentIds.some((studentId) => !assignedStudentIds.has(studentId))) {
       throw new HttpError(403, "student_not_assigned", "현재 수업에 배정된 학생만 저장할 수 있습니다.");
     }
 
-    const testDefinitions = parseJsonArray(input.testDefinitions, "테스트 설정", 10);
-    validateTestScoresWithinMaximum(testDefinitions, studentInputs);
+    const [{ data: studentStatusRows, error: studentStatusError }, { data: statusHistoryRows, error: statusHistoryError }] = await Promise.all([
+      admin
+        .from("students")
+        .select("id, current_status")
+        .eq("academy_id", academyId)
+        .in("id", studentIds),
+      admin
+        .from("student_status_history")
+        .select("student_id, next_status, effective_date, created_at")
+        .eq("academy_id", academyId)
+        .in("student_id", studentIds)
+        .lte("effective_date", recordDate)
+        .order("effective_date", { ascending: false })
+        .order("created_at", { ascending: false }),
+    ]);
+    if (studentStatusError || statusHistoryError) throw studentStatusError ?? statusHistoryError;
+    const currentStatusByStudent = new Map((studentStatusRows ?? []).map((student) => [student.id, student.current_status]));
+    const statusAtDateByStudent = new Map<string, string>();
+    for (const statusHistory of statusHistoryRows ?? []) {
+      if (!statusAtDateByStudent.has(statusHistory.student_id)) statusAtDateByStudent.set(statusHistory.student_id, statusHistory.next_status);
+    }
+    const pausedStudentIds = studentIds.filter((studentId) => {
+      const status = statusAtDateByStudent.get(studentId) ?? currentStatusByStudent.get(studentId);
+      return status === "paused" || status === "on_hold";
+    });
+    if (pausedStudentIds.length) {
+      throw new HttpError(422, "paused_student_record_blocked", "휴원 상태 학생의 수업기록은 입력하거나 저장할 수 없습니다.");
+    }
+
+    const testDefinitionsByGroup = parseTestDefinitionsByGroup(input.testDefinitionsByGroup ?? input.testDefinitions);
+    validateTestScoresWithinMaximum(testDefinitionsByGroup, studentInputs, operationGroupByStudent);
     const attendanceRows = studentInputs.map((student) => {
       const status = student.attendanceStatus ?? "present";
       if (!ATTENDANCE.includes(status as AttendanceStatus)) throw new HttpError(422, "invalid_attendance", "출결 상태가 올바르지 않습니다.");
@@ -557,9 +711,25 @@ export async function POST(request: NextRequest) {
         absence_note: parseOptionalText(student.absenceNote, "결석 사유", 1000),
         save_state: saveMode,
         version: 1,
+        expected_version: 0,
       };
     });
     const subjectRows = studentInputs.map((student) => {
+      const studentId = parseUuid(student.studentId, "studentId");
+      const rawOperationGroup = operationGroupByStudent.get(studentId);
+      const testGroupKey: TestGroupKey = rawOperationGroup === "A" || rawOperationGroup === "B" ? rawOperationGroup : "unassigned";
+      const testDefinitions = testDefinitionsByGroup[testGroupKey];
+      const testDefinitionIds = new Set(
+        testDefinitions
+          .filter((definition): definition is Record<string, unknown> => Boolean(definition) && typeof definition === "object" && !Array.isArray(definition))
+          .map((definition) => typeof definition.id === "string" ? definition.id : "")
+          .filter(Boolean),
+      );
+      const testResults = parseJsonArray(student.testResults, "테스트 결과", 10).filter((result) => {
+        if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+        const definitionId = (result as Record<string, unknown>).testDefinitionId;
+        return typeof definitionId === "string" && testDefinitionIds.has(definitionId);
+      });
       const attendanceStatus = student.attendanceStatus ?? "present";
       const absent = attendanceStatus !== "present";
       const isTestSupplementary = !absent && Boolean(student.isTestSupplementary);
@@ -568,7 +738,7 @@ export async function POST(request: NextRequest) {
       return {
         academy_id: academyId,
         block_id: blockId,
-        student_id: parseUuid(student.studentId, "studentId"),
+        student_id: studentId,
         record_date: recordDate,
         subject_id: block.subject_id,
         teacher_id: profileId,
@@ -585,11 +755,22 @@ export async function POST(request: NextRequest) {
         homework_supplement_content: isHomeworkSupplementary ? parseOptionalText(student.homeworkSupplementContent, "과제보충 내용", 5000) : null,
         public_note: absent ? null : parseOptionalText(student.publicNote, "수업 메모", 2000),
         test_definitions: testDefinitions,
-        test_results: absent ? [] : parseJsonArray(student.testResults, "테스트 결과", 10),
+        test_results: absent ? [] : testResults,
         save_state: saveMode,
         version: 1,
+        expected_version: 0,
       };
     });
+    const supplementRows = subjectRows.map((row) => ({
+      student_id: row.student_id,
+      legacy_supplementary: Boolean(row.is_supplementary) && !Boolean(row.is_test_supplementary) && !Boolean(row.is_homework_supplementary),
+      is_test_supplementary: row.is_test_supplementary,
+      test_supplement_date: row.test_supplement_date,
+      test_items: row.is_test_supplementary ? makeSupplementTestItems(row.test_definitions, row.test_results) : [],
+      is_homework_supplementary: row.is_homework_supplementary,
+      homework_supplement_date: row.homework_supplement_date,
+      homework_content: row.homework_supplement_content,
+    }));
 
     const [oldAttendanceResult, oldSubjectResult] = await Promise.all([
       supabase.from("daily_attendance_records").select("student_id, version").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
@@ -598,132 +779,65 @@ export async function POST(request: NextRequest) {
     if (oldAttendanceResult.error || oldSubjectResult.error) throw new Error("daily record version query failed");
     const attendanceVersion = new Map((oldAttendanceResult.data ?? []).map((row) => [row.student_id, row.version]));
     const subjectVersion = new Map((oldSubjectResult.data ?? []).map((row) => [row.student_id, row.version]));
-    for (const row of attendanceRows) row.version = (attendanceVersion.get(row.student_id) ?? 0) + 1;
-    for (const row of subjectRows) row.version = (subjectVersion.get(row.student_id) ?? 0) + 1;
+    for (const row of attendanceRows) {
+      row.expected_version = attendanceVersion.get(row.student_id) ?? 0;
+      row.version = row.expected_version + 1;
+    }
+    for (const row of subjectRows) {
+      row.expected_version = subjectVersion.get(row.student_id) ?? 0;
+      row.version = row.expected_version + 1;
+    }
 
-    const { error: publicationDraftError } = await admin
-      .from("daily_record_publications")
-      .upsert([...new Set(studentIds)].map((studentId) => ({
-        academy_id: academyId,
-        student_id: studentId,
-        record_date: recordDate,
-        status: "draft",
-        updated_by_profile_id: profileId,
-      })), { onConflict: "academy_id,student_id,record_date" });
-    if (publicationDraftError) throw publicationDraftError;
+    const uniqueStudentIds = [...new Set(studentIds)];
+    const expectedBlockIds = await getExpectedBlockIdsForDate(admin, academyId, block.class_id, recordDate);
+    if (saveMode === "final" && !expectedBlockIds.includes(blockId)) {
+      throw new HttpError(422, "invalid_expected_blocks", "선택한 과목은 현재 수업묶음의 필수 과목 블록에 포함되지 않습니다.");
+    }
 
-    const homeworkInput = input.commonHomework;
-    const homeworkPromise = homeworkInput && typeof homeworkInput === "object" && !Array.isArray(homeworkInput)
-      ? admin.from("daily_common_homework").upsert({
-          academy_id: academyId,
-          class_id: block.class_id,
-          record_date: recordDate,
-          content: parseOptionalText((homeworkInput as Record<string, unknown>).content, "공통 숙제", 5000),
-          no_homework: Boolean((homeworkInput as Record<string, unknown>).noHomework),
-          save_state: saveMode,
-        }, { onConflict: "academy_id,class_id,record_date" }).select("*").single()
-      : Promise.resolve({ data: null, error: null });
-    const [attendanceResult, subjectResult, homeworkResult] = await Promise.all([
-      admin.from("daily_attendance_records").upsert(attendanceRows, { onConflict: "academy_id,block_id,student_id,record_date" }).select("*"),
-      admin.from("daily_subject_records").upsert(subjectRows, { onConflict: "academy_id,block_id,student_id,record_date" }).select("*"),
-      homeworkPromise,
+    const transactionalHomework = parseGroupedHomework(input.commonHomework);
+    const { error: transactionalSaveError } = await admin.rpc("save_daily_records_with_grouped_homework_transaction", {
+      p_academy_id: academyId,
+      p_block_id: blockId,
+      p_class_id: block.class_id,
+      p_record_date: recordDate,
+      p_save_mode: saveMode,
+      p_attendance_rows: attendanceRows,
+      p_subject_rows: subjectRows,
+      p_homework: transactionalHomework,
+      p_expected_block_ids: expectedBlockIds,
+      p_draft_student_ids: uniqueStudentIds,
+      p_published_student_ids: uniqueStudentIds,
+      p_actor_profile_id: profileId,
+      p_supplement_rows: supplementRows,
+    });
+    if (transactionalSaveError) {
+      if (transactionalSaveError.code === "40001") {
+        throw new HttpError(409, "resource_changed", "다른 기기에서 먼저 수정했습니다. 최신 자료를 불러와 다시 저장해 주세요.");
+      }
+      throw transactionalSaveError;
+    }
+
+    const [transactionalAttendanceResult, transactionalSubjectResult, transactionalHomeworkResult, transactionalPublicationResult] = await Promise.all([
+      admin.from("daily_attendance_records").select("*").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate).in("student_id", uniqueStudentIds),
+      admin.from("daily_subject_records").select("*").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate).in("student_id", uniqueStudentIds),
+      transactionalHomework
+        ? admin.from("daily_common_homework").select("*").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).order("operation_group", { ascending: true })
+        : Promise.resolve({ data: null, error: null }),
+      admin.from("daily_record_publications").select("student_id, status").eq("academy_id", academyId).eq("record_date", recordDate).in("student_id", uniqueStudentIds),
     ]);
-    if (attendanceResult.error || subjectResult.error || homeworkResult.error) throw new Error("daily record save failed");
-
-    let publishedStudentIds: string[] = [];
-    if (saveMode === "final") {
-      const { expectedBlockIds, publishedStudentIds: eligibleStudentIds } = await getPublishableStudentIds(
-        admin,
-        academyId,
-        block.class_id,
-        recordDate,
-        [...new Set(studentIds)],
-      );
-      if (!expectedBlockIds.includes(blockId)) {
-        throw new HttpError(422, "invalid_expected_blocks", "선택한 과목이 현재 수업묶음의 필수 과목 블록에 포함되지 않습니다.");
-      }
-      publishedStudentIds = eligibleStudentIds;
-      if (publishedStudentIds.length) {
-        const { error: publicationError } = await admin
-          .from("daily_record_publications")
-          .upsert(
-            publishedStudentIds.map((studentId) => ({
-              academy_id: academyId,
-              student_id: studentId,
-              record_date: recordDate,
-              status: "published",
-              updated_by_profile_id: profileId,
-            })),
-            { onConflict: "academy_id,student_id,record_date" },
-          );
-        if (publicationError) throw publicationError;
-      }
+    if (transactionalAttendanceResult.error || transactionalSubjectResult.error || transactionalHomeworkResult.error || transactionalPublicationResult.error) {
+      throw new Error("daily record result query failed");
     }
+    const publishedStudentIds = (transactionalPublicationResult.data ?? [])
+      .filter((row) => row.status === "published")
+      .map((row) => row.student_id);
 
-    const savedSubjectRows = (subjectResult.data ?? []) as Array<Record<string, unknown>>;
-    const sourceIds = savedSubjectRows.map((row) => row.id).filter((value): value is string => typeof value === "string");
-    const existingTaskResult = sourceIds.length
-      ? await supabase.from("student_supplement_tasks").select("id, source_subject_record_id, is_active, cancelled_at, cancelled_by_profile_id, cancel_reason").eq("academy_id", academyId).in("source_subject_record_id", sourceIds)
-      : { data: [], error: null };
-    if (existingTaskResult.error) throw existingTaskResult.error;
-    const existingTaskBySourceId = new Map((existingTaskResult.data ?? []).map((row) => [row.source_subject_record_id, row]));
-    for (const row of savedSubjectRows) {
-      const studentInput = studentInputs.find((student) => student.studentId === row.student_id);
-      if (!studentInput || typeof row.id !== "string" || typeof row.student_id !== "string") continue;
-      const isTestSupplementary = Boolean(studentInput.isTestSupplementary) && studentInput.attendanceStatus !== "absent" && studentInput.attendanceStatus !== "unexcused_absent";
-      const isHomeworkSupplementary = Boolean(studentInput.isHomeworkSupplementary) && studentInput.attendanceStatus !== "absent" && studentInput.attendanceStatus !== "unexcused_absent";
-      const legacySupplementary = Boolean(studentInput.isSupplementary) && !isTestSupplementary && !isHomeworkSupplementary;
-      const existingTask = existingTaskBySourceId.get(row.id);
-      const existingId = existingTask?.id;
-      const isActive = legacySupplementary || isTestSupplementary || isHomeworkSupplementary;
-      if (!isActive && !existingId) continue;
-      const statusChanged = existingTask ? existingTask.is_active !== isActive : false;
-      const cancellationReason = "수업기록에서 보충 대상 해제";
-        const taskValues = {
-        academy_id: academyId,
-        source_subject_record_id: row.id,
-        block_id: blockId,
-        class_id: block.class_id,
-        subject_id: block.subject_id,
-        teacher_id: profileId,
-        student_id: row.student_id,
-        record_date: recordDate,
-        class_name_snapshot: block.class_name_snapshot,
-        subject_name_snapshot: block.subject_name_snapshot,
-        classroom_name_snapshot: block.classroom_name_snapshot,
-        is_active: isActive,
-          legacy_supplementary: legacySupplementary,
-          is_test_supplementary: isTestSupplementary,
-          test_supplement_date: parseSupplementDate(studentInput.testSupplementDate, recordDate, "테스트 보충 예정일", isTestSupplementary),
-          test_items: isTestSupplementary ? makeSupplementTestItems(testDefinitions, parseJsonArray(studentInput.testResults, "테스트 결과", 10)) : [],
-          is_homework_supplementary: isHomeworkSupplementary,
-          homework_supplement_date: parseSupplementDate(studentInput.homeworkSupplementDate, recordDate, "숙제 보충 예정일", isHomeworkSupplementary),
-          homework_content: isHomeworkSupplementary ? parseOptionalText(studentInput.homeworkSupplementContent, "과제보충 내용", 5000) : null,
-        cancelled_at: isActive ? null : existingTask?.cancelled_at ?? new Date().toISOString(),
-        cancelled_by_profile_id: isActive ? null : existingTask?.is_active === false ? existingTask.cancelled_by_profile_id : profileId,
-        cancel_reason: isActive ? null : existingTask?.cancel_reason ?? cancellationReason,
-      };
-      const result = existingId
-        ? await supabase.from("student_supplement_tasks").update(taskValues).eq("academy_id", academyId).eq("id", existingId)
-        : await supabase.from("student_supplement_tasks").insert({ ...taskValues, created_by_profile_id: profileId });
-      if (result.error) throw result.error;
-      if (existingId && statusChanged) {
-        const eventResult = await admin.from("student_supplement_task_events").insert({
-          academy_id: academyId,
-          task_id: existingId,
-          event_type: isActive ? "reopened" : "cancelled",
-          actor_profile_id: profileId,
-          reason: isActive ? "수업기록에서 보충 대상 재지정" : cancellationReason,
-        });
-        if (eventResult.error) throw eventResult.error;
-      }
-    }
     return NextResponse.json({
       data: {
         block,
-        commonHomework: homeworkResult.data,
-        attendance: attendanceResult.data ?? [],
-        subjectRecords: subjectResult.data ?? [],
+        commonHomeworkByGroup: mapGroupedHomework(transactionalHomeworkResult.data ?? [], block.subject_id),
+        attendance: transactionalAttendanceResult.data ?? [],
+        subjectRecords: transactionalSubjectResult.data ?? [],
         saveMode,
         publication: {
           publishedStudentCount: publishedStudentIds.length,

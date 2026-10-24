@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(100);
+select plan(105);
 
 select ok(
   to_regprocedure('private.teacher_can_view_current_student_history(uuid,uuid)') is not null,
@@ -158,6 +158,7 @@ select ok(
 select has_column('public', 'publication_snapshots', 'value_json', 'publication snapshot value exists');
 select has_column('public', 'guardian_invites', 'attempt_count', 'guardian invite attempt count exists');
 select has_column('public', 'guardian_invites', 'locked_until', 'guardian invite lock timestamp exists');
+select has_column('public', 'guardian_invites', 'use_count', 'guardian invite usage count exists');
 select has_table('public', 'change_requests', 'change_requests table exists');
 select has_table('public', 'audit_logs', 'audit_logs table exists');
 select has_table('public', 'academy_setting_history', 'academy setting history table exists');
@@ -484,6 +485,61 @@ select is(
 );
 
 set local request.jwt.claim.sub = '10000000-0000-0000-0000-000000000004';
+
+select ok(
+  private.guardian_can_view_student(
+    '20000000-0000-0000-0000-000000000001',
+    '50000000-0000-0000-0000-000000000001'
+  ),
+  '활성 연결·재원 학생의 보호자는 학생 조회가 허용된다'
+);
+
+set local role postgres;
+update public.student_guardians
+set access_revoked_at = now()
+where academy_id = '20000000-0000-0000-0000-000000000001'
+  and student_id = '50000000-0000-0000-0000-000000000001'
+  and guardian_id = '70000000-0000-0000-0000-000000000001';
+set local role authenticated;
+
+select ok(
+  not private.guardian_can_view_student(
+    '20000000-0000-0000-0000-000000000001',
+    '50000000-0000-0000-0000-000000000001'
+  ),
+  '학생 보호자 연결이 해지되면 보호자 조회가 차단된다'
+);
+
+set local role postgres;
+update public.student_guardians
+set access_revoked_at = null
+where academy_id = '20000000-0000-0000-0000-000000000001'
+  and student_id = '50000000-0000-0000-0000-000000000001'
+  and guardian_id = '70000000-0000-0000-0000-000000000001';
+update public.guardians
+set guardian_access_revoked_at = now()
+where id = '70000000-0000-0000-0000-000000000001';
+set local role authenticated;
+
+select ok(
+  not private.guardian_can_view_student(
+    '20000000-0000-0000-0000-000000000001',
+    '50000000-0000-0000-0000-000000000001'
+  ),
+  '보호자 계정이 해지되면 보호자 조회가 차단된다'
+);
+
+set local role postgres;
+update public.guardians
+set guardian_access_revoked_at = null
+where id = '70000000-0000-0000-0000-000000000001';
+set local role authenticated;
+
+select ok(
+  (select qual::text from pg_policies where schemaname = 'public' and tablename = 'announcements' and policyname = 'announcements_select') like '%access_revoked_at%'
+  and (select qual::text from pg_policies where schemaname = 'public' and tablename = 'announcements' and policyname = 'announcements_select') like '%guardian_access_revoked_at%',
+  '공지사항 보호자 정책도 연결·계정 해지 조건을 확인한다'
+);
 
 select is(
   (select count(*)::integer from public.publication_bundles),

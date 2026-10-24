@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+function commonHomeworkLabel(subjectName: string | null) {
+  if (subjectName?.includes("문법") || subjectName?.includes("영작")) return "문법/영작숙제";
+  if (subjectName?.includes("독해") || subjectName?.includes("듣기")) return "독해/듣기숙제";
+  return "공통숙제";
+}
 
 export async function GET() {
   try {
@@ -57,7 +64,8 @@ export async function GET() {
       .select("student_id, relationship")
       .eq("academy_id", guardian.academy_id)
       .eq("guardian_id", guardian.id)
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .is("access_revoked_at", null);
     if (linksError) {
       return NextResponse.json(
         { error: { code: "database_error", message: "연결된 자녀 정보를 불러오지 못했습니다." } },
@@ -73,6 +81,7 @@ export async function GET() {
       );
     }
 
+    const admin = createSupabaseAdminClient();
     const [{ data: students, error: studentsError }, { data: bundles, error: bundlesError }] = await Promise.all([
       supabase
         .from("students")
@@ -138,7 +147,7 @@ export async function GET() {
         .eq("status", "published"),
       supabase
         .from("daily_subject_records")
-        .select("id, block_id, student_id, record_date, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, is_supplementary, public_note, test_definitions, test_results, save_state")
+        .select("id, block_id, student_id, record_date, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, is_supplementary, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, public_note, test_definitions, test_results, save_state")
         .eq("academy_id", guardian.academy_id)
         .in("student_id", studentIds)
         .order("record_date", { ascending: false }),
@@ -150,19 +159,19 @@ export async function GET() {
         .order("record_date", { ascending: false }),
       supabase
         .from("daily_common_homework")
-        .select("id, class_id, record_date, content, no_homework")
+        .select("id, class_id, subject_id, record_date, operation_group, content, no_homework, save_state")
         .eq("academy_id", guardian.academy_id)
+        .eq("save_state", "final")
         .order("record_date", { ascending: false }),
-      supabase
+      admin
         .from("class_schedule_blocks")
-        .select("id, class_id, subject_name_snapshot")
+        .select("id, class_id, subject_id, subject_name_snapshot")
         .eq("academy_id", guardian.academy_id),
-      supabase
+      admin
         .from("class_schedule_block_students")
-        .select("block_id, student_id, start_date, end_date")
+        .select("block_id, student_id, operation_group, start_date, end_date, is_active")
         .eq("academy_id", guardian.academy_id)
-        .in("student_id", studentIds)
-        .eq("is_active", true),
+        .in("student_id", studentIds),
     ]);
     if (dailyPublicationAccessResult.error || dailySubjectsResult.error || dailyAttendanceResult.error || dailyHomeworkResult.error || dailyBlocksResult.error || dailyBlockStudentsResult.error) {
       return NextResponse.json(
@@ -194,10 +203,27 @@ export async function GET() {
       return created;
     };
     const dailyBlockMap = new Map((dailyBlocksResult.data ?? []).map((block) => [block.id, block]));
+    const dailySubjectNameByBlock = new Map<string, string>();
+    for (const row of dailySubjectsResult.data ?? []) {
+      if (typeof row.subject_name_snapshot === "string" && row.subject_name_snapshot.trim()) {
+        dailySubjectNameByBlock.set(row.block_id, row.subject_name_snapshot.trim());
+      }
+    }
     const dailyAssignmentsByBlock = new Map<string, typeof dailyBlockStudentsResult.data>();
     for (const assignment of dailyBlockStudentsResult.data ?? []) {
       dailyAssignmentsByBlock.set(assignment.block_id, [...(dailyAssignmentsByBlock.get(assignment.block_id) ?? []), assignment]);
     }
+    const getDailyOperationGroup = (blockId: string, studentId: string, recordDate: string) => {
+      const assignment = (dailyAssignmentsByBlock.get(blockId) ?? [])
+        .filter((candidate) =>
+          candidate.student_id === studentId
+          && typeof candidate.start_date === "string"
+          && candidate.start_date <= recordDate
+          && (!candidate.end_date || candidate.end_date >= recordDate),
+        )
+        .sort((left, right) => Number(Boolean(right.is_active)) - Number(Boolean(left.is_active)) || right.start_date.localeCompare(left.start_date))[0] ?? null;
+      return assignment?.operation_group === "A" || assignment?.operation_group === "B" ? assignment.operation_group : null;
+    };
     for (const row of dailySubjectsResult.data ?? []) {
       if (row.save_state !== "final" || !publishedDailyKeys.has(`${row.student_id}:${row.record_date}`)) continue;
       const publication = getDailyPublication(row.student_id, row.record_date);
@@ -212,20 +238,43 @@ export async function GET() {
           understandingScore: row.understanding_score,
           participationScore: row.participation_score,
           isSupplementary: row.is_supplementary,
+           isTestSupplementary: row.is_test_supplementary,
+           testSupplementDate: row.test_supplement_date,
+           isHomeworkSupplementary: row.is_homework_supplementary,
+           homeworkSupplementDate: row.homework_supplement_date,
+           homeworkSupplementContent: row.homework_supplement_content,
           publicNote: row.public_note,
         },
       });
       const definitions = Array.isArray(row.test_definitions) ? row.test_definitions : [];
       const results = Array.isArray(row.test_results) ? row.test_results : [];
+      const operationGroup = getDailyOperationGroup(row.block_id, row.student_id, row.record_date);
+      const blockSubjectName = typeof row.subject_name_snapshot === "string" && row.subject_name_snapshot.trim()
+        ? row.subject_name_snapshot.trim()
+        : dailyBlockMap.get(row.block_id)?.subject_name_snapshot ?? dailySubjectNameByBlock.get(row.block_id);
+      const blockDefaultTestName = typeof blockSubjectName === "string" && blockSubjectName.includes("문법")
+        ? "문법테스트"
+        : typeof blockSubjectName === "string" && blockSubjectName.includes("독해")
+          ? "독해테스트"
+          : null;
       for (const definition of definitions) {
         if (!definition || typeof definition !== "object") continue;
         const item = definition as Record<string, unknown>;
+        const savedName = typeof item.name === "string" && item.name.trim() ? item.name.trim() : "";
+        const isLegacyWordTest = savedName === "단어테스트" && typeof item.id === "string" && item.id.startsWith("test-");
+        const testName = isLegacyWordTest && operationGroup === "A"
+          ? "문법테스트"
+          : isLegacyWordTest && operationGroup === "B"
+            ? "독해테스트"
+            : isLegacyWordTest && blockDefaultTestName
+              ? blockDefaultTestName
+            : savedName || "테스트";
         const result = results.find((candidate) => candidate && typeof candidate === "object" && (candidate as Record<string, unknown>).testDefinitionId === item.id) as Record<string, unknown> | undefined;
         publication.snapshots.push({
           id: `daily-test-${row.id}-${String(item.id ?? item.sequenceNo ?? publication.snapshots.length)}`,
           item_key: `test:${row.block_id}:${String(item.id ?? item.sequenceNo ?? publication.snapshots.length)}`,
-          label_snapshot: String(item.name ?? "테스트"),
-          value_json: { name: item.name, maxScore: item.maxScore, score: result?.score ?? null, nonAttemptReason: result?.nonAttemptReason ?? null },
+          label_snapshot: testName,
+          value_json: { name: testName, maxScore: item.maxScore, score: result?.score ?? null, nonAttemptReason: result?.nonAttemptReason ?? null },
         });
       }
     }
@@ -233,26 +282,51 @@ export async function GET() {
       if (row.save_state !== "final" || !publishedDailyKeys.has(`${row.student_id}:${row.record_date}`)) continue;
       const publication = getDailyPublication(row.student_id, row.record_date);
       const block = dailyBlockMap.get(row.block_id);
+      const subjectName = block?.subject_name_snapshot ?? dailySubjectNameByBlock.get(row.block_id) ?? null;
       publication.snapshots.push({
         id: `daily-attendance-${row.id}`,
         item_key: `attendance:${row.block_id}`,
-        label_snapshot: block?.subject_name_snapshot ?? "출결",
-        value_json: { status: row.attendance_status, absenceNote: row.absence_note, subjectName: block?.subject_name_snapshot ?? "과목" },
+        label_snapshot: subjectName ?? "출결",
+        value_json: { status: row.attendance_status, absenceNote: row.absence_note, subjectName: subjectName ?? "과목" },
       });
+    }
+    const dailyHomeworkByClassDate = new Map<string, typeof dailyHomeworkResult.data>();
+    const dailyHomeworkSnapshotKeys = new Set<string>();
+    for (const homework of dailyHomeworkResult.data ?? []) {
+      const key = `${homework.class_id}:${homework.record_date}`;
+      dailyHomeworkByClassDate.set(key, [...(dailyHomeworkByClassDate.get(key) ?? []), homework]);
     }
     for (const homework of dailyHomeworkResult.data ?? []) {
       for (const [blockId, assignments] of dailyAssignmentsByBlock.entries()) {
         const block = dailyBlockMap.get(blockId);
         if (!block || block.class_id !== homework.class_id) continue;
-        for (const assignment of assignments ?? []) {
+        const homeworkRows = (dailyHomeworkByClassDate.get(`${block.class_id}:${homework.record_date}`) ?? [])
+          .filter((row) => !row.subject_id || row.subject_id === block.subject_id);
+        const effectiveAssignments = (assignments ?? [])
+          .filter((candidate) =>
+            typeof candidate.start_date === "string"
+            && candidate.start_date <= homework.record_date
+            && (!candidate.end_date || candidate.end_date >= homework.record_date),
+          )
+          .sort((left, right) => Number(Boolean(right.is_active)) - Number(Boolean(left.is_active)) || right.start_date.localeCompare(left.start_date));
+        for (const assignment of effectiveAssignments) {
           if (homework.record_date < assignment.start_date || (assignment.end_date && homework.record_date > assignment.end_date)) continue;
           if (!publishedDailyKeys.has(`${assignment.student_id}:${homework.record_date}`)) continue;
+          const preferred = homeworkRows.find((row) => row.operation_group === assignment.operation_group)
+            ?? homeworkRows.find((row) => row.operation_group === "common");
+          if (!preferred || preferred.id !== homework.id) continue;
+          const snapshotKey = `${assignment.student_id}:${homework.record_date}:${preferred.id}`;
+          if (dailyHomeworkSnapshotKeys.has(snapshotKey)) continue;
+          dailyHomeworkSnapshotKeys.add(snapshotKey);
           const publication = getDailyPublication(assignment.student_id, homework.record_date);
+          const subjectName = preferred.subject_id
+            ? block.subject_name_snapshot
+            : null;
           publication.snapshots.push({
             id: `daily-homework-${homework.id}-${assignment.student_id}`,
-            item_key: "common_homework",
-            label_snapshot: "공통 숙제",
-            value_json: { content: homework.content, noHomework: homework.no_homework },
+            item_key: `common_homework:${preferred.subject_id ?? "common"}:${preferred.id}`,
+            label_snapshot: commonHomeworkLabel(subjectName),
+            value_json: { content: homework.content, noHomework: homework.no_homework, subjectName },
           });
         }
       }

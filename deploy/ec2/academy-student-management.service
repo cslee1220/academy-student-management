@@ -1,0 +1,19 @@
+[Unit]
+Description=Academy student management Next.js application
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/academy-student-management
+ExecStartPre=-/usr/bin/docker rm -f academy-student-management
+ExecStart=/usr/bin/docker run --rm --name academy-student-management --init --env-file /etc/academy-student-management/app.env -p 127.0.0.1:8080:8080 academy-student-management:current
+ExecStop=/usr/bin/docker stop --time=30 academy-student-management
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target

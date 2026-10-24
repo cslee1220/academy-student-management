@@ -176,6 +176,18 @@ function makeContextGroups(groups: Map<string, GroupBucket>) {
     .sort(sortGroups);
 }
 
+function countDistinctStudents(groups: OverviewGroup[]) {
+  return new Set(groups.flatMap((group) => group.students.map((student) => student.id))).size;
+}
+
+function sortVehicleScheduleGroups(left: OverviewGroup, right: OverviewGroup) {
+  const vehicleCompare = (left.columns[0] ?? "미지정").localeCompare(right.columns[0] ?? "미지정", "ko", { numeric: true });
+  if (vehicleCompare !== 0) return vehicleCompare;
+  const scheduleCompare = (left.columns[1] ?? "미지정").localeCompare(right.columns[1] ?? "미지정", "ko", { numeric: true });
+  if (scheduleCompare !== 0) return scheduleCompare;
+  return left.label.localeCompare(right.label, "ko", { numeric: true });
+}
+
 function sortStudents(left: OverviewStudent, right: OverviewStudent) {
   return left.name.localeCompare(right.name, "ko") || left.studentNo.localeCompare(right.studentNo, "ko");
 }
@@ -287,10 +299,10 @@ export async function GET(request: NextRequest) {
         ? admin.from("class_schedule_blocks").select("id, class_id, subject_id, teacher_id, classroom_id, subject_name_snapshot, weekday, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", classIds).eq("is_active", true).lte("effective_start", asOfDate).gte("effective_end", asOfDate)
         : Promise.resolve({ data: [], error: null }),
       classIds.length
-        ? admin.from("class_schedule_block_students").select("block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).eq("is_active", true).lte("start_date", asOfDate)
+        ? admin.from("class_schedule_block_students").select("block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).lte("start_date", asOfDate)
         : Promise.resolve({ data: [], error: null }),
       classIds.length
-        ? admin.from("student_class_assignments").select("class_id, student_id, start_date, end_date, status").eq("academy_id", academyId).in("class_id", classIds).eq("status", "active").lte("start_date", asOfDate)
+        ? admin.from("student_class_assignments").select("class_id, student_id, start_date, end_date, status").eq("academy_id", academyId).in("class_id", classIds).lte("start_date", asOfDate)
         : Promise.resolve({ data: [], error: null }),
       classIds.length
         ? admin.from("class_subject_classroom_assignments").select("class_id, subject_id, classroom_id, effective_start, effective_end, is_active, updated_at").eq("academy_id", academyId).in("class_id", classIds).eq("is_active", true).lte("effective_start", asOfDate)
@@ -406,20 +418,22 @@ export async function GET(request: NextRequest) {
       const linkedBlockIds = linkedBlockIdsByClassStudent.get(`${assignment.class_id}:${student.id}`);
       return !linkedBlockIds || [...validBlockIds].some((blockId) => !linkedBlockIds.has(blockId));
     });
+    const scheduleGroupsForSection = makeContextGroups(scheduleGroups);
     const classroomGroupsForSection = makeContextGroups(classroomGroups);
-    const classroomDistinctStudentCount = new Set(
-      classroomGroupsForSection.flatMap((group) => group.students.map((student) => student.id)),
-    ).size;
+    const vehicleScheduleGroupsForSection = makeContextGroups(vehicleScheduleGroups).sort(sortVehicleScheduleGroups);
+    const scheduleDistinctStudentCount = countDistinctStudents(scheduleGroupsForSection);
+    const classroomDistinctStudentCount = countDistinctStudents(classroomGroupsForSection);
+    const vehicleScheduleDistinctStudentCount = countDistinctStudents(vehicleScheduleGroupsForSection);
     const sectionGroups = {
       categories: makeColumnGroups(baseStudents, (student) => [student.categoryName]),
       schools: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.schoolName]),
       grades: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.gradeLabel]),
       schoolGrades: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.schoolName, student.gradeLabel]),
-      schedules: makeContextGroups(scheduleGroups),
+      schedules: scheduleGroupsForSection,
       classrooms: classroomGroupsForSection,
       levels: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.level]),
       vehicles: makeColumnGroups(baseStudents, (student) => [student.vehicleName], false),
-      vehicleSchedules: makeContextGroups(vehicleScheduleGroups),
+      vehicleSchedules: vehicleScheduleGroupsForSection,
       missingOperationBundles: [{
         key: "missing-operation-bundle-students",
         label: "수업묶음 연결 누락",
@@ -439,11 +453,11 @@ export async function GET(request: NextRequest) {
           { key: "schools", title: "학교별 학생현황", groups: sectionGroups.schools },
           { key: "grades", title: "학년별 학생현황", groups: sectionGroups.grades },
           { key: "schoolGrades", title: "학년별 학교별 학생현황", groups: sectionGroups.schoolGrades },
-          { key: "schedules", title: "반별 학생현황", groups: sectionGroups.schedules },
+          { key: "schedules", title: "반별 학생현황", distinctStudentCount: scheduleDistinctStudentCount, groups: sectionGroups.schedules },
           { key: "classrooms", title: "강의실별 학생현황", distinctStudentCount: classroomDistinctStudentCount, groups: sectionGroups.classrooms },
           { key: "levels", title: "레벨별 학생현황", groups: sectionGroups.levels },
           { key: "vehicles", title: "차량별 학생현황", groups: sectionGroups.vehicles },
-          { key: "vehicleSchedules", title: "차량별 반별 학생현황", groups: sectionGroups.vehicleSchedules },
+          { key: "vehicleSchedules", title: "차량별 반별 학생현황", distinctStudentCount: vehicleScheduleDistinctStudentCount, groups: sectionGroups.vehicleSchedules },
           { key: "missingOperationBundles", title: "수업묶음 연결 누락 학생현황", groups: sectionGroups.missingOperationBundles },
         ] satisfies OverviewSection[],
       },

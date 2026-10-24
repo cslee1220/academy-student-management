@@ -5,6 +5,7 @@ import { getAppOrigin } from "@/lib/app-url";
 import {
   createGuardianAuthCode,
   createGuardianInviteToken,
+  GUARDIAN_INVITE_MAX_USES,
   GUARDIAN_INVITE_VALIDITY_MS,
   hashGuardianAuthCode,
   hashGuardianInviteToken,
@@ -92,6 +93,44 @@ export async function POST(request: NextRequest) {
       throw new HttpError(409, "student_withdrawn", "퇴원 학생에게는 접속 링크를 발급할 수 없습니다.");
     }
 
+    if (input?.useLegacyWritePath !== true) {
+      const inviteToken = createGuardianInviteToken();
+      const authCode = createGuardianAuthCode();
+      const expiresAt = new Date(Date.now() + GUARDIAN_INVITE_VALIDITY_MS).toISOString();
+      const { data: transactionInviteId, error: transactionError } = await admin.rpc("reissue_guardian_invite_transaction", {
+        p_academy_id: academyId,
+        p_guardian_id: guardianId,
+        p_student_id: studentId,
+        p_invite_token_hash: hashGuardianInviteToken(inviteToken),
+        p_auth_code_hash: hashGuardianAuthCode(authCode),
+        p_expires_at: expiresAt,
+        p_actor_profile_id: actorProfileId,
+      });
+      if (transactionError) {
+        if (transactionError.code === "P0002") {
+          throw new HttpError(404, "guardian_link_not_found", "학생과 보호자 연결을 찾을 수 없습니다.");
+        }
+        if (transactionError.code === "42501") {
+          throw new HttpError(403, "guardian_inactive", "비활성화된 보호자 계정입니다.");
+        }
+        throw new HttpError(500, "invite_reissue_failed", "보호자 초대를 재발급하지 못했습니다.");
+      }
+      return NextResponse.json({
+        data: {
+          inviteId: transactionInviteId,
+          studentName: student.name,
+          academyName: academy.name,
+          guardianName: guardian.display_name,
+          inviteUrl: `${getAppOrigin(request)}/invite?token=${encodeURIComponent(inviteToken)}`,
+          authCode,
+          expiresAt,
+          useCount: 0,
+          maxUses: GUARDIAN_INVITE_MAX_USES,
+          message: "기존 초대를 취소하고 새 초대를 발급했습니다.",
+        },
+      });
+    }
+
     const now = new Date().toISOString();
     const { error: revokeError } = await admin
       .from("guardian_invites")
@@ -100,6 +139,7 @@ export async function POST(request: NextRequest) {
       .eq("guardian_id", guardianId)
       .eq("student_id", studentId)
       .is("used_at", null)
+      .lt("use_count", GUARDIAN_INVITE_MAX_USES)
       .is("revoked_at", null);
     if (revokeError) {
       throw new HttpError(500, "invite_revoke_failed", "기존 접속 링크를 취소하지 못했습니다.");
@@ -164,7 +204,9 @@ export async function POST(request: NextRequest) {
         inviteUrl: `${getAppOrigin(request)}/invite?token=${encodeURIComponent(inviteToken)}`,
         authCode,
         expiresAt,
-        message: "기존 미사용 접속 링크를 취소하고 새 접속 링크를 발급했습니다.",
+        useCount: 0,
+        maxUses: GUARDIAN_INVITE_MAX_USES,
+        message: "기존 사용 가능한 접속 링크를 취소하고 새 접속 링크를 발급했습니다.",
       },
     });
   } catch (error) {

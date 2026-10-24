@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useCallback, useEffect, useState } from "react";
 
+import TeacherSupplementsPanel from "@/components/teacher-supplements-panel";
+
 type DetailRow = Record<string, unknown>;
 type DetailData = { period: { startDate: string; endDate: string; attendanceDate: string }; detail?: { kind: string; rows: DetailRow[] } };
 
@@ -21,6 +23,7 @@ function text(row: DetailRow, key: string, fallback = "-") {
 }
 
 const detailLabels: Record<string, string> = {
+  class_movement: "반이동 현황",
   attendance: "당일 출결 현황",
   supplement: "보충 현황",
   consultation: "상담 기록 현황",
@@ -38,6 +41,8 @@ function TeacherRecordsStatusContent() {
   const [endDate, setEndDate] = useState(initialEndDate);
   const [attendanceDate, setAttendanceDate] = useState(searchParams.get("attendanceDate") ?? initialEndDate);
   const [onlyIncomplete, setOnlyIncomplete] = useState(searchParams.get("onlyIncomplete") === "true");
+  const [consultationStatus, setConsultationStatus] = useState(searchParams.get("consultationStatus") ?? "all");
+  const [consultationType, setConsultationType] = useState(searchParams.get("consultationType") ?? "all");
   const [data, setData] = useState<DetailData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
@@ -48,6 +53,8 @@ function TeacherRecordsStatusContent() {
     try {
       const params = new URLSearchParams({ kind, startDate, endDate, attendanceDate });
       if (kind === "supplement" && onlyIncomplete) params.set("onlyIncomplete", "true");
+      if (kind === "consultation" && consultationStatus !== "all") params.set("consultationStatus", consultationStatus);
+      if (kind === "consultation" && consultationType !== "all") params.set("consultationType", consultationType);
       const response = await fetch(`/api/teacher/overview?${params.toString()}`, { cache: "no-store" });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message ?? "상세 현황을 불러오지 못했습니다.");
@@ -57,7 +64,7 @@ function TeacherRecordsStatusContent() {
     } finally {
       setIsLoading(false);
     }
-  }, [attendanceDate, endDate, kind, onlyIncomplete, startDate]);
+  }, [attendanceDate, consultationStatus, consultationType, endDate, kind, onlyIncomplete, startDate]);
 
   useEffect(() => {
     // 요약 카드에서 선택한 담당학생 상세 현황을 조회합니다.
@@ -69,6 +76,8 @@ function TeacherRecordsStatusContent() {
     event.preventDefault();
     const params = new URLSearchParams({ kind, startDate, endDate, attendanceDate });
     if (kind === "supplement" && onlyIncomplete) params.set("onlyIncomplete", "true");
+    if (kind === "consultation" && consultationStatus !== "all") params.set("consultationStatus", consultationStatus);
+    if (kind === "consultation" && consultationType !== "all") params.set("consultationType", consultationType);
     router.replace(`/teacher/records/status?${params.toString()}`);
     void load();
   }
@@ -81,7 +90,7 @@ function TeacherRecordsStatusContent() {
         <div>
           <p className="text-sm font-bold text-indigo-600">TEACHER DETAIL STATUS</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">{detailLabels[kind] ?? "담당학생 상세 현황"}</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">현재 로그인한 선생님의 담당 학생 자료만 표시합니다. 이 화면은 조회 전용입니다.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">현재 로그인한 선생님의 담당 학생 자료만 표시합니다.{kind === "supplement" ? " 보충 현황은 이 화면에서 완료 체크할 수 있습니다." : " 이 현황은 조회 전용입니다."}</p>
         </div>
         <Link href="/teacher/records" className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">수업기록으로 돌아가기</Link>
       </div>
@@ -93,25 +102,27 @@ function TeacherRecordsStatusContent() {
           <label className="text-sm font-semibold text-slate-700">기간 시작<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="mt-1 block h-10 rounded-lg border border-slate-300 px-3 font-normal" /></label>
           <label className="text-sm font-semibold text-slate-700">기간 종료<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="mt-1 block h-10 rounded-lg border border-slate-300 px-3 font-normal" /></label>
           {kind === "supplement" ? <label className="flex h-10 items-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={onlyIncomplete} onChange={(event) => setOnlyIncomplete(event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 미완료만</label> : null}
+          {kind === "consultation" ? <label className="text-sm font-semibold text-slate-700">상담 상태<select value={consultationStatus} onChange={(event) => setConsultationStatus(event.target.value)} className="mt-1 block h-10 rounded-lg border border-slate-300 bg-white px-3 font-normal"><option value="all">전체 학생</option><option value="completed">상담 완료</option><option value="incomplete">상담 미완료</option></select></label> : null}
+          {kind === "consultation" ? <label className="text-sm font-semibold text-slate-700">상담 유형<select value={consultationType} onChange={(event) => setConsultationType(event.target.value)} className="mt-1 block h-10 rounded-lg border border-slate-300 bg-white px-3 font-normal"><option value="all">전체 유형</option><option value="regular">정규반 상담</option><option value="exam">내신대비 상담</option></select></label> : null}
           <button type="submit" disabled={isLoading} className="h-10 rounded-lg bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300">조회</button>
         </div>
       </form>
 
       {error ? <p className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</p> : null}
-      <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-bold text-indigo-600">DETAIL LIST</p><h2 className="mt-1 text-xl font-bold text-slate-900">{detailLabels[kind] ?? "상세 현황"}</h2></div><span className="text-sm text-slate-500">{rows.length}건</span></div>
+      {kind === "supplement" ? <TeacherSupplementsPanel key={`${startDate}-${endDate}-${onlyIncomplete}`} embedded initialStartDate={startDate} initialEndDate={endDate} initialRowSort={onlyIncomplete ? "incomplete" : "default"} /> : <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-bold text-indigo-600">DETAIL LIST</p><h2 className="mt-1 text-xl font-bold text-slate-900">{detailLabels[kind] ?? "상세 현황"}</h2></div><span className="text-sm text-slate-500">{rows.length}{kind === "consultation" || kind === "consultation_missing" ? "명" : "건"}</span></div>
         {isLoading ? <p className="mt-5 rounded-xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">상세 현황을 불러오는 중입니다.</p> : !rows.length ? <p className="mt-5 rounded-xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">조회된 자료가 없습니다.</p> : kind === "attendance" ? (
           <div className="mt-4 overflow-x-auto"><table className="min-w-[900px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">일자</th><th className="px-3 py-3">반·과목</th><th className="px-3 py-3">강의실·시간</th><th className="px-3 py-3">출결</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${text(row, "studentId")}-${text(row, "date")}-${index}`} className="border-b border-slate-100"><td className="px-3 py-4 font-semibold">{text(row, "name")}<span className="ml-2 text-xs font-normal text-slate-500">{text(row, "student_no")}</span></td><td className="px-3 py-4">{text(row, "date")}</td><td className="px-3 py-4">{text(row, "className")} · {text(row, "subjectName")}</td><td className="px-3 py-4">{text(row, "classroomName")} · {text(row, "time")}</td><td className="px-3 py-4 font-semibold">{text(row, "status")}</td></tr>)}</tbody></table></div>
         ) : kind === "supplement" ? (
           <div className="mt-4 overflow-x-auto"><table className="min-w-[1000px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">일자</th><th className="px-3 py-3">반·과목·강의실</th><th className="px-3 py-3">보충 유형</th><th className="px-3 py-3">완료 여부</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${text(row, "id")}-${index}`} className="border-b border-slate-100 align-top"><td className="px-3 py-4 font-semibold">{text(row, "name")}<span className="ml-2 text-xs font-normal text-slate-500">{text(row, "student_no")}</span></td><td className="px-3 py-4">{text(row, "record_date")}</td><td className="px-3 py-4">{text(row, "class_name_snapshot")} · {text(row, "subject_name_snapshot")} · {text(row, "classroom_name_snapshot")}</td><td className="px-3 py-4">{row.legacy_supplementary || row.is_test_supplementary ? "테스트" : ""}{row.is_homework_supplementary ? " 과제" : ""}</td><td className="px-3 py-4 font-semibold">{row.completed ? "완료" : "미완료"}</td></tr>)}</tbody></table></div>
         ) : kind === "paused" ? (
-          <div className="mt-4 overflow-x-auto"><table className="min-w-[720px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">학생 번호</th><th className="px-3 py-3">현재 상태</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${text(row, "studentId")}-${index}`} className="border-b border-slate-100"><td className="px-3 py-4 font-semibold">{text(row, "name")}</td><td className="px-3 py-4">{text(row, "student_no")}</td><td className="px-3 py-4 font-semibold text-amber-700">휴원</td></tr>)}</tbody></table></div>
+          <div className="mt-4 overflow-x-auto"><table className="min-w-[860px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">학생 번호</th><th className="px-3 py-3">현재 상태</th><th className="px-3 py-3">복귀 예정일</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${text(row, "studentId")}-${index}`} className="border-b border-slate-100"><td className="px-3 py-4 font-semibold">{text(row, "name")}</td><td className="px-3 py-4">{text(row, "student_no")}</td><td className="px-3 py-4 font-semibold text-amber-700">휴원</td><td className="px-3 py-4">{text(row, "expected_return_date", "미정")}</td></tr>)}</tbody></table></div>
         ) : kind === "consultation" ? (
-          <div className="mt-4 overflow-x-auto"><table className="min-w-[1050px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">일자</th><th className="px-3 py-3">자료 구분</th><th className="px-3 py-3">상태·방법</th><th className="min-w-[420px] px-3 py-3">내용</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${text(row, "id")}-${index}`} className="border-b border-slate-100 align-top"><td className="px-3 py-4 font-semibold">{text(row, "name")}<span className="ml-2 text-xs font-normal text-slate-500">{text(row, "student_no")}</span></td><td className="px-3 py-4">{text(row, "date")}</td><td className="px-3 py-4">{text(row, "source")}</td><td className="px-3 py-4">{text(row, "status")} · {text(row, "method")}</td><td className="whitespace-pre-wrap px-3 py-4 text-slate-700">{text(row, "content")}</td></tr>)}</tbody></table></div>
+          <div className="mt-4 overflow-x-auto"><table className="min-w-[1200px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">상담 상태</th><th className="px-3 py-3">최근 상담일</th><th className="px-3 py-3">상담 유형</th><th className="px-3 py-3">자료 구분</th><th className="px-3 py-3">상태·방법</th><th className="min-w-[420px] px-3 py-3">최근 상담내용</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${text(row, "studentId")}-${index}`} className="border-b border-slate-100 align-top"><td className="px-3 py-4 font-semibold">{text(row, "name")}<span className="ml-2 text-xs font-normal text-slate-500">{text(row, "student_no")}</span></td><td className={`px-3 py-4 font-bold ${row.consultationStatus === "completed" ? "text-emerald-700" : "text-rose-700"}`}>{row.consultationStatus === "completed" ? "상담 완료" : "상담 미완료"}</td><td className="px-3 py-4">{text(row, "date")}</td><td className="px-3 py-4 font-semibold">{text(row, "consultationType") === "exam" ? "내신대비 상담" : "정규반 상담"}</td><td className="px-3 py-4">{text(row, "source")}</td><td className="px-3 py-4">{text(row, "status")} · {text(row, "method")}</td><td className="whitespace-pre-wrap px-3 py-4 text-slate-700">{text(row, "content")}</td></tr>)}</tbody></table></div>
         ) : (
           <div className="mt-4 overflow-x-auto"><table className="min-w-[850px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">일자</th><th className="px-3 py-3">반·과목</th><th className="px-3 py-3">강의실·시간</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${text(row, "studentId")}-${text(row, "date")}-${index}`} className="border-b border-slate-100"><td className="px-3 py-4 font-semibold">{text(row, "name")}<span className="ml-2 text-xs font-normal text-slate-500">{text(row, "student_no")}</span></td><td className="px-3 py-4">{text(row, "date")}</td><td className="px-3 py-4">{text(row, "className")} · {text(row, "subjectName")}</td><td className="px-3 py-4">{text(row, "classroomName")} · {text(row, "time")}</td></tr>)}</tbody></table></div>
         )}
-      </section>
+      </section>}
     </main>
   );
 }

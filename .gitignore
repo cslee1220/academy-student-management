@@ -38,3 +38,9 @@ Thumbs.db
 # Supabase CLI가 생성하는 로컬 임시 정보
 web/supabase/.temp/
 web/supabase/.branches/
+
+# AWS 서버 접속용 개인 키 보호
+*.pem
+
+# Supabase CLI temporary files
+supabase/.temp/

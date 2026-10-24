@@ -1,5 +1,15 @@
 1# 다음 Codex 실행 지침
 
+## 2026-10-12 최신 실행 결과
+
+- 로컬 Supabase 최신 migration reset, schema lint, pgTAP 138개 테스트 통과.
+- 로컬 fixture 및 관리자·교사·보호자, 일별 기록, 학사기간, 주요 화면 통합 테스트 통과.
+- `npm run lint`, `npm run build` 통과.
+- 통합 테스트는 `INTEGRATION_SUPABASE_URL`·`INTEGRATION_SUPABASE_SERVICE_ROLE_KEY`를 사용하며 운영 Supabase에 fixture를 만들지 않는다.
+- Chrome headless 390×844에서 모바일 로그인·키보드 입력·지연 응답·overflow·오프라인 안내·API 오류 상태 검증 통과.
+- 임시 일별 수업 fixture를 생성해 학생 기록표 가로 스크롤·페이지 전체 overflow 없음 확인 후 fixture·임시 계정 정리 완료.
+- 다음 작업은 원격/staging 적용 승인 전까지 실제 Android/iOS 기기·PWA·Web Push·백업 복구와 트랜잭션 장애 재현 테스트를 준비하는 것이다.
+
 ## 현재 작업 상태
 
 - 작업공간: `E:\Coding_basic\academy-student management`
