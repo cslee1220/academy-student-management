@@ -40,6 +40,8 @@ type HomeResult = {
   };
 };
 
+const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
+
 function textValue(value: unknown) {
   return typeof value === "string" ? value : "-";
 }
@@ -229,7 +231,8 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
 
   return (
     <>
-      <div className="mt-5 overflow-x-auto">
+      <p className="mt-5 text-xs text-slate-500 sm:hidden">작은 화면에서는 자료 표를 좌우로 밀어 전체 항목을 확인할 수 있습니다.</p>
+      <div role="region" aria-label="공개 학습자료 요약 표" tabIndex={0} className={`mt-2 overflow-x-auto rounded-xl ${focusRingClass}`}>
         <div className="min-w-[720px] overflow-hidden rounded-xl border border-slate-200 bg-white">
           <div className="grid grid-cols-6 border-b border-slate-200 bg-slate-100 text-center text-xs font-bold text-slate-600">
             {cells.map((cell) => <div key={cell.label} className="border-r border-slate-200 px-3 py-3 last:border-r-0">{cell.label}</div>)}
@@ -312,18 +315,18 @@ export default function ParentPage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
+    <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
       <PwaInstallPrompt />
       <WebPushRegistration />
-      <nav className="mb-5 flex flex-wrap gap-2"><Link href="/parent/summary" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">학습 요약</Link><Link href="/parent/announcements" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">공지·알림</Link><Link href="/parent/inquiries" className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">문의</Link></nav>
+      <nav aria-label="보호자 메뉴" className="mb-5 flex flex-wrap gap-2"><Link href="/parent/summary" className={`min-h-11 rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50 ${focusRingClass}`}>학습 요약</Link><Link href="/parent/announcements" className={`min-h-11 rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50 ${focusRingClass}`}>공지·알림</Link><Link href="/parent/inquiries" className={`min-h-11 rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 ${focusRingClass}`}>문의</Link></nav>
       <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div>
           <p className="text-sm font-bold text-indigo-600">PARENT HOME</p>
-          <h1 className="mt-2 text-4xl font-bold tracking-tight">보호자 학습정보 조회</h1>
+          <h1 className="mt-2 break-words text-3xl font-bold tracking-tight sm:text-4xl">보호자 학습정보 조회</h1>
           <p className="mt-3 text-slate-600">교사가 저장한 자녀의 날짜별 학습정보를 표시합니다.</p>
         </div>
         {guardianName ? (
-          <button type="button" onClick={logout} className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-white">
+          <button type="button" onClick={logout} className={`min-h-11 rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-white ${focusRingClass}`}>
             {guardianName} · 로그아웃
           </button>
         ) : null}
@@ -331,37 +334,37 @@ export default function ParentPage() {
 
       {isLoading ? <p className="mt-10 rounded-2xl bg-white p-8 text-center text-slate-500">학습 자료를 불러오는 중...</p> : null}
       {error ? (
-        <section className="mt-10 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm leading-7 text-amber-900">
+        <section role="alert" aria-live="assertive" className="mt-10 rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm leading-7 text-amber-900 sm:p-6">
           <p>{error}</p>
-          {isUnauthorized ? <Link href="/guardian/login" className="mt-3 mr-4 inline-block font-semibold text-indigo-700 hover:text-indigo-800">보호자 로그인</Link> : null}
-          <Link href="/invite" className="mt-3 inline-block font-semibold text-indigo-700 hover:text-indigo-800">접속 링크로 접속하기</Link>
+          {isUnauthorized ? <Link href="/guardian/login" className={`mt-3 mr-4 inline-block min-h-11 py-2 font-semibold text-indigo-700 hover:text-indigo-800 ${focusRingClass}`}>보호자 로그인</Link> : null}
+          <Link href="/invite" className={`mt-3 inline-block min-h-11 py-2 font-semibold text-indigo-700 hover:text-indigo-800 ${focusRingClass}`}>접속 링크로 접속하기</Link>
         </section>
       ) : null}
 
       {!isLoading && !error ? (
         <div className="mt-10 space-y-8">
           {children.length ? children.map((child) => (
-            <section key={child.student?.id ?? child.relationship} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+            <section key={child.student?.id ?? child.relationship} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8">
               <div className="flex flex-col justify-between gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end">
                 <div>
                   <p className="text-sm font-semibold text-indigo-600">연결된 자녀 · {child.relationship ?? "보호자"}</p>
-                  <h2 className="mt-2 text-2xl font-bold">{child.student?.name ?? "학생 정보 없음"}</h2>
+                  <h2 className="mt-2 break-words text-2xl font-bold">{child.student?.name ?? "학생 정보 없음"}</h2>
                   <p className="mt-1 text-sm text-slate-500">{child.student?.grade ?? "학년 정보 없음"}</p>
                 </div>
-                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">저장된 자료 표시</span>
+                <span className="w-fit rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">공개 자료 {child.publications.length}건</span>
               </div>
 
               {child.publications.length ? child.publications.map((publication) => (
-                <article key={publication.id} className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-5">
-                <p className="text-sm font-semibold text-slate-500">수업일 · {publication.session_date ?? publication.session_id}</p>
-                  <p className="mt-1 text-xs text-slate-400">저장 기록</p>
+                <article key={publication.id} className="mt-6 min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
+                  <p className="break-words text-sm font-semibold text-slate-500">자료 기준일 · {publication.session_date ?? publication.session_id}</p>
+                  <p className="mt-1 text-xs text-slate-400">공개 완료 자료</p>
                   <PublicationSummary snapshots={publication.snapshots} />
                 </article>
-              )) : <p className="mt-6 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">아직 저장된 학습자료가 없습니다.</p>}
+              )) : <p className="mt-6 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">현재 공개된 학습자료가 없습니다.</p>}
             </section>
           )) : <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">연결된 자녀 정보가 없습니다.</section>}
         </div>
       ) : null}
-    </div>
+    </main>
   );
 }

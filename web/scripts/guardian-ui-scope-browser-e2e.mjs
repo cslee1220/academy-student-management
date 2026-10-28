@@ -42,6 +42,7 @@ const admin = createClient(config.supabaseUrl, config.serviceRoleKey, { auth: { 
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function freePort() { return new Promise((resolve, reject) => { const server = net.createServer(); server.once("error", reject); server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(() => resolve(port)); }); }); }
+async function captureScreenshot(cdp, filePath) { const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(filePath, Buffer.from(screenshot.data, "base64")); }
 
 async function preparePublishedFixture() {
   const [subject] = (await admin.from("daily_subject_records").select("id").eq("academy_id", config.academyId).eq("block_id", config.primaryBlockId).eq("student_id", config.childIds[0]).eq("record_date", config.recordDate).limit(1)).data ?? [];
@@ -69,6 +70,16 @@ async function preparePublishedFixture() {
     ]);
     if (snapshots.error) throw snapshots.error;
   }
+}
+
+async function uniquePhone(prefix) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = `${prefix}${Math.floor(Math.random() * 10000).toString().padStart(4, "0")}`;
+    const result = await admin.from("guardians").select("id").eq("academy_id", config.academyId).eq("phone", candidate).limit(1);
+    if (result.error) throw result.error;
+    if (!(result.data ?? []).length) return candidate;
+  }
+  throw new Error("합성 보호자 전화번호를 만들지 못했습니다.");
 }
 
 class CdpClient {
@@ -102,6 +113,26 @@ async function navigate(cdp, pathname) {
   await waitFor(cdp, async () => { try { const state = await evaluate(cdp, "({ href: location.href, readyState: document.readyState })"); return state?.href?.includes(pathname.split("?")[0]) && state.readyState !== "loading"; } catch { return false; } }, pathname);
   await waitFor(cdp, async () => { try { return Boolean((await evaluate(cdp, "document.body?.innerText ?? ''"))?.trim()); } catch { return false; } }, `${pathname} 화면`);
 }
+async function setInputValue(cdp, selector, value) {
+  const expression = `(() => { const input = document.querySelector(${JSON.stringify(selector)}); if (!input) return false; const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; setter?.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
+  assert(await evaluate(cdp, expression), `${selector} 입력란을 찾지 못했습니다.`);
+}
+async function submitInvite(cdp) {
+  assert(await evaluate(cdp, "Boolean(document.querySelector('button[type=submit]'))"), "초대 인증 버튼을 찾지 못했습니다.");
+  await evaluate(cdp, "document.querySelector('button[type=submit]').click()");
+}
+async function waitForInviteError(cdp, expectedText) {
+  let lastState = null;
+  try {
+    return await waitFor(cdp, async () => {
+    const state = await evaluate(cdp, "({ text: document.body?.innerText ?? '', disabled: Boolean(document.querySelector('button[type=submit]')?.disabled), alert: document.querySelector('[role=alert]')?.innerText ?? '' })");
+    lastState = state;
+    return state?.alert?.includes(expectedText) && state.disabled === false ? state : null;
+    }, `초대 오류 상태: ${expectedText}`);
+  } catch (error) {
+    throw new Error(`${error.message} 마지막 상태=${JSON.stringify(lastState)}`);
+  }
+}
 async function loginAdmin(cdp) {
   await navigate(cdp, "/admin/login");
   const login = await browserFetch(cdp, "/api/auth/admin-login", { method: "POST", body: { email: config.adminEmail, password: config.adminPassword } });
@@ -117,20 +148,69 @@ const adminBrowser = await launchBrowser();
 let guardianBrowser;
 try {
   await loginAdmin(adminBrowser.cdp);
-  const suffix = Date.now().toString();
-  const invite = await browserFetch(adminBrowser.cdp, "/api/admin/guardians", { method: "POST", body: { academyId: config.academyId, studentId: config.childIds[0], displayName: `UIUX-GUARDIAN-${suffix}`, phone: `010-9998-${suffix.slice(-4)}`, relationship: "엄마" } });
-  assert(invite.status === 200 && invite.payload?.data?.inviteUrl && invite.payload?.data?.authCode, `보호자 초대 발급 실패: ${invite.status}`);
+  const suffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const invite = await browserFetch(adminBrowser.cdp, "/api/admin/guardians", { method: "POST", body: { academyId: config.academyId, studentId: config.childIds[0], displayName: `UIUX-GUARDIAN-${suffix}`, phone: await uniquePhone("010-8888-"), relationship: "엄마" } });
+  assert(invite.status === 200 && invite.payload?.data?.inviteUrl && invite.payload?.data?.authCode, `보호자 초대 발급 실패: ${invite.status} ${invite.payload?.error?.code ?? ""} ${invite.payload?.error?.message ?? ""}`);
   const [guardian] = (await admin.from("guardians").select("id").eq("academy_id", config.academyId).eq("display_name", `UIUX-GUARDIAN-${suffix}`).limit(1)).data ?? [];
   assert(guardian?.id, "보호자 합성 계정을 찾지 못했습니다.");
   const secondLink = await admin.from("student_guardians").upsert({ academy_id: config.academyId, student_id: config.childIds[1], guardian_id: guardian.id, relationship: "엄마", is_active: true, access_revoked_at: null }, { onConflict: "academy_id,student_id,guardian_id" });
   if (secondLink.error) throw secondLink.error;
 
+  const expiredSuffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const expiredInvite = await browserFetch(adminBrowser.cdp, "/api/admin/guardians", { method: "POST", body: { academyId: config.academyId, studentId: config.childIds[1], displayName: `UIUX-EXPIRED-${expiredSuffix}`, phone: await uniquePhone("010-8887-"), relationship: "엄마" } });
+  assert(expiredInvite.status === 200 && expiredInvite.payload?.data?.inviteUrl && expiredInvite.payload?.data?.authCode, `만료 링크용 초대 발급 실패: ${expiredInvite.status}`);
+  const [expiredGuardian] = (await admin.from("guardians").select("id").eq("academy_id", config.academyId).eq("display_name", `UIUX-EXPIRED-${expiredSuffix}`).limit(1)).data ?? [];
+  assert(expiredGuardian?.id, "만료 링크용 보호자 계정을 찾지 못했습니다.");
+  const [expiredInviteRow] = (await admin.from("guardian_invites").select("id").eq("academy_id", config.academyId).eq("guardian_id", expiredGuardian.id).order("created_at", { ascending: false }).limit(1)).data ?? [];
+  assert(expiredInviteRow?.id, "만료 링크용 초대 행을 찾지 못했습니다.");
+  const expiredUpdate = await admin.from("guardian_invites").update({ revoked_at: new Date().toISOString() }).eq("academy_id", config.academyId).eq("id", expiredInviteRow.id);
+  if (expiredUpdate.error) throw expiredUpdate.error;
+
+  const networkSuffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const networkInvite = await browserFetch(adminBrowser.cdp, "/api/admin/guardians", { method: "POST", body: { academyId: config.academyId, studentId: config.childIds[2], displayName: `UIUX-NETWORK-${networkSuffix}`, phone: await uniquePhone("010-8886-"), relationship: "엄마" } });
+  assert(networkInvite.status === 200 && networkInvite.payload?.data?.inviteUrl && networkInvite.payload?.data?.authCode, `네트워크 오류용 초대 발급 실패: ${networkInvite.status}`);
+
   guardianBrowser = await launchBrowser();
   const token = new URL(invite.payload.data.inviteUrl).searchParams.get("token");
   assert(token, "보호자 초대 토큰을 찾지 못했습니다.");
+  await guardianBrowser.cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   await navigate(guardianBrowser.cdp, `/invite?token=${encodeURIComponent(token)}`);
-  const activation = await browserFetch(guardianBrowser.cdp, "/api/guardian/activate", { method: "POST", body: { token, authCode: invite.payload.data.authCode, deviceId: `uiux-guardian-${randomUUID()}` } });
-  assert(activation.status === 200, `보호자 인증 실패: ${activation.status}`);
+  await captureScreenshot(guardianBrowser.cdp, "D:\\Temp\\academy-guardian-invite-after-390.png");
+  const inviteBeforeMetrics = await evaluate(guardianBrowser.cdp, "({ viewportWidth: document.documentElement.clientWidth, pageScrollWidth: document.documentElement.scrollWidth, hasCodeInput: Boolean(document.querySelector('#guardian-auth-code')), hasStepGuide: document.body.innerText.includes('접속 순서') })");
+  assert(inviteBeforeMetrics.pageScrollWidth <= inviteBeforeMetrics.viewportWidth + 1 && inviteBeforeMetrics.hasCodeInput && inviteBeforeMetrics.hasStepGuide, "390px 초대 화면 기본 구조 또는 가로 넘침 검증 실패");
+
+  const correctCode = invite.payload.data.authCode;
+  const wrongCode = `${correctCode.slice(0, 7)}${correctCode.endsWith("0") ? "1" : "0"}`;
+  await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", wrongCode);
+  await submitInvite(guardianBrowser.cdp);
+  await waitForInviteError(guardianBrowser.cdp, "인증번호가 일치하지 않습니다");
+
+  const expiredToken = new URL(expiredInvite.payload.data.inviteUrl).searchParams.get("token");
+  assert(expiredToken, "만료 초대 토큰을 찾지 못했습니다.");
+  await navigate(guardianBrowser.cdp, `/invite?token=${encodeURIComponent(expiredToken)}`);
+  await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", expiredInvite.payload.data.authCode);
+  await submitInvite(guardianBrowser.cdp);
+  const expiredState = await waitForInviteError(guardianBrowser.cdp, "만료되었거나 취소되었습니다");
+  assert(expiredState.alert.includes("새 접속 링크 발급"), "만료 초대 링크의 관리자 재발급 안내가 없습니다.");
+
+  const networkToken = new URL(networkInvite.payload.data.inviteUrl).searchParams.get("token");
+  assert(networkToken, "네트워크 오류용 초대 토큰을 찾지 못했습니다.");
+  await navigate(guardianBrowser.cdp, `/invite?token=${encodeURIComponent(networkToken)}`);
+  await evaluate(guardianBrowser.cdp, "window.fetch = () => Promise.reject(new TypeError('Failed to fetch'))");
+  await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", networkInvite.payload.data.authCode);
+  await submitInvite(guardianBrowser.cdp);
+  const networkState = await waitForInviteError(guardianBrowser.cdp, "접속 인증 요청을 처리하지 못했습니다");
+  assert(networkState.alert.includes("인터넷 연결"), "네트워크 오류의 재시도 안내가 없습니다.");
+
+  await navigate(guardianBrowser.cdp, `/invite?token=${encodeURIComponent(token)}`);
+  await evaluate(guardianBrowser.cdp, "(() => { window.__inviteFetchCalls = 0; const original = window.fetch.bind(window); window.fetch = (...args) => { window.__inviteFetchCalls += 1; return new Promise((resolve, reject) => setTimeout(() => original(...args).then(resolve).catch(reject), 700)); }; })()");
+  await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", correctCode);
+  await submitInvite(guardianBrowser.cdp);
+  await sleep(100);
+  const loadingState = await evaluate(guardianBrowser.cdp, "({ disabled: Boolean(document.querySelector('button[type=submit]')?.disabled), busy: document.querySelector('button[type=submit]')?.getAttribute('aria-busy'), calls: window.__inviteFetchCalls })");
+  assert(loadingState.disabled && loadingState.busy === "true" && loadingState.calls === 1, "초대 인증 처리 중 상태 또는 중복 제출 방지가 확인되지 않았습니다.");
+  await waitFor(guardianBrowser.cdp, async () => (await evaluate(guardianBrowser.cdp, "location.pathname")) === "/parent", "보호자 인증 완료 이동");
+
   const home = await browserFetch(guardianBrowser.cdp, "/api/guardian/home");
   const children = home.payload?.data?.children ?? [];
   assert(home.status === 200 && children.length === 2, `연결 자녀 범위가 예상과 다릅니다: ${home.status}/${children.length}`);
@@ -141,23 +221,24 @@ try {
   const otherStudentRequest = await browserFetch(guardianBrowser.cdp, "/api/guardian/inquiries", { method: "POST", body: { studentId: config.childIds[2], body: "UIUX guardian access boundary check" } });
   assert([401, 403, 404].includes(otherStudentRequest.status), `타 학생 직접 요청 차단 실패: ${otherStudentRequest.status}`);
 
-  await guardianBrowser.cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
-  await navigate(guardianBrowser.cdp, "/parent");
-  const parentMetrics = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, childCards:[...document.querySelectorAll('main article, main section')].length})");
-  assert(parentMetrics.text.includes("PARENT HOME"), "보호자 홈 화면이 표시되지 않았습니다.");
-  assert(!parentMetrics.pageScrollWidth || parentMetrics.pageScrollWidth <= parentMetrics.viewportWidth + 1, "390px 보호자 홈 전체 가로 넘침");
-  const parentScreenshot = await guardianBrowser.cdp.send("Page.captureScreenshot", { format: "png" });
-  fs.writeFileSync("D:\\Temp\\academy-guardian-parent-390.png", Buffer.from(parentScreenshot.data, "base64"));
-
-  await navigate(guardianBrowser.cdp, "/parent/summary");
-  const summary = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, selects:document.querySelectorAll('select').length, dateInputs:document.querySelectorAll('input[type=date]').length})");
-  assert(summary.text.includes("학습 요약") && summary.selects >= 1 && summary.dateInputs >= 2, "보호자 학습 요약의 자녀·날짜 선택 요소가 부족합니다.");
-  assert(summary.pageScrollWidth <= summary.viewportWidth + 1, "390px 보호자 학습 요약 전체 가로 넘침");
+  const viewportResults = [];
+  for (const width of [360, 390, 768, 1366]) {
+    await guardianBrowser.cdp.send("Emulation.setDeviceMetricsOverride", { width, height: width < 500 ? 844 : 900, deviceScaleFactor: 1, mobile: false });
+    await navigate(guardianBrowser.cdp, "/parent");
+    const parentMetrics = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, childCards:[...document.querySelectorAll('main section')].length, scrollRegions:document.querySelectorAll('[role=region]').length})");
+    assert(parentMetrics.text.includes("PARENT HOME") && parentMetrics.pageScrollWidth <= parentMetrics.viewportWidth + 1 && parentMetrics.scrollRegions >= 1, `${width}px 보호자 홈 검증 실패: ${JSON.stringify(parentMetrics)}`);
+    await captureScreenshot(guardianBrowser.cdp, `D:\\Temp\\academy-guardian-parent-${width}-after.png`);
+    await navigate(guardianBrowser.cdp, "/parent/summary");
+    const summary = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, selects:document.querySelectorAll('select').length, dateInputs:document.querySelectorAll('input[type=date]').length, periodReset:document.body.innerText.includes('기간 초기화')})");
+    assert(summary.text.includes("학습 요약") && summary.selects >= 1 && summary.dateInputs >= 2 && summary.periodReset && summary.pageScrollWidth <= summary.viewportWidth + 1, `${width}px 보호자 학습 요약 검증 실패`);
+    await captureScreenshot(guardianBrowser.cdp, `D:\\Temp\\academy-guardian-summary-${width}-after.png`);
+    viewportResults.push({ width, parent: "PASS", summary: "PASS" });
+  }
   await browserFetch(guardianBrowser.cdp, "/api/guardian/logout", { method: "POST" });
   await navigate(guardianBrowser.cdp, "/parent");
   const expired = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, hasLoginLink:Boolean(document.querySelector('a[href=\"/guardian/login\"]'))})");
   assert(expired.hasLoginLink && expired.text.includes("PARENT HOME"), "보호자 세션 만료/인증 오류 안내가 표시되지 않았습니다.");
-  console.log(JSON.stringify({ activation: "PASS", linkedChildren: "PASS", publishedVsUnpublished: "PASS", partialPublicationVisibility: "PASS", otherStudentApiBoundary: "PASS", parent390: "PASS", summary390: "PASS", sessionExpiredState: "PASS", childCount: children.length }, null, 2));
+  console.log(JSON.stringify({ inviteWrongCode: "PASS", inviteExpired410: "PASS", inviteNetworkError: "PASS", inviteLoadingAndDuplicateSubmit: "PASS", activation: "PASS", linkedChildren: "PASS", publishedVsUnpublished: "PASS", partialPublicationVisibility: "PASS", otherStudentApiBoundary: "PASS", viewportResults, sessionExpiredState: "PASS", childCount: children.length }, null, 2));
 } finally {
   for (const current of [guardianBrowser, adminBrowser]) {
     try { current?.socket.close(); } catch {}

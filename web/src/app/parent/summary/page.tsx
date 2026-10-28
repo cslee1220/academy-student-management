@@ -8,6 +8,8 @@ type Publication = { id: string; session_id: string; session_date: string | null
 type Child = { student: { id: string; name: string; student_no: string; grade: string | null } | null; publications: Publication[] };
 type HomePayload = { data?: { children?: Child[] }; error?: { message?: string } };
 
+const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
+
 function numberValue(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
@@ -81,18 +83,22 @@ export default function ParentSummaryPage() {
   }, [publications]);
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+    <main aria-busy={loading} className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div><p className="text-sm font-bold text-indigo-600">PARENT SUMMARY</p><h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">학습 요약</h1><p className="mt-2 text-sm text-slate-600">공개 완료된 자료만 기간별로 집계합니다.</p></div>
-        <Link href="/parent" className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">보호자 홈</Link>
+        <div><p className="text-sm font-bold text-indigo-600">PARENT SUMMARY</p><h1 className="mt-2 break-words text-3xl font-bold tracking-tight text-slate-950">학습 요약</h1><p className="mt-2 text-sm text-slate-600">공개 완료된 자료만 기간별로 집계합니다.</p></div>
+        <Link href="/parent" className={`min-h-11 rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 ${focusRingClass}`}>보호자 홈</Link>
       </div>
       {loading ? <p className="mt-8 rounded-2xl bg-white p-8 text-center text-sm text-slate-500">학습 요약을 불러오는 중입니다.</p> : null}
-      {error ? <p role="alert" className="mt-8 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</p> : null}
+      {error ? <p role="alert" aria-live="assertive" className="mt-8 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</p> : null}
       {!loading && !error ? <>
-        <div className="mt-6 grid gap-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:grid-cols-3">
-          <label className="text-sm font-semibold text-slate-700">자녀<select value={studentId} onChange={(event) => setStudentId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal">{children.map((child) => child.student ? <option key={child.student.id} value={child.student.id}>{child.student.name}</option> : null)}</select></label>
-          <label className="text-sm font-semibold text-slate-700">시작일<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 font-normal" /></label>
-          <label className="text-sm font-semibold text-slate-700">종료일<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 font-normal" /></label>
+        <div className="mt-6 grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-3 sm:p-5">
+          <label className="text-sm font-semibold text-slate-700">자녀<select aria-label="조회할 자녀" value={studentId} onChange={(event) => setStudentId(event.target.value)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal ${focusRingClass}`}>{children.map((child) => child.student ? <option key={child.student.id} value={child.student.id}>{child.student.name}</option> : null)}</select></label>
+          <label className="text-sm font-semibold text-slate-700">자료 시작일<input aria-label="자료 시작일" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 font-normal ${focusRingClass}`} /></label>
+          <label className="text-sm font-semibold text-slate-700">자료 종료일<input aria-label="자료 종료일" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 font-normal ${focusRingClass}`} /></label>
+          <div className="sm:col-span-3 sm:flex sm:items-center sm:justify-between sm:gap-3">
+            <p role="status" aria-live="polite" className="text-xs leading-5 text-slate-500">현재 자녀: {selectedChild?.student?.name ?? "선택되지 않음"} · 조회 기간: {startDate || endDate ? `${startDate || "전체 시작"} ~ ${endDate || "전체 종료"}` : "전체 공개 자료"}</p>
+            <button type="button" onClick={() => { setStartDate(""); setEndDate(""); }} disabled={!startDate && !endDate} className={`mt-2 min-h-11 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0 ${focusRingClass}`}>기간 초기화</button>
+          </div>
         </div>
         <section className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <div className="rounded-2xl border border-slate-200 bg-white p-5"><p className="text-xs font-bold text-slate-500">공개 수업일</p><p className="mt-2 text-2xl font-bold">{publications.length}</p></div>

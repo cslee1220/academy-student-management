@@ -38,6 +38,7 @@ const config = {
   teacherPassword: process.env.INTEGRATION_TEACHER_PASSWORD,
   chromePath: process.env.BROWSER_EXECUTABLE ?? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 };
+const preserveTestData = process.env.PRESERVE_TEST_DATA === "1";
 
 if (!config.serviceRoleKey || !config.adminPassword || !config.teacherPassword) {
   throw new Error("로컬 브라우저 E2E에 필요한 환경변수가 없습니다.");
@@ -124,12 +125,20 @@ class CdpClient {
     });
   }
 
-  send(method, params = {}) {
+  async send(method, params = {}, retry = 0) {
     const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
+    try {
+      return await new Promise((resolve, reject) => {
+        this.pending.set(id, { resolve, reject });
+        this.socket.send(JSON.stringify({ id, method, params }));
+      });
+    } catch (error) {
+      if (retry < 8 && String(error?.message ?? error).includes("Inspected target navigated or closed")) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return this.send(method, params, retry + 1);
+      }
+      throw error;
+    }
   }
 }
 
@@ -143,6 +152,7 @@ async function launchBrowser() {
     "--no-sandbox",
     "--no-first-run",
     "--no-default-browser-check",
+    "--disable-extensions",
     "--remote-allow-origins=*",
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${userDataDirectory}`,
@@ -198,11 +208,15 @@ async function browserFetch(cdp, pathname, { method = "GET", body } = {}) {
 async function navigateAndAssert(cdp, pathname, marker) {
   const previousUrl = await evaluate(cdp, "location.href");
   await cdp.send("Page.navigate", { url: `${config.baseUrl}${pathname}` });
+  let lastState = null;
   const text = await waitFor(async () => {
     const state = await evaluate(cdp, "({ href: location.href, readyState: document.readyState, text: document.body?.innerText ?? '' })");
-    if (!state || state.href === previousUrl || state.readyState !== "complete") return null;
+    lastState = { href: state?.href, readyState: state?.readyState, textLength: state?.text?.length ?? 0, hasMarker: Boolean(state?.text?.includes(marker)) };
+    if (!state || state.href === previousUrl || state.readyState === "loading") return null;
     return state.text.includes(marker) ? state.text : null;
-  }, `${pathname} 화면`);
+  }, `${pathname} 화면`).catch((error) => {
+    throw new Error(`${error.message} 상태=${JSON.stringify(lastState)}`);
+  });
   assert(text.length > 0, `${pathname} 화면 내용이 비어 있습니다.`);
   return text;
 }
@@ -637,7 +651,7 @@ async function main() {
     } else {
       console.log(`[NOT VERIFIED] 관리자 반 배정 — 로컬 fixture 운영블록 조건으로 ${assignmentResponse.status} 응답`);
     }
-    await navigateAndAssert(adminBrowser.cdp, "/admin/sessions", "수업");
+    await navigateAndAssert(adminBrowser.cdp, "/admin/academic?section=class_operations", "반 운영 설정");
     await navigateAndAssert(adminBrowser.cdp, `/admin/students/history?studentId=${encodeURIComponent(fixture.rosters[0].student_id)}`, "STUDENT HISTORY");
     logPass("관리자 수업 회차·학생 이력 화면");
 
@@ -793,12 +807,16 @@ async function main() {
     await closeBrowser(teacherBrowser);
     await closeBrowser(unauthorizedBrowser);
     await closeBrowser(adminBrowser);
-    await cleanupGuardian(tempGuardianId).catch((error) => console.error(`[CLEANUP] guardian: ${error.message}`));
-    await cleanupStudent(tempStudentId).catch((error) => console.error(`[CLEANUP] student: ${error.message}`));
-    await cleanupAssignmentFixture(assignmentFixture).catch((error) => console.error(`[CLEANUP] assignment fixture: ${error.message}`));
-    await removeTemporaryTeacher(unauthorizedTeacher).catch((error) => console.error(`[CLEANUP] unauthorized teacher: ${error.message}`));
-    await removeTemporaryTeacher(supportTeacher).catch((error) => console.error(`[CLEANUP] support teacher: ${error.message}`));
-    await cleanupSessionFixture(fixture).catch((error) => console.error(`[CLEANUP] session: ${error.message}`));
+    if (!preserveTestData) {
+      await cleanupGuardian(tempGuardianId).catch((error) => console.error(`[CLEANUP] guardian: ${error.message}`));
+      await cleanupStudent(tempStudentId).catch((error) => console.error(`[CLEANUP] student: ${error.message}`));
+      await cleanupAssignmentFixture(assignmentFixture).catch((error) => console.error(`[CLEANUP] assignment fixture: ${error.message}`));
+      await removeTemporaryTeacher(unauthorizedTeacher).catch((error) => console.error(`[CLEANUP] unauthorized teacher: ${error.message}`));
+      await removeTemporaryTeacher(supportTeacher).catch((error) => console.error(`[CLEANUP] support teacher: ${error.message}`));
+      await cleanupSessionFixture(fixture).catch((error) => console.error(`[CLEANUP] session: ${error.message}`));
+    } else {
+      console.log("[PRESERVE] 브라우저 E2E 합성 데이터 정리를 건너뛰었습니다.");
+    }
   }
 }
 
