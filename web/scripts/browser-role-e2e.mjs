@@ -196,10 +196,12 @@ async function browserFetch(cdp, pathname, { method = "GET", body } = {}) {
 }
 
 async function navigateAndAssert(cdp, pathname, marker) {
+  const previousUrl = await evaluate(cdp, "location.href");
   await cdp.send("Page.navigate", { url: `${config.baseUrl}${pathname}` });
   const text = await waitFor(async () => {
-    const value = await evaluate(cdp, "document.body?.innerText ?? ''");
-    return value.includes(marker) ? value : null;
+    const state = await evaluate(cdp, "({ href: location.href, readyState: document.readyState, text: document.body?.innerText ?? '' })");
+    if (!state || state.href === previousUrl || state.readyState !== "complete") return null;
+    return state.text.includes(marker) ? state.text : null;
   }, `${pathname} 화면`);
   assert(text.length > 0, `${pathname} 화면 내용이 비어 있습니다.`);
   return text;
@@ -212,6 +214,13 @@ async function loginAdmin(browser) {
     body: { email: config.adminEmail, password: config.adminPassword },
   });
   assert(result.status === 200, `관리자 로그인 실패: ${result.status}`);
+  if (result.payload?.data?.requiresAcademySelection) {
+    const academySelection = await browserFetch(browser.cdp, "/api/auth/academy", {
+      method: "POST",
+      body: { academyId: config.academyId },
+    });
+    assert(academySelection.status === 200, `관리자 학원 선택 실패: ${academySelection.status}`);
+  }
   logPass("관리자 브라우저 로그인");
 }
 
@@ -222,6 +231,13 @@ async function loginTeacher(browser, loginId = config.teacherLoginId, password =
     body: { loginId, password },
   });
   assert(result.status === 200, `교사 로그인 실패: ${result.status}`);
+  if (result.payload?.data?.requiresAcademySelection) {
+    const academySelection = await browserFetch(browser.cdp, "/api/auth/academy", {
+      method: "POST",
+      body: { academyId: config.academyId },
+    });
+    assert(academySelection.status === 200, `교사 학원 선택 실패: ${academySelection.status}`);
+  }
   logPass("교사 브라우저 로그인");
 }
 
