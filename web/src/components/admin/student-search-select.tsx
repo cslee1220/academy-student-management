@@ -86,7 +86,7 @@ export default function StudentSearchSelect({
           className="h-10 min-w-0 flex-1 outline-none disabled:bg-slate-50"
         />
         {value && !disabled ? (
-          <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={clearStudent} className="text-xs font-semibold text-slate-400 hover:text-slate-700" aria-label="학생 선택 지우기">
+          <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={clearStudent} className="rounded px-1 text-xs font-semibold text-slate-400 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" aria-label="학생 선택 지우기">
             지우기
           </button>
         ) : null}
@@ -99,7 +99,7 @@ export default function StudentSearchSelect({
               key={student.id}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => chooseStudent(student)}
-              className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm hover:bg-indigo-50"
+              className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset"
             >
               <span>
                 <span className="font-mono text-xs text-slate-500">{student.student_no}</span>

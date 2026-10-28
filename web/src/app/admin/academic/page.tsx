@@ -139,6 +139,9 @@ type AcademicData = {
 type Resource = "school_years" | "terms" | "academic_periods" | "classes" | "classrooms" | "vehicles" | "subjects" | "schools" | "academy_levels" | "operation_types" | "teachers" | "publication_settings" | "operation_settings" | "grade_promotion_settings" | "grade_promotions";
 type SettingKey = Resource | "class_operations" | "exam_classes";
 
+const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
+const inputFocusClass = "focus-visible:border-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-100";
+
 const examClassSettingItem: { key: SettingKey; title: string; description: string } = {
   key: "exam_classes",
   title: "내신 반",
@@ -303,6 +306,7 @@ function AcademicSettingsPageContent() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Kept only for the unreachable legacy markup below; new UI uses separate school-year and term forms.
   const [periodSchoolYearId, setPeriodSchoolYearId] = useState<string | null>(null);
@@ -465,6 +469,7 @@ function AcademicSettingsPageContent() {
     setError("");
     setMessage("");
     setIsLoading(true);
+    setIsSaving(true);
     try {
       const response = await fetch("/api/admin/academic", {
         method: editingId ? "PATCH" : "POST",
@@ -490,6 +495,7 @@ function AcademicSettingsPageContent() {
       return false;
     } finally {
       setIsLoading(false);
+      setIsSaving(false);
     }
   }
 
@@ -920,7 +926,7 @@ function AcademicSettingsPageContent() {
                     <Link
                       key={item.key}
                       href={item.href}
-                      className={`group rounded-2xl border p-4 transition hover:-translate-y-0.5 hover:shadow-md ${item.tone === "rose" ? "border-rose-200 bg-rose-50 hover:border-rose-300" : "border-white bg-white hover:border-indigo-300"}`}
+                      className={`group rounded-2xl border p-4 transition hover:-translate-y-0.5 hover:shadow-md ${focusRingClass} ${item.tone === "rose" ? "border-rose-200 bg-rose-50 hover:border-rose-300" : "border-white bg-white hover:border-indigo-300"}`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex min-w-0 items-start gap-3">
@@ -948,15 +954,15 @@ function AcademicSettingsPageContent() {
             <p className="text-sm font-bold text-indigo-600">ACADEMIC SETTINGS / {selectedSetting?.title}</p>
             <h2 className="mt-2 text-2xl font-bold">{selectedSetting?.title} 설정</h2>
           </div>
-          <Link href="/admin/academic" className="text-sm font-semibold text-indigo-600 hover:text-indigo-700">
+          <Link href="/admin/academic" className={`text-sm font-semibold text-indigo-600 hover:text-indigo-700 ${focusRingClass}`}>
             설정 목록으로
           </Link>
         </div>
       ) : null}
 
-      {selectedSection && error ? <p className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-700">{error}</p> : null}
-      {selectedSection && message ? <p className="mt-5 rounded-xl bg-indigo-50 px-4 py-3 text-sm leading-6 text-indigo-700">{message}</p> : null}
-      {selectedSection && isLoading ? <p className="mt-5 rounded-xl bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-500">학사 설정을 불러오는 중입니다.</p> : null}
+      {selectedSection && error ? <p role="alert" aria-live="assertive" className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-700">{error}</p> : null}
+      {selectedSection && message ? <p role="status" aria-live="polite" className="mt-5 rounded-xl bg-indigo-50 px-4 py-3 text-sm leading-6 text-indigo-700">{message}</p> : null}
+      {selectedSection && isLoading && !isSaving ? <p role="status" aria-live="polite" className="mt-5 rounded-xl bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-500">학사 설정을 불러오는 중입니다.</p> : null}
 
       {selectedSection === "exam_classes" ? <div className="mt-8"><ExamClassSetupPanel /></div> : null}
 
@@ -1011,7 +1017,7 @@ function AcademicSettingsPageContent() {
           </div>
         </section>
 
-        <section className={selectedSection === "academic_periods" ? "rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" : "hidden"}>
+        <section aria-busy={isLoading} className={selectedSection === "academic_periods" ? "rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" : "hidden"}>
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-xl font-bold">학년도·학기 설정</h2>
@@ -1029,23 +1035,23 @@ function AcademicSettingsPageContent() {
             </div>
             {data.terms.length ? <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
               <label className="flex-1 text-sm font-semibold text-slate-700">운영기간
-                <select value={currentTermId} onChange={(event) => setCurrentTermId(event.target.value)} disabled={isLoading} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm">
+                <select value={currentTermId} onChange={(event) => setCurrentTermId(event.target.value)} disabled={isLoading} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`}>
                   <option value="">운영기간 선택</option>
                   {data.terms.slice().sort((left, right) => right.start_date.localeCompare(left.start_date)).map((term) => <option key={term.id} value={term.id}>{schoolYearMap.get(term.school_year_id) ?? "학년도 없음"} · {term.name} · {term.start_date} ~ {term.end_date}{term.is_archived ? " · 보관" : ""}{term.is_current ? " · 현재" : ""}</option>)}
                 </select>
               </label>
-              <button type="button" onClick={() => void setCurrentOperationPeriod()} disabled={isLoading || !currentTermId} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300">현재 운영기간으로 저장</button>
+              <button type="button" onClick={() => void setCurrentOperationPeriod()} disabled={isLoading || !currentTermId} className={`rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300 ${focusRingClass}`}>{isSaving ? "저장 중…" : "현재 운영기간으로 저장"}</button>
             </div> : <p className="mt-4 rounded-lg bg-white/70 px-3 py-3 text-sm text-indigo-800">등록된 학기가 없습니다. 아래에서 학년도와 학기를 각각 등록해 주세요.</p>}
           </div>
 
           <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" onClick={() => setAcademicYearView("active")} className={`rounded-lg px-3 py-2 text-sm font-semibold ${academicYearView === "active" ? "bg-indigo-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"}`}>현재·예정</button>
-              <button type="button" onClick={() => setAcademicYearView("history")} className={`rounded-lg px-3 py-2 text-sm font-semibold ${academicYearView === "history" ? "bg-indigo-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"}`}>보관 이력</button>
+              <button type="button" onClick={() => setAcademicYearView("active")} className={`rounded-lg px-3 py-2 text-sm font-semibold ${focusRingClass} ${academicYearView === "active" ? "bg-indigo-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"}`}>현재·예정</button>
+              <button type="button" onClick={() => setAcademicYearView("history")} className={`rounded-lg px-3 py-2 text-sm font-semibold ${focusRingClass} ${academicYearView === "history" ? "bg-indigo-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"}`}>보관 이력</button>
             </div>
             <div className="mt-3 flex flex-wrap items-end gap-3">
-              <label className="min-w-64 flex-1 text-sm font-semibold text-slate-700">학년도 선택<select value={selectedAcademicYear?.id ?? ""} onChange={(event) => { setSelectedAcademicYearId(event.target.value); if (!termId) setTermSchoolYearId(event.target.value); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">학년도 선택</option>{filteredAcademicSchoolYears.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}</select></label>
-              {selectedAcademicYear ? <button type="button" onClick={() => { setSchoolYearId(selectedAcademicYear.id); setSchoolYearName(selectedAcademicYear.name); setSchoolYearStart(selectedAcademicYear.start_date); setSchoolYearEnd(selectedAcademicYear.end_date); }} className="h-11 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-100">선택 학년도 수정</button> : null}
+              <label className="min-w-64 flex-1 text-sm font-semibold text-slate-700">학년도 선택<select value={selectedAcademicYear?.id ?? ""} onChange={(event) => { setSelectedAcademicYearId(event.target.value); if (!termId) setTermSchoolYearId(event.target.value); }} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`}><option value="">학년도 선택</option>{filteredAcademicSchoolYears.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}</select></label>
+              {selectedAcademicYear ? <button type="button" onClick={() => { setSchoolYearId(selectedAcademicYear.id); setSchoolYearName(selectedAcademicYear.name); setSchoolYearStart(selectedAcademicYear.start_date); setSchoolYearEnd(selectedAcademicYear.end_date); }} className={`h-11 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-100 ${focusRingClass}`}>선택 학년도 수정</button> : null}
             </div>
             {selectedAcademicYear ? <p className="mt-3 rounded-lg bg-white px-3 py-2 text-xs leading-5 text-slate-600">현재 선택: <span className="font-semibold text-slate-900">{selectedAcademicYear.name}</span> · {selectedAcademicYear.start_date} ~ {selectedAcademicYear.end_date}</p> : <p className="mt-3 rounded-lg bg-white px-3 py-3 text-sm text-slate-500">선택할 학년도가 없습니다.</p>}
           </div>
@@ -1057,12 +1063,12 @@ function AcademicSettingsPageContent() {
                 {schoolYearId ? <button type="button" onClick={resetSchoolYearForm} className="text-xs font-semibold text-indigo-600 hover:text-indigo-700">새 학년도</button> : null}
               </div>
               <form onSubmit={submitSchoolYear} className="mt-4 grid gap-3">
-                <label className="text-sm font-semibold text-slate-700">학년도 이름<input value={schoolYearName} onChange={(event) => setSchoolYearName(event.target.value)} placeholder="예: 2027학년도" className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label>
+                <label className="text-sm font-semibold text-slate-700">학년도 이름<input value={schoolYearName} onChange={(event) => setSchoolYearName(event.target.value)} placeholder="예: 2027학년도" className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`} required /></label>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm font-semibold text-slate-700">시작일<input type="date" value={schoolYearStart} onChange={(event) => setSchoolYearStart(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label>
-                  <label className="text-sm font-semibold text-slate-700">종료일<input type="date" value={schoolYearEnd} onChange={(event) => setSchoolYearEnd(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label>
+                  <label className="text-sm font-semibold text-slate-700">시작일<input type="date" value={schoolYearStart} onChange={(event) => setSchoolYearStart(event.target.value)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`} required /></label>
+                  <label className="text-sm font-semibold text-slate-700">종료일<input type="date" value={schoolYearEnd} onChange={(event) => setSchoolYearEnd(event.target.value)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`} required /></label>
                 </div>
-                <button type="submit" disabled={isLoading} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300">{schoolYearId ? "학년도 수정" : "학년도 등록"}</button>
+                <button type="submit" disabled={isLoading} className={`rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300 ${focusRingClass}`}>{isSaving ? "저장 중…" : schoolYearId ? "학년도 수정" : "학년도 등록"}</button>
               </form>
               <p className="mt-5 rounded-lg bg-white px-3 py-3 text-xs leading-5 text-slate-500">학년도 목록은 위 선택 상자에서 확인하고, 선택한 학년도만 아래 학기 목록에서 관리합니다.</p>
             </section>
@@ -1073,14 +1079,14 @@ function AcademicSettingsPageContent() {
                 {termId ? <button type="button" onClick={resetTermForm} className="text-xs font-semibold text-indigo-600 hover:text-indigo-700">새 학기</button> : null}
               </div>
               <form onSubmit={submitTerm} className="mt-4 grid gap-3">
-                <label className="text-sm font-semibold text-slate-700">학년도<select value={termSchoolYearId} onChange={(event) => { setTermSchoolYearId(event.target.value); setSelectedAcademicYearId(event.target.value); }} disabled={Boolean(termId)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required><option value="">학년도 선택</option>{filteredAcademicSchoolYears.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}</select></label>
-                <label className="text-sm font-semibold text-slate-700">학기 이름<input value={termName} onChange={(event) => setTermName(event.target.value)} placeholder="예: 1학기" className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label>
+                <label className="text-sm font-semibold text-slate-700">학년도<select value={termSchoolYearId} onChange={(event) => { setTermSchoolYearId(event.target.value); setSelectedAcademicYearId(event.target.value); }} disabled={Boolean(termId)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`} required><option value="">학년도 선택</option>{filteredAcademicSchoolYears.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}</select></label>
+                <label className="text-sm font-semibold text-slate-700">학기 이름<input value={termName} onChange={(event) => setTermName(event.target.value)} placeholder="예: 1학기" className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`} required /></label>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm font-semibold text-slate-700">시작일<input type="date" value={termStart} onChange={(event) => setTermStart(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label>
-                  <label className="text-sm font-semibold text-slate-700">종료일<input type="date" value={termEnd} onChange={(event) => setTermEnd(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" required /></label>
+                  <label className="text-sm font-semibold text-slate-700">시작일<input type="date" value={termStart} onChange={(event) => setTermStart(event.target.value)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`} required /></label>
+                  <label className="text-sm font-semibold text-slate-700">종료일<input type="date" value={termEnd} onChange={(event) => setTermEnd(event.target.value)} className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm ${inputFocusClass}`} required /></label>
                 </div>
                 <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={termIsCurrent} onChange={(event) => setTermIsCurrent(event.target.checked)} /> 현재 운영기간으로 지정</label>
-                <button type="submit" disabled={isLoading || !data.schoolYears.length} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300">{termId ? "학기 수정" : "학기 등록"}</button>
+                <button type="submit" disabled={isLoading || !data.schoolYears.length} className={`rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300 ${focusRingClass}`}>{isSaving ? "저장 중…" : termId ? "학기 수정" : "학기 등록"}</button>
               </form>
               <div className="mt-5 max-h-72 overflow-y-auto pr-1">
                 {selectedAcademicYear ? <div className="rounded-lg border border-slate-200 bg-white px-3 py-3"><p className="font-semibold">{selectedAcademicYear.name}</p><p className="mt-1 text-xs text-slate-500">{selectedAcademicYear.start_date} ~ {selectedAcademicYear.end_date}</p>{selectedAcademicYearTerms.length ? <div className="mt-3 space-y-2">{selectedAcademicYearTerms.map((term) => <div key={term.id} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2"><div><div className="flex flex-wrap items-center gap-2 text-sm font-semibold"><span>{term.name}</span>{term.is_current ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">현재</span> : null}{term.is_archived ? <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-bold text-slate-600">보관</span> : null}</div><p className="mt-1 text-xs text-slate-500">{term.start_date} ~ {term.end_date}</p></div><div className="flex gap-2"><button type="button" onClick={() => { setTermId(term.id); setTermSchoolYearId(term.school_year_id); setTermName(term.name); setTermStart(term.start_date); setTermEnd(term.end_date); setTermIsCurrent(term.is_current); }} className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold hover:bg-slate-50">수정</button>{term.is_current ? null : <button type="button" onClick={() => void deleteTerm(term.id, `${selectedAcademicYear.name} ${term.name}`)} disabled={isLoading} className="rounded-lg border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50">삭제</button>}</div></div>)}</div> : <p className="mt-3 text-sm text-slate-500">등록된 학기가 없습니다.</p>}</div> : <p className="rounded-lg bg-white px-3 py-6 text-center text-sm text-slate-500">먼저 학년도를 등록하거나 조회 조건을 조정해 주세요.</p>}

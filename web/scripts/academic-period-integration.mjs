@@ -120,12 +120,21 @@ async function main() {
   let fixtureTermIds = [];
 
   try {
-    await request("/api/auth/admin-login", {
+    const adminLogin = await request("/api/auth/admin-login", {
       jar,
       method: "POST",
       body: { email: config.adminEmail, password: config.adminPassword },
     });
     console.log("[PASS] 운영자 로그인");
+    if (adminLogin.payload?.data?.requiresAcademySelection) {
+      const academySelection = await request("/api/auth/academy", {
+        jar,
+        method: "POST",
+        body: { academyId: config.academyId },
+      });
+      assert(academySelection.status === 200, "운영자 학원 선택에 실패했습니다.");
+      console.log("[PASS] 운영자 학원 선택");
+    }
 
     const removedAutomaticCreation = await request("/api/admin/academic", {
       jar,
