@@ -3,17 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --hostname 0.0.0.0",
-    "build": "next build",
-    "start": "next start --hostname 0.0.0.0",
+    "dev": "node scripts/run-local-dev.mjs",
+    "build": "next build && node scripts/prepare-standalone.mjs",
+    "start": "node .next/standalone/server.js",
     "lint": "eslint",
     "test:fixtures": "node scripts/verify-integration-fixtures.mjs",
     "test:academic-periods": "node scripts/academic-period-integration.mjs",
     "test:grade-promotions-integration": "node scripts/grade-promotion-integration.mjs",
+    "test:grade-promotions": "node --experimental-strip-types scripts/grade-promotion-scenarios.mjs",
     "test:screens": "node scripts/screen-scenarios.mjs",
     "test:integration": "node scripts/demo-integration.mjs",
     "test:daily-integration": "node scripts/daily-integration.mjs",
     "test:browser-save-fault": "node scripts/browser-save-fault.mjs",
+    "test:browser-roles": "node scripts/browser-role-e2e.mjs",
     "generate:vapid": "node scripts/generate-vapid-keys.mjs",
     "backup:database": "powershell -ExecutionPolicy Bypass -File scripts/backup-supabase.ps1"
   },
@@ -33,6 +35,7 @@
     "@types/web-push": "3.6.4",
     "eslint": "^9",
     "eslint-config-next": "16.4.3",
+    "supabase": "2.122.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

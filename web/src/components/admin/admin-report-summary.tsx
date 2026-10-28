@@ -57,7 +57,7 @@ export default function AdminReportSummary({ report, startDate, endDate, dateCon
     <>
       <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div><p className="text-sm font-bold text-indigo-600">조회 기간</p><h2 className="mt-1 text-xl font-bold text-slate-900">운영 통계</h2></div>
+          <div><p className="text-sm font-bold text-indigo-600">집중관리 기준</p><h2 className="mt-1 text-xl font-bold text-slate-900">집중관리대상학생</h2></div>
           {dateControls}
         </div>
         {report ? <div className="mt-3"><AdminMonthlyStudentFlowSummary startDate={startDate} endDate={endDate} /></div> : null}
@@ -104,9 +104,9 @@ export default function AdminReportSummary({ report, startDate, endDate, dateCon
 
       {report ? <section className="mt-5 grid gap-5 lg:grid-cols-[1fr_1fr_2fr]">
         <Link href={riskStudentsHref(startDate, endDate)} className="block rounded-2xl border border-rose-200 bg-rose-50/60 p-4 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 sm:p-5">
-          <p className="text-sm font-semibold text-rose-700">관리 필요 학생</p>
+          <p className="text-sm font-semibold text-rose-700">집중관리대상학생</p>
           <p className="mt-1 text-3xl font-bold text-rose-950">{report.risk.atRiskCount}명</p>
-          <p className="mt-1 text-xs text-rose-700">현재 조회기간 기준 위험 판정 학생</p>
+          <p className="mt-1 text-xs text-rose-700">현재 조회기간 기준 집중관리 대상으로 판정된 학생</p>
           <span className="mt-2 inline-block text-xs font-bold text-rose-700">위험학생 상세 보기 →</span>
         </Link>
         <Link href="/admin/student-overview" className="block rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50 sm:p-5">

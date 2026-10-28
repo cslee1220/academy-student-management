@@ -7,13 +7,16 @@ import { OPERATION_WEEKDAYS } from "@/lib/operation-schedules";
 import {
   applyGradePromotion,
   approveGradePromotion,
+  configureGradePromotionSchools,
   createGradePromotionPreview,
   currentSeoulDate,
   GradePromotionError,
   getGradePromotionDashboard,
+  isValidPromotionEffectiveDate,
   nextPromotionYear,
   promotionYearFromInput,
   revertGradePromotion,
+  type GradePromotionDashboard,
 } from "@/lib/grade-promotions";
 
 const UUID_PATTERN =
@@ -72,6 +75,19 @@ function parseOptionalUuid(value: unknown, fieldName: string): string | null {
   return parseUuid(value, fieldName);
 }
 
+function parseSchoolSelections(value: unknown): Record<string, string | null> {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "invalid_request", "진학 학교 선택 정보 형식이 올바르지 않습니다.");
+  }
+  const selections: Record<string, string | null> = {};
+  for (const [studentId, schoolId] of Object.entries(value as Record<string, unknown>)) {
+    const parsedStudentId = parseUuid(studentId, "학생 ID");
+    selections[parsedStudentId] = schoolId === null || schoolId === "" ? null : parseUuid(schoolId, "진학 학교 ID");
+  }
+  return selections;
+}
+
 function parseDate(value: unknown, fieldName: string): string {
   if (typeof value !== "string" || !DATE_PATTERN.test(value)) {
     throw new HttpError(400, "invalid_request", `${fieldName}은(는) YYYY-MM-DD 형식이어야 합니다.`);
@@ -93,6 +109,19 @@ function parseBoolean(value: unknown, fieldName: string): boolean {
     throw new HttpError(400, "invalid_request", `${fieldName} 값이 올바르지 않습니다.`);
   }
   return value;
+}
+
+function parseOptionalInteger(value: unknown, fieldName: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : Number.NaN;
+  if (!Number.isInteger(parsed)) {
+    throw new HttpError(400, "invalid_request", `${fieldName}은(는) 정수여야 합니다.`);
+  }
+  return parsed;
 }
 
 function parseStudentClassGridColumns(value: unknown, defaultValue = 5): number {
@@ -275,6 +304,23 @@ function errorResponse(error: unknown) {
   );
 }
 
+function emptyGradePromotionDashboard(promotionYear: number): GradePromotionDashboard {
+  return {
+    settings: { academy_id: "", automatic_enabled: false, effective_month: 1, effective_day: 1, enabled_from_date: null, updated_at: "" },
+    targetYear: promotionYear,
+    batch: null,
+    history: [],
+    items: [],
+    summary: { total: 0, willPromote: 0, schoolLevelManual: 0, graduationManual: 0, skipped: 0, applied: 0, conflicts: 0 },
+  };
+}
+
+function isDevelopmentGradePromotionSchemaGap(error: unknown) {
+  if (process.env.NODE_ENV !== "development") return false;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /grade_promotion|new_school_(level|id|name)|relation .*does not exist|column .*does not exist/i.test(message);
+}
+
 function databaseError(error: { code?: string } | null, fallback: string, duplicateMessage = "같은 학사 설정이 이미 존재합니다."): never {
   if (error?.code === "23505") {
     throw new HttpError(409, "duplicate_resource", duplicateMessage);
@@ -344,6 +390,28 @@ async function ensureTermsFitSchoolYear(
   if (error) databaseError(error, "기존 학기 기간을 확인하지 못했습니다.");
   if ((terms ?? []).some((term) => term.start_date < startDate || term.end_date > endDate)) {
     throw new HttpError(409, "school_year_range_conflict", "기존 학기 기간을 포함하도록 학년도 기간을 설정해 주세요.");
+  }
+}
+
+async function ensureTermDoesNotOverlap(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  academyId: string,
+  schoolYearId: string,
+  startDate: string,
+  endDate: string,
+  excludedTermId?: string,
+) {
+  let query = admin
+    .from("terms")
+    .select("id, name, start_date, end_date")
+    .eq("academy_id", academyId)
+    .eq("school_year_id", schoolYearId);
+  if (excludedTermId) query = query.neq("id", excludedTermId);
+  const { data, error } = await query;
+  if (error) databaseError(error, "기존 학기 기간을 확인하지 못했습니다.");
+  const conflict = (data ?? []).find((term) => term.start_date <= endDate && startDate <= term.end_date);
+  if (conflict) {
+    throw new HttpError(409, "term_range_conflict", `기존 학기(${conflict.name})와 기간이 겹칩니다. 학기 기간을 확인해 주세요.`);
   }
 }
 
@@ -493,7 +561,18 @@ export async function GET(request: NextRequest) {
     const admin = createSupabaseAdminClient();
     const requestedPromotionYear = request.nextUrl.searchParams.get("promotionYear");
     const promotionYear = promotionYearFromInput(requestedPromotionYear, nextPromotionYear());
-    const gradePromotion = await getGradePromotionDashboard(admin, academyId, promotionYear);
+    let gradePromotion: GradePromotionDashboard;
+    let gradePromotionUnavailableReason: string | null = null;
+    try {
+      // GET is a read-only dashboard request. Preview creation and application
+      // are explicit POST actions so refreshing the academic settings screen
+      // cannot create batches, update students, or write audit logs.
+      gradePromotion = await getGradePromotionDashboard(admin, academyId, promotionYear);
+    } catch (error) {
+      if (!isDevelopmentGradePromotionSchemaGap(error)) throw error;
+      gradePromotion = emptyGradePromotionDashboard(promotionYear);
+      gradePromotionUnavailableReason = "개발 환경의 학년 자동 승급 DB 구조가 아직 준비되지 않아 해당 기능만 임시로 비활성화했습니다. 다른 학사 설정은 계속 확인할 수 있습니다.";
+    }
 
     const [schoolYearsResult, termsResult, classesResult, classroomsResult, vehiclesResult, subjectsResult, schoolsResult, levelsResult, operationTypesResult, operationSettingsResult, operationSchedulesResult, teacherMembershipsResult, classTeacherAssignmentsResult, classSubjectClassroomAssignmentsResult] = await Promise.all([
       admin
@@ -528,13 +607,13 @@ export async function GET(request: NextRequest) {
         .order("name", { ascending: true }),
       admin
         .from("schools")
-        .select("id, school_level, name, is_active, created_at, updated_at")
+        .select("id, school_level, name, is_active, is_placeholder, created_at, updated_at")
         .eq("academy_id", academyId)
         .order("school_level", { ascending: true })
         .order("name", { ascending: true }),
       admin
         .from("academy_levels")
-        .select("id, name, is_active, display_order, created_at, updated_at")
+        .select("id, name, school_level, is_active, display_order, created_at, updated_at")
         .eq("academy_id", academyId)
         .order("display_order", { ascending: true })
         .order("name", { ascending: true }),
@@ -600,6 +679,7 @@ export async function GET(request: NextRequest) {
         classSubjectClassroomAssignments: classSubjectClassroomAssignmentsResult.data ?? [],
         publicationSettings,
         gradePromotion,
+        gradePromotionUnavailableReason,
       },
     });
   } catch (error) {
@@ -620,35 +700,49 @@ export async function POST(request: NextRequest) {
     const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
 
+    if (String(resource) === "academic_periods") {
+      throw new HttpError(410, "manual_academic_periods", "자동 학기 생성 기능은 제거되었습니다. 학년도와 학기를 각각 등록해 주세요.");
+    }
+
     if (resource === "grade_promotion_settings") {
       const automaticEnabled = input.automaticEnabled === undefined ? false : parseBoolean(input.automaticEnabled, "학년 자동 승급 사용 여부");
       const currentSettingsResult = await admin
         .from("academy_grade_promotion_settings")
-        .select("automatic_enabled, enabled_from_date")
+        .select("automatic_enabled, effective_month, effective_day, enabled_from_date")
         .eq("academy_id", academyId)
         .maybeSingle();
       if (currentSettingsResult.error) throw new HttpError(500, "database_error", "학년 자동 승급 설정을 확인하지 못했습니다.");
+      const effectiveMonth = input.effectiveMonth === undefined
+        ? Number(currentSettingsResult.data?.effective_month ?? 1)
+        : parseOptionalInteger(input.effectiveMonth, "학년 자동승급 기준 월");
+      const effectiveDay = input.effectiveDay === undefined
+        ? Number(currentSettingsResult.data?.effective_day ?? 1)
+        : parseOptionalInteger(input.effectiveDay, "학년 자동승급 기준 일");
+      if (effectiveMonth === undefined || effectiveDay === undefined || !isValidPromotionEffectiveDate(effectiveMonth, effectiveDay)) {
+        throw new HttpError(400, "invalid_request", "학년 자동승급 기준일은 실제 달력에 존재하는 월·일이어야 합니다. 2월 29일은 선택할 수 없습니다.");
+      }
       const enabledFromDate = automaticEnabled
         ? currentSettingsResult.data?.automatic_enabled && currentSettingsResult.data.enabled_from_date
           ? currentSettingsResult.data.enabled_from_date
           : currentSeoulDate()
         : null;
-      const { data, error } = await admin
-        .from("academy_grade_promotion_settings")
-        .upsert({ academy_id: academyId, automatic_enabled: automaticEnabled, effective_month: 1, effective_day: 1, enabled_from_date: enabledFromDate, updated_by_profile_id: actorProfileId }, { onConflict: "academy_id" })
-        .select("academy_id, automatic_enabled, effective_month, effective_day, enabled_from_date, updated_at")
-        .single();
-      if (error || !data) databaseError(error, "학년 자동 승급 설정을 저장하지 못했습니다.");
-      await writeAudit(admin, {
-        academyId,
-        actorProfileId,
-        targetTable: resource,
-        targetId: academyId,
-        fieldKey: "automatic_enabled",
-        oldValue: currentSettingsResult.data,
-        newValue: data,
-        reason: "운영자가 학년 자동 승급 설정을 변경했습니다.",
+      const settingsResult = await admin.rpc("save_grade_promotion_settings_transaction", {
+        p_academy_id: academyId,
+        p_automatic_enabled: automaticEnabled,
+        p_effective_month: effectiveMonth,
+        p_effective_day: effectiveDay,
+        p_enabled_from_date: enabledFromDate,
+        p_updated_by_profile_id: actorProfileId,
       });
+      if (settingsResult.error || !settingsResult.data) databaseError(settingsResult.error, "학년 자동 승급 설정을 저장하지 못했습니다.");
+      const data = settingsResult.data as {
+        academy_id: string;
+        automatic_enabled: boolean;
+        effective_month: number;
+        effective_day: number;
+        enabled_from_date: string | null;
+        updated_at: string;
+      };
       return NextResponse.json({ data: { settings: data } });
     }
 
@@ -660,7 +754,13 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ data });
       }
       const batchId = parseUuid(input.batchId, "학년 승급 배치 ID");
+      if (action === "configure") {
+        const data = await configureGradePromotionSchools(admin, academyId, batchId, parseSchoolSelections(input.schoolSelections), actorProfileId);
+        return NextResponse.json({ data });
+      }
+      const schoolSelections = input.schoolSelections === undefined ? undefined : parseSchoolSelections(input.schoolSelections);
       if (action === "approve") {
+        if (schoolSelections) await configureGradePromotionSchools(admin, academyId, batchId, schoolSelections, actorProfileId);
         const approved = await approveGradePromotion(admin, academyId, batchId, actorProfileId);
         const batch = approved.batch;
         const data = batch && batch.effective_date <= currentSeoulDate()
@@ -669,6 +769,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ data });
       }
       if (action === "apply") {
+        if (schoolSelections) await configureGradePromotionSchools(admin, academyId, batchId, schoolSelections, actorProfileId);
         const data = await applyGradePromotion(admin, academyId, batchId, actorProfileId);
         return NextResponse.json({ data });
       }
@@ -799,6 +900,7 @@ export async function POST(request: NextRequest) {
       const startDate = parseDate(input.startDate, "운영 시작일");
       const endDate = parseDate(input.endDate, "운영 종료일");
       const currentTerm = parseTermNumber(input.currentTerm);
+      const activateCurrent = input.activateCurrent === undefined ? true : parseBoolean(input.activateCurrent, "생성 후 현재 운영기간 전환 여부");
       ensureDateRange(startDate, endDate, "운영기간");
       const secondTermStart = getSecondTermStart(startDate, endDate);
       const firstTermEnd = addDays(secondTermStart, -1);
@@ -819,7 +921,7 @@ export async function POST(request: NextRequest) {
           name: "1학기",
           start_date: startDate,
           end_date: firstTermEnd,
-          is_current: currentTerm === 1,
+          is_current: activateCurrent && currentTerm === 1,
           is_archived: false,
         },
         {
@@ -828,7 +930,7 @@ export async function POST(request: NextRequest) {
           name: "2학기",
           start_date: secondTermStart,
           end_date: endDate,
-          is_current: currentTerm === 2,
+          is_current: activateCurrent && currentTerm === 2,
           is_archived: false,
         },
       ];
@@ -840,8 +942,10 @@ export async function POST(request: NextRequest) {
         await admin.from("school_years").delete().eq("academy_id", academyId).eq("id", schoolYear.id);
         databaseError(termsError, "자동 학기를 생성하지 못했습니다.");
       }
-      await admin.from("terms").update({ is_current: false }).eq("academy_id", academyId).neq("school_year_id", schoolYear.id);
-      await admin.from("terms").update({ is_archived: true }).eq("academy_id", academyId).lt("end_date", currentTerm === 1 ? startDate : secondTermStart);
+      if (activateCurrent) {
+        await admin.from("terms").update({ is_current: false }).eq("academy_id", academyId).neq("school_year_id", schoolYear.id);
+        await admin.from("terms").update({ is_archived: true }).eq("academy_id", academyId).lt("end_date", currentTerm === 1 ? startDate : secondTermStart);
+      }
       await writeAudit(admin, {
         academyId,
         actorProfileId,
@@ -883,10 +987,10 @@ export async function POST(request: NextRequest) {
       const isActive = input.isActive === undefined ? true : parseBoolean(input.isActive, "활성 상태");
       const { data, error } = await admin
         .from("schools")
-        .insert({ academy_id: academyId, school_level: schoolLevel, name, is_active: isActive })
-        .select("id, school_level, name, is_active, created_at, updated_at")
+        .insert({ academy_id: academyId, school_level: schoolLevel, name, is_active: isActive, is_placeholder: false })
+        .select("id, school_level, name, is_active, is_placeholder, created_at, updated_at")
         .single();
-      if (error || !data) databaseError(error, "학교를 등록하지 못했습니다.");
+      if (error || !data) databaseError(error, "학교를 등록하지 못했습니다.", "같은 학교급의 학교가 이미 등록되어 있습니다.");
       await writeAudit(admin, {
         academyId,
         actorProfileId,
@@ -901,14 +1005,15 @@ export async function POST(request: NextRequest) {
 
     if (resource === "academy_levels") {
       const name = parseText(input.name, "레벨명", 1, 50);
+      const schoolLevel = parseSchoolLevel(input.schoolLevel);
       const isActive = input.isActive === undefined ? true : parseBoolean(input.isActive, "활성 상태");
       const displayOrder = parseDisplayOrder(input.displayOrder);
       const { data, error } = await admin
         .from("academy_levels")
-        .insert({ academy_id: academyId, name, is_active: isActive, display_order: displayOrder })
-        .select("id, name, is_active, display_order, created_at, updated_at")
+        .insert({ academy_id: academyId, name, school_level: schoolLevel, is_active: isActive, display_order: displayOrder })
+        .select("id, name, school_level, is_active, display_order, created_at, updated_at")
         .single();
-      if (error || !data) databaseError(error, "레벨을 등록하지 못했습니다.");
+      if (error || !data) databaseError(error, "레벨을 등록하지 못했습니다.", "같은 학교급에 같은 이름의 레벨이 이미 등록되어 있습니다.");
       await writeAudit(admin, {
         academyId,
         actorProfileId,
@@ -930,12 +1035,12 @@ export async function POST(request: NextRequest) {
       ensureDateRange(startDate, endDate, "학기");
       const schoolYear = await getSchoolYear(admin, academyId, schoolYearId);
       ensureInsideRange(startDate, endDate, schoolYear.start_date, schoolYear.end_date, "학기");
+      await ensureTermDoesNotOverlap(admin, academyId, schoolYearId, startDate, endDate);
       if (isCurrent) {
         await admin
           .from("terms")
           .update({ is_current: false })
-          .eq("academy_id", academyId)
-          .eq("school_year_id", schoolYearId);
+          .eq("academy_id", academyId);
       }
       const { data, error } = await admin
         .from("terms")
@@ -1073,6 +1178,10 @@ export async function PATCH(request: NextRequest) {
     const id = parseUuid(input.id, "id");
     const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
+
+    if (String(resource) === "academic_periods") {
+      throw new HttpError(410, "manual_academic_periods", "자동 학기 생성 기능은 제거되었습니다. 학년도와 학기를 각각 등록해 주세요.");
+    }
 
     if (resource === "academic_periods") {
       const schoolYear = await getSchoolYear(admin, academyId, id);
@@ -1221,6 +1330,9 @@ export async function PATCH(request: NextRequest) {
       .maybeSingle();
     if (currentError) databaseError(currentError, "수정할 학사 설정을 확인하지 못했습니다.");
     if (!current) throw new HttpError(404, "resource_not_found", "수정할 학사 설정을 찾을 수 없습니다.");
+    if (resource === "schools" && current.is_placeholder) {
+      throw new HttpError(409, "placeholder_school", "승급용 예비 학교는 수정할 수 없습니다. 실제 진학 학교는 학생관리에서 변경해 주세요.");
+    }
 
     let values: Record<string, unknown>;
     let reason: string;
@@ -1240,12 +1352,12 @@ export async function PATCH(request: NextRequest) {
       ensureDateRange(startDate, endDate, "학기");
       const schoolYear = await getSchoolYear(admin, academyId, current.school_year_id);
       ensureInsideRange(startDate, endDate, schoolYear.start_date, schoolYear.end_date, "학기");
+      await ensureTermDoesNotOverlap(admin, academyId, current.school_year_id, startDate, endDate, id);
       if (isCurrent) {
         await admin
           .from("terms")
           .update({ is_current: false })
           .eq("academy_id", academyId)
-          .eq("school_year_id", current.school_year_id)
           .neq("id", id);
       }
       values = { name, start_date: startDate, end_date: endDate, is_current: isCurrent, is_archived: isCurrent ? false : current.is_archived };
@@ -1258,9 +1370,10 @@ export async function PATCH(request: NextRequest) {
       reason = "운영자가 학교를 수정했습니다.";
     } else if (resource === "academy_levels") {
       const name = parseText(input.name, "레벨명", 1, 50);
+      const schoolLevel = parseSchoolLevel(input.schoolLevel);
       const isActive = parseBoolean(input.isActive, "활성 상태");
       const displayOrder = parseDisplayOrder(input.displayOrder);
-      values = { name, is_active: isActive, display_order: displayOrder };
+      values = { name, school_level: schoolLevel, is_active: isActive, display_order: displayOrder };
       reason = "운영자가 학생 레벨을 수정했습니다.";
     } else if (resource === "classrooms") {
       const name = parseText(input.name, "강의실 이름", 1, 100);
@@ -1301,9 +1414,9 @@ export async function PATCH(request: NextRequest) {
         : resource === "terms"
           ? "id, school_year_id, name, start_date, end_date, is_current, created_at, updated_at"
             : resource === "schools"
-              ? "id, school_level, name, is_active, created_at, updated_at"
+              ? "id, school_level, name, is_active, is_placeholder, created_at, updated_at"
               : resource === "academy_levels"
-                ? "id, name, is_active, display_order, created_at, updated_at"
+                ? "id, name, school_level, is_active, display_order, created_at, updated_at"
               : resource === "classes"
             ? "id, name, category, meeting_days, start_time, end_time, operation_schedule_id, is_active, created_at, updated_at"
             : resource === "classrooms"
@@ -1318,7 +1431,17 @@ export async function PATCH(request: NextRequest) {
       .eq("id", id)
       .select(selectColumns)
       .maybeSingle();
-    if (error) databaseError(error, "학사 설정을 수정하지 못했습니다.", resource === "classes" ? "같은 이름과 운영시간대의 반이 이미 존재합니다." : undefined);
+    if (error) databaseError(
+      error,
+      "학사 설정을 수정하지 못했습니다.",
+      resource === "classes"
+        ? "같은 이름과 운영시간대의 반이 이미 존재합니다."
+        : resource === "schools"
+          ? "같은 학교급의 학교가 이미 등록되어 있습니다."
+          : resource === "academy_levels"
+            ? "같은 학교급에 같은 이름의 레벨이 이미 등록되어 있습니다."
+          : undefined,
+    );
     if (!data) throw new HttpError(409, "resource_changed", "다른 운영자가 먼저 변경했습니다. 목록을 새로고침해 주세요.");
 
     if (resource === "classes") {
@@ -1357,7 +1480,10 @@ export async function PATCH(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const resource = request.nextUrl.searchParams.get("resource");
-    if (resource !== "operation_schedule" && resource !== "class" && resource !== "academy_level" && resource !== "term" && resource !== "school_year") {
+    if (resource === "school_year") {
+      throw new HttpError(410, "removed_feature", "학년도 삭제 기능은 제거되었습니다. 학년도는 보관 상태로 관리해 주세요.");
+    }
+    if (resource !== "operation_schedule" && resource !== "class" && resource !== "academy_level" && resource !== "term") {
       throw new HttpError(400, "invalid_request", "삭제할 학사 설정 종류가 올바르지 않습니다.");
     }
     const id = parseUuid(request.nextUrl.searchParams.get("id"), "id");
@@ -1366,7 +1492,7 @@ export async function DELETE(request: NextRequest) {
     const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
 
-    if (resource === "school_year") {
+    if (false && String(resource) === "school_year") {
       if (request.nextUrl.searchParams.get("force") !== "true") {
         throw new HttpError(400, "force_required", "학년도 삭제는 강제 삭제 확인이 필요합니다.");
       }

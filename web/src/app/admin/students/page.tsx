@@ -84,9 +84,9 @@ type OperationBlock = {
 };
 type Classroom = { id: string; name: string; is_active: boolean };
 type Vehicle = { id: string; name: string; is_active: boolean };
-type School = { id: string; school_level: "elementary" | "middle" | "high"; name: string; is_active: boolean };
+type School = { id: string; school_level: "elementary" | "middle" | "high"; name: string; is_active: boolean; is_placeholder: boolean };
 type Term = { id: string; school_year_id: string; school_year_name: string | null; name: string; start_date: string; end_date: string; is_current: boolean; is_archived: boolean };
-type Level = { id: string; name: string; is_active: boolean; display_order: number };
+type Level = { id: string; name: string; school_level: "elementary" | "middle" | "high" | null; is_active: boolean; display_order: number };
 type GuardianContactKey = "guardian1" | "guardian2";
 type OperationGroup = "A" | "B";
 type GuardianLink = {
@@ -1035,8 +1035,8 @@ function StudentsPageContent() {
     .filter((history) => history.next_status === "paused")
     .sort((left, right) => right.effective_date.localeCompare(left.effective_date) || right.created_at.localeCompare(left.created_at))[0] ?? null;
   const selectedGuardians = data.guardians.filter((link) => link.student_id === selectedStudentId);
-  const availableSchools = data.schools.filter((school) => !schoolLevel || school.school_level === schoolLevel);
-  const availableLevels = data.levels.filter((option) => option.is_active || option.name === level);
+  const availableSchools = data.schools.filter((school) => (!schoolLevel || school.school_level === schoolLevel) && (!school.is_placeholder || school.id === schoolId));
+  const availableLevels = data.levels.filter((option) => (option.is_active || option.name === level) && (!schoolLevel || option.school_level === schoolLevel || (studentId && option.name === level)));
   const availableVehicles = data.vehicles.filter((option) => option.is_active || option.id === vehicleId);
   const availableOperationTypes = data.operationTypes.filter((operationType) => operationType.is_active || operationType.id === operationTypeId || operationType.id === classMoveOperationTypeId);
   const selectedOperationType = data.operationTypes.find((operationType) => operationType.id === operationTypeId) ?? null;
@@ -1527,7 +1527,7 @@ function StudentsPageContent() {
           {studentId ? <label className="text-sm font-semibold text-slate-700">학생 ID<input value={studentNo} readOnly className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 font-mono text-sm text-slate-600" /></label> : <div className="text-sm font-semibold text-slate-700">학생 ID<p className="mt-2 flex h-11 items-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 font-normal text-slate-500">등록일 기준 자동 생성</p></div>}
           <label className="text-sm font-semibold text-slate-700">수업시작일<input type="date" min={registeredAt} value={classStartDate} onChange={(event) => setClassStartDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal" required /><span className="mt-1 block text-xs font-normal text-slate-500">등록일 이후 날짜만 선택할 수 있습니다.</span></label>
           <label className="text-sm font-semibold text-slate-700">분류<select required={!studentId} value={schoolLevel} onChange={(event) => { setSchoolLevel(event.target.value as School["school_level"] | ""); setSchoolId(""); setDuplicateCheckKey(""); setDuplicateMatches([]); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">분류 선택</option><option value="elementary">초등</option><option value="middle">중등</option><option value="high">고등</option></select></label>
-          <label className="text-sm font-semibold text-slate-700">학교명<select required={!studentId} value={schoolId} onChange={(event) => { setSchoolId(event.target.value); setDuplicateCheckKey(""); setDuplicateMatches([]); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">학교 선택</option>{availableSchools.map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}</select></label>
+          <label className="text-sm font-semibold text-slate-700">학교명<select required={!studentId} value={schoolId} onChange={(event) => { setSchoolId(event.target.value); setDuplicateCheckKey(""); setDuplicateMatches([]); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">학교 선택</option>{availableSchools.map((school) => <option key={school.id} value={school.id}>{school.name}{school.is_placeholder ? " (진학학교 미정)" : ""}</option>)}</select></label>
           <label className="text-sm font-semibold text-slate-700">학년<select required={!studentId} value={grade} onChange={(event) => { setGrade(event.target.value); setDuplicateCheckKey(""); setDuplicateMatches([]); }} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">학년 선택</option>{["1", "2", "3", "4", "5", "6"].map((value) => <option key={value} value={value}>{value}학년</option>)}</select></label>
           <label className="text-sm font-semibold text-slate-700">레벨<select required={!studentId} value={level} onChange={(event) => setLevel(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="">레벨 선택</option>{availableLevels.map((option) => <option key={option.id} value={option.name}>{option.name}{!option.is_active ? " (비활성)" : ""}</option>)}</select></label>
           <label className="text-sm font-semibold text-slate-700">학생 전화번호<div className="mt-2 flex h-11 items-center rounded-xl border border-slate-300 bg-white px-3"><span className="mr-1 text-slate-500">010-</span><input value={studentPhoneSuffix(studentPhone)} onChange={(event) => { const suffix = formatStudentPhone(event.target.value); setStudentPhone(suffix ? `010-${suffix}` : ""); }} inputMode="numeric" placeholder="4567-8912" className="min-w-0 flex-1 text-sm outline-none" /></div><span className="mt-1 block text-xs font-normal text-slate-500">학생 본인 연락처입니다.</span></label>

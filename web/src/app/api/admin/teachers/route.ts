@@ -350,6 +350,9 @@ export async function POST(request: NextRequest) {
         p_activation_expires_at: activationExpiresAt,
         p_actor_profile_id: actorProfileId,
       });
+      if (transactionError?.code === "23505" || transactionError?.message?.includes("duplicate teacher name")) {
+        throw new HttpError(409, "duplicate_teacher", "같은 이름의 활성 교사 계정이 이미 있습니다. 등록할 수 없습니다.");
+      }
       if (transactionError || !transactionData || typeof transactionData !== "object") {
         throw new HttpError(500, "teacher_account_creation_failed", "교사 계정 정보를 저장하지 못했습니다.");
       }

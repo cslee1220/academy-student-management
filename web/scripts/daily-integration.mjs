@@ -495,6 +495,11 @@ async function main() {
       method: "POST",
       body: { email: config.adminEmail, password: config.adminPassword },
     });
+    await request("/api/auth/academy", {
+      jar: adminJar,
+      method: "POST",
+      body: { academyId: config.academyId },
+    });
     logPass("운영자 로그인");
 
     const optionsResponse = await request(`/api/admin/class-operations?academyId=${config.academyId}`, { jar: adminJar });

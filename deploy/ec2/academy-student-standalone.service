@@ -1,0 +1,23 @@
+[Unit]
+Description=Academy student management Next.js standalone application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/apps/academy-student-management/web/.next/standalone
+EnvironmentFile=/home/ubuntu/apps/academy-student-management/web/.env.production
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3001
+ExecStartPre=/usr/bin/test -s /home/ubuntu/apps/academy-student-management/web/.next/standalone/server.js
+ExecStartPre=/usr/bin/test -d /home/ubuntu/apps/academy-student-management/web/.next/standalone/.next/static
+ExecStart=/usr/bin/node /home/ubuntu/apps/academy-student-management/web/.next/standalone/server.js
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -31,10 +31,10 @@ export default function AdminReportSummaryPanel() {
       const params = new URLSearchParams({ startDate: nextStartDate, endDate: nextEndDate });
       const response = await fetch(`/api/admin/reports?${params.toString()}`, { cache: "no-store" });
       const payload = await response.json().catch(() => null) as ReportApiResult | null;
-      if (!response.ok) throw new Error(payload?.error?.message ?? "운영 통계를 불러오지 못했습니다.");
+      if (!response.ok) throw new Error(payload?.error?.message ?? "집중관리대상학생 정보를 불러오지 못했습니다.");
       setReport(payload?.data ?? null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "운영 통계를 불러오지 못했습니다.");
+      setError(loadError instanceof Error ? loadError.message : "집중관리대상학생 정보를 불러오지 못했습니다.");
     } finally {
       setIsLoading(false);
     }

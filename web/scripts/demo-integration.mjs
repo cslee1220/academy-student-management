@@ -434,6 +434,11 @@ async function main() {
       method: "POST",
       body: { email: config.adminEmail, password: config.adminPassword },
     });
+    await request("/api/auth/academy", {
+      jar: adminJar,
+      method: "POST",
+      body: { academyId: config.academyId },
+    });
     logPass("운영자 로그인");
 
     await request("/api/auth/teacher-login", {
@@ -449,6 +454,11 @@ async function main() {
       jar: teacherJar,
       method: "POST",
       body: { loginId: legacyFixture.teacher.loginId, password: config.teacherPassword },
+    });
+    await request("/api/auth/academy", {
+      jar: teacherJar,
+      method: "POST",
+      body: { academyId: config.academyId },
     });
     const optionResponse = await request("/api/teacher/record-options", { jar: teacherJar });
     const options = optionResponse.payload?.data?.options ?? [];

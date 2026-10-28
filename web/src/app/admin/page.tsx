@@ -15,7 +15,7 @@ type AdminMenu = {
 const primaryAdminMenus: AdminMenu[] = [
   { href: "/admin/students", title: "학생 관리", description: "학생 정보, 반 배정, 보호자 접속을 관리합니다.", tone: "indigo" },
   { href: "/admin/students/history", title: "학생 학습이력", description: "특정 학생의 학습 기록을 조회 전용으로 확인합니다.", tone: "slate" },
-  { href: "/admin/reports", title: "운영 현황·통계", description: "미입력 기록과 보충·상담 등 운영 현황을 확인합니다.", tone: "rose" },
+  { href: "/admin/reports", title: "집중관리대상학생", description: "집중관리 대상으로 판정된 학생과 관련 기준을 확인합니다.", tone: "rose" },
   { href: "/admin/academic", title: "학사 기초 설정", description: "반, 과목, 강의실, 교사 계정을 관리합니다.", tone: "indigo" },
   { href: "/admin/announcements", title: "공지사항", description: "교사·보호자에게 게시할 공지를 작성하고 관리합니다.", tone: "indigo" },
   { href: "/admin/inquiries", title: "학부모 문의", description: "문의 답변과 종료 처리를 관리합니다.", tone: "rose" },

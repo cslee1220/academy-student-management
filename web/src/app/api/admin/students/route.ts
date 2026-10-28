@@ -1199,18 +1199,22 @@ async function ensureLevel(
   admin: ReturnType<typeof createSupabaseAdminClient>,
   academyId: string,
   level: string | null,
+  schoolLevel: "elementary" | "middle" | "high" | null,
   currentLevel: string | null = null,
 ) {
   if (!level || level === currentLevel) return;
   const { data, error } = await admin
     .from("academy_levels")
-    .select("id, is_active")
+    .select("id, school_level, is_active")
     .eq("academy_id", academyId)
     .eq("name", level)
     .maybeSingle();
   if (error) databaseError(error, "학생 레벨을 확인하지 못했습니다.");
   if (!data) throw new HttpError(422, "invalid_level", "학사 설정에 등록된 레벨을 선택해 주세요.");
   if (!data.is_active) throw new HttpError(422, "inactive_level", "비활성화된 레벨은 새 학생에게 선택할 수 없습니다.");
+  if (schoolLevel && data.school_level !== schoolLevel && !(currentLevel && data.school_level === null && level === currentLevel)) {
+    throw new HttpError(422, "level_school_level_mismatch", "학생 학교급에 맞는 레벨을 선택해 주세요.");
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -1259,7 +1263,7 @@ export async function GET(request: NextRequest) {
         .order("created_at", { ascending: false }),
       admin
         .from("schools")
-        .select("id, school_level, name, is_active")
+        .select("id, school_level, name, is_active, is_placeholder")
         .eq("academy_id", academyId)
         .eq("is_active", true)
         .order("school_level", { ascending: true })
@@ -1271,7 +1275,7 @@ export async function GET(request: NextRequest) {
         .order("created_at", { ascending: false }),
       admin
         .from("academy_levels")
-        .select("id, name, is_active, display_order")
+        .select("id, name, school_level, is_active, display_order")
         .eq("academy_id", academyId)
         .order("display_order", { ascending: true })
         .order("name", { ascending: true }),
@@ -1493,7 +1497,7 @@ export async function POST(request: NextRequest) {
         throw new HttpError(422, "invalid_range", "수업 시작일은 등록일보다 빠를 수 없습니다.");
       }
       const level = parseOptionalText(input.level, "레벨", 50);
-      await ensureLevel(admin, academyId, level);
+      await ensureLevel(admin, academyId, level, schoolLevel);
       const studentPhone = normalizePhone(input.studentPhone, "학생 전화번호");
       const guardian1Name = parseOptionalText(input.guardian1Name, "보호자1 이름", 50);
       const phone = normalizePhone(input.phone, "보호자1 전화번호");
@@ -2500,7 +2504,7 @@ export async function PATCH(request: NextRequest) {
          throw new HttpError(422, "invalid_range", "수업 시작일은 등록일보다 빠를 수 없습니다.");
        }
       const level = parseOptionalText(input.level, "레벨", 50);
-      await ensureLevel(admin, academyId, level, current.level);
+       await ensureLevel(admin, academyId, level, schoolLevel, current.level);
       const studentPhone = input.studentPhone === undefined
         ? current.student_phone ?? null
         : normalizePhone(input.studentPhone, "학생 전화번호");

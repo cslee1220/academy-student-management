@@ -101,7 +101,20 @@ await assertPages("운영자", [
   "/admin/class-operations",
   "/admin/student-overview",
 ], adminJar);
+const academicPeriodPage = await request("/admin/academic?section=academic_periods", adminJar);
+const academicPageSource = fs.readFileSync(path.join(webDirectory, "src", "app", "admin", "academic", "page.tsx"), "utf8");
+const academicRouteSource = fs.readFileSync(path.join(webDirectory, "src", "app", "api", "admin", "academic", "route.ts"), "utf8");
+assert(academicPeriodPage.status === 200 && academicPageSource.includes("학년도·학기 설정") && academicPageSource.includes("학년도 등록") && academicPageSource.includes("학기 등록") && academicPageSource.includes("학기 이름") && academicPageSource.includes("현재 운영기간으로 저장") && academicPageSource.includes("현재·예정") && academicPageSource.includes("보관 이력") && academicPageSource.includes("학년도 선택") && !academicPageSource.includes("학년도·학기 검색") && !academicPageSource.includes("연대") && !academicPageSource.includes("이 학년도에 학기 추가") && academicRouteSource.includes("manual_academic_periods") && !academicPageSource.includes("deleteSchoolYear") && !academicPageSource.includes("학년도 강제 삭제"), "학년도·학기 수동 설정 화면이 준비되지 않았습니다.");
+console.log("[PASS] 학년도·학기 수동 설정 및 장기 이력 필터 화면");
+const academicMenuKeys = ["academic_periods", "operation_types", "operation_settings", "schools", "subjects", "academy_levels", "teachers", "classrooms", "vehicles", "classes", "class_operations", "exam_classes", "publication_settings", "grade_promotions"];
+assert(academicPageSource.includes("academicMenuGroups") && academicPageSource.includes("학사 기본 운영 기준") && academicPageSource.includes("기초 정보 등록") && academicPageSource.includes("반 및 수업 구성") && academicPageSource.includes("학년도 전환 및 학생 배정") && academicPageSource.includes("운영구분") && academicPageSource.includes("공통수업 운영") && academicPageSource.includes("/admin/students?section=class_batch") && academicPageSource.includes("/admin/students?section=exam_batch") && academicMenuKeys.every((key) => academicPageSource.includes(`settingMenuCard("${key}")`)), "학사 설정 메인 메뉴가 4단계 순서로 구성되지 않았거나 메뉴가 누락되었습니다.");
+console.log("[PASS] 학사 설정 메인 메뉴 16개 및 4단계 그룹 누락 점검");
 const operationSettingsPage = await request("/admin/academic?section=operation_settings", adminJar);
+const gradePromotionPage = await request("/admin/academic?section=grade_promotions", adminJar);
+const gradePromotionSource = fs.readFileSync(path.join(webDirectory, "src", "lib", "grade-promotions.ts"), "utf8");
+const gradePromotionRulesSource = fs.readFileSync(path.join(webDirectory, "src", "lib", "grade-promotion-rules.ts"), "utf8");
+assert(gradePromotionPage.status === 200 && academicPageSource.includes("재원·휴원·퇴원 학생을 모두 승급 대상으로 포함") && academicPageSource.includes("예비중") && academicPageSource.includes("예비고") && academicPageSource.includes("학생관리에서 수정") && academicPageSource.includes("학년 자동승급 기준일") && academicPageSource.includes("현재 저장된 기준일") && !academicPageSource.includes("진학 학교 선택") && !academicPageSource.includes("schoolSelections") && gradePromotionSource.includes("GRADE_PROMOTION_INCLUDED_STUDENT_STATUSES") && gradePromotionSource.includes("is_placeholder") && gradePromotionSource.includes("예비 학교") && gradePromotionRulesSource.includes("isValidPromotionEffectiveDate"), "학교급 전환 승급 또는 기준일 설정 구조가 준비되지 않았습니다.");
+console.log("[PASS] 초6·중3 예비 학교 자동 배정 승급 화면 및 서버 검증");
 assert(operationSettingsPage.status === 200, "공통운영설정 화면이 정상적으로 열리지 않습니다.");
 console.log("[PASS] 공통운영설정 화면 진입");
 const academicClassesPage = await request("/admin/academic?section=classes", adminJar);
@@ -118,10 +131,13 @@ const adminPage = await request("/admin", adminJar);
 const adminHtml = await adminPage.text();
 assert(!adminHtml.includes("PUBLICATION APPROVAL") && !adminHtml.includes("공개 승인"), "운영자 메인에 수동 공개 승인 UI가 남아 있습니다.");
 assert(adminHtml.includes("xl:grid-cols-4"), "운영자 메인 기본 메뉴가 4열 레이아웃으로 표시되지 않았습니다.");
-const primaryMenuLabels = ["학생 관리", "학생 학습이력", "운영 현황·통계", "학사 기초 설정"];
+const primaryMenuLabels = ["학생 관리", "학생 학습이력", "집중관리대상학생", "학사 기초 설정"];
+const adminMenuStart = adminHtml.indexOf("ADMIN MENU");
+assert(adminMenuStart >= 0, "운영자 메인 ADMIN MENU 영역이 없습니다.");
+const adminMenuHtml = adminHtml.slice(adminMenuStart);
 let previousMenuIndex = -1;
 for (const label of primaryMenuLabels) {
-  const nextMenuIndex = adminHtml.indexOf(label);
+  const nextMenuIndex = adminMenuHtml.indexOf(label);
   assert(nextMenuIndex > previousMenuIndex, `운영자 메인 메뉴 순서가 올바르지 않습니다: ${label}`);
   previousMenuIndex = nextMenuIndex;
 }

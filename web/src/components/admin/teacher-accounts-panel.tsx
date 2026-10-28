@@ -32,6 +32,7 @@ export default function TeacherAccountsPanel() {
   const [issuedCode, setIssuedCode] = useState<{ loginId: string; code: string; expiresAt: string } | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [teacherFormError, setTeacherFormError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showInactiveTeachers, setShowInactiveTeachers] = useState(false);
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
@@ -67,9 +68,9 @@ export default function TeacherAccountsPanel() {
 
   async function checkDuplicate(): Promise<boolean> {
     setError("");
-    setMessage("");
+    setTeacherFormError("");
     if (displayName.trim().length < 2) {
-      setError("중복 확인을 위해 교사 이름을 2자 이상 입력해 주세요.");
+      setTeacherFormError("교사 이름을 2자 이상 입력해 주세요.");
       return false;
     }
 
@@ -84,7 +85,7 @@ export default function TeacherAccountsPanel() {
       if (redirectAdminOnAuthFailure(response)) return false;
       const data = result?.data && !Array.isArray(result.data) ? result.data : null;
       if (!response.ok || !data) {
-        setError(result?.error?.message ?? "중복 확인 요청을 처리하지 못했습니다.");
+        setTeacherFormError(result?.error?.message ?? "교사 이름 중복 확인을 처리하지 못했습니다.");
         return false;
       }
 
@@ -92,13 +93,12 @@ export default function TeacherAccountsPanel() {
       setDuplicateMatches(matches);
       setDuplicateCheckKey(matches.length ? "" : getDuplicateCheckKey());
       if (matches.length) {
-        setMessage("같은 이름의 활성 교사 계정이 있어 등록할 수 없습니다.");
+        setTeacherFormError("같은 이름의 활성 교사 계정이 있어 등록할 수 없습니다.");
         return false;
       }
-      setMessage("등록 가능한 교사명입니다.");
       return true;
     } catch {
-      setError("중복 확인 요청을 처리하지 못했습니다.");
+      setTeacherFormError("교사 이름 중복 확인을 처리하지 못했습니다.");
       return false;
     } finally {
       setIsLoading(false);
@@ -118,6 +118,7 @@ export default function TeacherAccountsPanel() {
     event.preventDefault();
     setError("");
     setMessage("");
+    setTeacherFormError("");
     setIssuedCode(null);
 
     if (duplicateCheckKey !== getDuplicateCheckKey()) {
@@ -137,13 +138,14 @@ export default function TeacherAccountsPanel() {
       if (redirectAdminOnAuthFailure(response)) return;
       const data = result?.data && !Array.isArray(result.data) ? result.data : null;
       if (!response.ok || !data?.loginId || !data.activationCode || !data.activationExpiresAt) {
-        setError(result?.error?.message ?? "교사 계정을 생성하지 못했습니다.");
+        setTeacherFormError(result?.error?.message ?? "교사 계정을 생성하지 못했습니다.");
         return;
       }
       setIssuedCode({ loginId: data.loginId, code: data.activationCode, expiresAt: data.activationExpiresAt });
       setDisplayName("");
       setDuplicateCheckKey("");
       setDuplicateMatches([]);
+      setTeacherFormError("");
       setMessage("교사 계정이 생성되었습니다. 아래 코드는 지금만 확인할 수 있으므로 안전하게 전달해 주세요.");
       await loadTeachers();
     } catch {
@@ -305,23 +307,23 @@ export default function TeacherAccountsPanel() {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <h3 className="text-xl font-bold">교사 등록</h3>
         <p className="mt-2 text-sm leading-6 text-slate-500">현재 로그인한 운영자 세션의 학원에 교사 계정을 등록합니다. 보충 전담교사는 보충 현황 화면만 사용할 수 있습니다.</p>
-        <form onSubmit={createTeacher} className="mt-6 grid gap-4 md:grid-cols-[1fr_auto_auto] md:items-end">
+        <form onSubmit={createTeacher} className="mt-6 grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
           <label className="block text-sm font-semibold text-slate-700">
             교사 이름
             <input
               value={displayName}
-              onChange={(event) => { setDisplayName(event.target.value); setDuplicateCheckKey(""); setDuplicateMatches([]); }}
+              onChange={(event) => { setDisplayName(event.target.value); setDuplicateCheckKey(""); setDuplicateMatches([]); setTeacherFormError(""); }}
               placeholder="예: 홍길동"
               className="mt-2 h-12 w-full rounded-xl border border-slate-300 px-4 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
               required
             />
           </label>
-          <button type="button" onClick={() => void checkDuplicate()} disabled={isLoading || displayName.trim().length < 2} className="h-12 rounded-xl border border-indigo-300 px-5 font-bold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">
-            중복 확인
-          </button>
-          <button type="submit" disabled={isLoading} className="h-12 rounded-xl bg-indigo-600 px-5 font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">
-            교사 등록
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="submit" disabled={isLoading} className="h-12 rounded-xl bg-indigo-600 px-5 font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">
+              교사 등록
+            </button>
+            {teacherFormError ? <p role="alert" aria-live="polite" className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold leading-5 text-rose-700">{teacherFormError}</p> : null}
+          </div>
         </form>
         {duplicateMatches.length ? <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"><p className="font-bold">같은 이름의 활성 교사 계정이 있습니다. 등록할 수 없습니다.</p>{duplicateMatches.map((teacher) => <p key={teacher.id} className="mt-1">{teacher.displayName} · {teacher.login_id}</p>)}</div> : null}
         <button type="button" onClick={() => void loadTeachers()} disabled={isLoading} className="mt-4 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
