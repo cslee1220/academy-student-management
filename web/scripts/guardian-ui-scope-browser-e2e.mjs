@@ -112,10 +112,28 @@ async function navigate(cdp, pathname) {
   await sleep(500);
   await waitFor(cdp, async () => { try { const state = await evaluate(cdp, "({ href: location.href, readyState: document.readyState })"); return state?.href?.includes(pathname.split("?")[0]) && state.readyState !== "loading"; } catch { return false; } }, pathname);
   await waitFor(cdp, async () => { try { return Boolean((await evaluate(cdp, "document.body?.innerText ?? ''"))?.trim()); } catch { return false; } }, `${pathname} 화면`);
+  await waitFor(cdp, async () => Boolean(await evaluate(cdp, "[...document.querySelectorAll('main,form,button,a')].some((element) => Object.keys(element).some((key) => key.startsWith('__reactProps')))")), `${pathname} React hydration`);
 }
 async function setInputValue(cdp, selector, value) {
-  const expression = `(() => { const input = document.querySelector(${JSON.stringify(selector)}); if (!input) return false; const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; setter?.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
-  assert(await evaluate(cdp, expression), `${selector} 입력란을 찾지 못했습니다.`);
+  assert(await evaluate(cdp, `Boolean(document.querySelector(${JSON.stringify(selector)}))`), `${selector} 입력란을 찾지 못했습니다.`);
+  await evaluate(cdp, `(() => { const input = document.querySelector(${JSON.stringify(selector)}); input.focus(); input.select(); })()`);
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+  await cdp.send("Input.insertText", { text: String(value) });
+  await evaluate(cdp, `(() => { const input = document.querySelector(${JSON.stringify(selector)}); input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await sleep(100);
+  assert(await evaluate(cdp, `document.querySelector(${JSON.stringify(selector)})?.value === ${JSON.stringify(String(value))}`), `${selector} 입력란에 값을 반영하지 못했습니다.`);
+}
+async function clickButtonContaining(cdp, text) {
+  const expression = `(() => { const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(${JSON.stringify(text)})); if (!button) return false; button.click(); return true; })()`;
+  assert(await evaluate(cdp, expression), `${text} 버튼을 찾지 못했습니다.`);
+}
+async function clickInteractiveContaining(cdp, text) {
+  const expression = `(() => { const control = [...document.querySelectorAll("button, a")].find((candidate) => candidate.textContent?.includes(${JSON.stringify(text)})); if (!control) return false; control.click(); return true; })()`;
+  assert(await evaluate(cdp, expression), `${text} 이동 요소를 찾지 못했습니다.`);
+}
+async function waitForBodyText(cdp, text, label) {
+  return waitFor(cdp, async () => (await evaluate(cdp, "document.body?.innerText ?? ''"))?.includes(text), label);
 }
 async function submitInvite(cdp) {
   assert(await evaluate(cdp, "Boolean(document.querySelector('button[type=submit]'))"), "초대 인증 버튼을 찾지 못했습니다.");
@@ -183,11 +201,13 @@ try {
   const wrongCode = `${correctCode.slice(0, 7)}${correctCode.endsWith("0") ? "1" : "0"}`;
   await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", wrongCode);
   await submitInvite(guardianBrowser.cdp);
+  await sleep(500);
   await waitForInviteError(guardianBrowser.cdp, "인증번호가 일치하지 않습니다");
 
   const expiredToken = new URL(expiredInvite.payload.data.inviteUrl).searchParams.get("token");
   assert(expiredToken, "만료 초대 토큰을 찾지 못했습니다.");
   await navigate(guardianBrowser.cdp, "/invite");
+  await sleep(500);
   await setInputValue(guardianBrowser.cdp, "input[placeholder*='전체 링크']", expiredInvite.payload.data.inviteUrl);
   await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", expiredInvite.payload.data.authCode);
   await submitInvite(guardianBrowser.cdp);
@@ -223,24 +243,111 @@ try {
   const otherStudentRequest = await browserFetch(guardianBrowser.cdp, "/api/guardian/inquiries", { method: "POST", body: { studentId: config.childIds[2], body: "UIUX guardian access boundary check" } });
   assert([401, 403, 404].includes(otherStudentRequest.status), `타 학생 직접 요청 차단 실패: ${otherStudentRequest.status}`);
 
+  await guardianBrowser.cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+  await navigate(guardianBrowser.cdp, "/parent/announcements");
+  await captureScreenshot(guardianBrowser.cdp, "D:\\Temp\\academy-guardian-announcements-before-390.png");
+  await navigate(guardianBrowser.cdp, "/parent/inquiries");
+  await captureScreenshot(guardianBrowser.cdp, "D:\\Temp\\academy-guardian-inquiries-before-390.png");
+
+  const communicationSuffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const announcementMarker = `UIUX-COMM-ANN-${communicationSuffix}`;
+  const announcementInsert = await admin.from("announcements").insert([
+    { academy_id: config.academyId, title: `${announcementMarker} 긴 제목 공지사항`, body: "보호자 화면에서 줄바꿈과 긴 본문을 확인하기 위한 합성 공지입니다. 중요한 운영 안내 내용을 여러 줄로 표시합니다.\n두 번째 줄도 모바일에서 읽을 수 있어야 합니다.", audience: "guardian", status: "published", is_pinned: true, publish_at: new Date(Date.now() - 60_000).toISOString(), created_by_profile_id: "31000000-0000-4000-8000-000000000001", updated_by_profile_id: "31000000-0000-4000-8000-000000000001" },
+    { academy_id: config.academyId, title: `${announcementMarker} 일반 공지`, body: "일반 공지의 합성 본문입니다.", audience: "all", status: "published", is_pinned: false, publish_at: new Date(Date.now() - 30_000).toISOString(), created_by_profile_id: "31000000-0000-4000-8000-000000000001", updated_by_profile_id: "31000000-0000-4000-8000-000000000001" },
+    { academy_id: config.academyId, title: `UIUX-COMM-TEACHER-ONLY-${communicationSuffix}`, body: "보호자에게 표시되면 안 되는 합성 교사 공지입니다.", audience: "teacher", status: "published", is_pinned: false, publish_at: new Date(Date.now() - 30_000).toISOString(), created_by_profile_id: "31000000-0000-4000-8000-000000000001", updated_by_profile_id: "31000000-0000-4000-8000-000000000001" },
+  ]);
+  if (announcementInsert.error) throw announcementInsert.error;
+  const notificationInsert = await admin.from("notifications").insert({ academy_id: config.academyId, recipient_type: "guardian", recipient_id: guardian.id, notification_type: "announcement", title: `${announcementMarker} 알림`, body: "보호자 알림의 읽음 처리와 긴 내용 표시를 확인합니다.", target_path: "/parent/announcements", related_id: null }).select("id").single();
+  if (notificationInsert.error) throw notificationInsert.error;
+  await navigate(guardianBrowser.cdp, "/parent/announcements");
+  await waitForBodyText(guardianBrowser.cdp, announcementMarker, "공지사항 합성 데이터");
+  const announcementMetrics = await evaluate(guardianBrowser.cdp, "({ text: document.body.innerText, viewportWidth: document.documentElement.clientWidth, pageScrollWidth: document.documentElement.scrollWidth, hasAlert: Boolean(document.querySelector('[role=alert]')), hasStatus: Boolean(document.querySelector('[role=status]')) })");
+  assert(announcementMetrics.text.includes(announcementMarker) && !announcementMetrics.text.includes("UIUX-COMM-TEACHER-ONLY") && announcementMetrics.pageScrollWidth <= announcementMetrics.viewportWidth + 1, "공지사항 공개 범위 또는 390px 가로 넘침 검증 실패");
+  await captureScreenshot(guardianBrowser.cdp, "D:\\Temp\\academy-guardian-announcements-after-390.png");
+  await clickButtonContaining(guardianBrowser.cdp, `${announcementMarker} 알림`);
+  await waitFor(guardianBrowser.cdp, async () => {
+    const result = await admin.from("notifications").select("read_at").eq("academy_id", config.academyId).eq("id", notificationInsert.data.id).maybeSingle();
+    return Boolean(result.data?.read_at);
+  }, "알림 읽음 저장");
+
+  await navigate(guardianBrowser.cdp, "/parent/inquiries");
+  await waitFor(guardianBrowser.cdp, async () => Boolean(await evaluate(guardianBrowser.cdp, "Boolean(document.querySelector('#parent-inquiry-student option'))")), "문의 자녀 선택");
+  const failedInquiryBody = `UIUX-COMM-FAILED-${communicationSuffix}`;
+  await setInputValue(guardianBrowser.cdp, "#parent-inquiry-body", failedInquiryBody);
+  await evaluate(guardianBrowser.cdp, "(() => { const original = window.fetch.bind(window); window.fetch = (input, options = {}) => options.method === 'POST' ? Promise.reject(new Error('UIUX inquiry network failure')) : original(input, options); })()");
+  await clickButtonContaining(guardianBrowser.cdp, "문의 등록");
+  await waitForBodyText(guardianBrowser.cdp, "UIUX inquiry network failure", "문의 제출 실패 상태");
+  const failedInquiryState = await evaluate(guardianBrowser.cdp, "({ body: document.querySelector('#parent-inquiry-body')?.value ?? '', disabled: Boolean([...document.querySelectorAll('button')].find((candidate) => candidate.textContent?.includes('문의 등록'))?.disabled) })");
+  assert(failedInquiryState.body === failedInquiryBody && failedInquiryState.disabled === false, "문의 제출 실패 후 입력 보존 또는 재시도 상태가 확인되지 않았습니다.");
+
+  await navigate(guardianBrowser.cdp, "/parent/inquiries");
+  const inquiryBody = `UIUX-COMM-INQUIRY-${communicationSuffix} 긴 문의 본문입니다. 모바일 줄바꿈을 확인합니다.`;
+  await setInputValue(guardianBrowser.cdp, "#parent-inquiry-body", inquiryBody);
+  await evaluate(guardianBrowser.cdp, "(() => { window.__inquiryPostCalls = 0; const original = window.fetch.bind(window); window.fetch = (input, options = {}) => { if (options.method === 'POST') { window.__inquiryPostCalls += 1; return new Promise((resolve, reject) => setTimeout(() => original(input, options).then(resolve).catch(reject), 700)); } return original(input, options); }; })()");
+  await clickButtonContaining(guardianBrowser.cdp, "문의 등록");
+  await sleep(100);
+  const inquiryLoading = await evaluate(guardianBrowser.cdp, "({ disabled: Boolean(document.querySelector('form button[type=submit]')?.disabled), busy: document.querySelector('form[aria-busy]')?.getAttribute('aria-busy'), calls: window.__inquiryPostCalls })");
+  assert(inquiryLoading.disabled && inquiryLoading.busy === "true" && inquiryLoading.calls === 1, "문의 처리 중 상태 또는 중복 제출 방지가 확인되지 않았습니다.");
+  await waitForBodyText(guardianBrowser.cdp, "문의가 등록되었습니다", "문의 등록 성공 상태");
+  const [createdInquiryMessage] = (await admin.from("inquiry_messages").select("id, inquiry_id").eq("body", inquiryBody).order("created_at", { ascending: false }).limit(1)).data ?? [];
+  assert(createdInquiryMessage?.inquiry_id, "문의 저장 결과를 DB에서 찾지 못했습니다.");
+  const answerBody = `UIUX-COMM-ANSWER-${communicationSuffix} 합성 답변입니다.`;
+  const answerUpdate = await admin.from("inquiries").update({ status: "answered" }).eq("academy_id", config.academyId).eq("id", createdInquiryMessage.inquiry_id);
+  if (answerUpdate.error) throw answerUpdate.error;
+  const answerInsert = await admin.from("inquiry_messages").insert({ inquiry_id: createdInquiryMessage.inquiry_id, author_type: "admin", author_id: "31000000-0000-4000-8000-000000000001", body: answerBody });
+  if (answerInsert.error) throw answerInsert.error;
+  await navigate(guardianBrowser.cdp, "/parent/inquiries");
+  await waitForBodyText(guardianBrowser.cdp, answerBody, "문의 답변 조회");
+  const inquiryMetrics = await evaluate(guardianBrowser.cdp, "({ text: document.body.innerText, viewportWidth: document.documentElement.clientWidth, pageScrollWidth: document.documentElement.scrollWidth, hasStatusText: document.body.innerText.includes('상태: 답변 완료'), hasReplyLabel: document.body.innerText.includes('학원 관리자 답변') })");
+  assert(inquiryMetrics.hasStatusText && inquiryMetrics.hasReplyLabel && inquiryMetrics.pageScrollWidth <= inquiryMetrics.viewportWidth + 1, "문의 답변 상태 또는 390px 가로 넘침 검증 실패");
+  await captureScreenshot(guardianBrowser.cdp, "D:\\Temp\\academy-guardian-inquiries-after-390.png");
+  await clickInteractiveContaining(guardianBrowser.cdp, "보호자 홈");
+  await waitFor(guardianBrowser.cdp, async () => (await evaluate(guardianBrowser.cdp, "location.pathname")) === "/parent", "문의 목록에서 보호자 홈 복귀");
+  await clickButtonContaining(guardianBrowser.cdp, "공지·알림").catch(async () => { await evaluate(guardianBrowser.cdp, "document.querySelector('a[href=\"/parent/announcements\"]')?.click()") });
+  await waitFor(guardianBrowser.cdp, async () => (await evaluate(guardianBrowser.cdp, "location.pathname")) === "/parent/announcements", "보호자 홈에서 공지사항 이동");
+
+  const communicationViewportResults = [];
+  for (const width of [360, 390, 768, 1366]) {
+    await guardianBrowser.cdp.send("Emulation.setDeviceMetricsOverride", { width, height: width < 500 ? 844 : 900, deviceScaleFactor: 1, mobile: false });
+    await navigate(guardianBrowser.cdp, "/parent/announcements");
+    await waitForBodyText(guardianBrowser.cdp, announcementMarker, `${width}px announcements fixture`);
+    const announcementViewport = await evaluate(guardianBrowser.cdp, "({ viewportWidth: document.documentElement.clientWidth, pageScrollWidth: document.documentElement.scrollWidth })");
+    assert(announcementViewport.pageScrollWidth <= announcementViewport.viewportWidth + 1, `${width}px announcements horizontal overflow`);
+    await navigate(guardianBrowser.cdp, "/parent/inquiries");
+    await waitForBodyText(guardianBrowser.cdp, answerBody, `${width}px inquiries reply`);
+    const inquiryViewport = await evaluate(guardianBrowser.cdp, "({ viewportWidth: document.documentElement.clientWidth, pageScrollWidth: document.documentElement.scrollWidth })");
+    assert(inquiryViewport.pageScrollWidth <= inquiryViewport.viewportWidth + 1, `${width}px inquiries horizontal overflow`);
+    communicationViewportResults.push({ width, announcements: "PASS", inquiries: "PASS" });
+  }
+
   const viewportResults = [];
   for (const width of [360, 390, 768, 1366]) {
     await guardianBrowser.cdp.send("Emulation.setDeviceMetricsOverride", { width, height: width < 500 ? 844 : 900, deviceScaleFactor: 1, mobile: false });
     await navigate(guardianBrowser.cdp, "/parent");
+    await waitForBodyText(guardianBrowser.cdp, "PARENT HOME", `${width}px 보호자 홈 제목`);
+    await waitForBodyText(guardianBrowser.cdp, "공개 자료", `${width}px 보호자 홈 자료`);
     const parentMetrics = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, childCards:[...document.querySelectorAll('main section')].length, scrollRegions:document.querySelectorAll('[role=region]').length})");
     assert(parentMetrics.text.includes("PARENT HOME") && parentMetrics.pageScrollWidth <= parentMetrics.viewportWidth + 1 && parentMetrics.scrollRegions >= 1, `${width}px 보호자 홈 검증 실패: ${JSON.stringify(parentMetrics)}`);
     await captureScreenshot(guardianBrowser.cdp, `D:\\Temp\\academy-guardian-parent-${width}-after.png`);
     await navigate(guardianBrowser.cdp, "/parent/summary");
+    await waitForBodyText(guardianBrowser.cdp, "기간 초기화", `${width}px 보호자 학습 요약 조건`);
     const summary = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, selects:document.querySelectorAll('select').length, dateInputs:document.querySelectorAll('input[type=date]').length, periodReset:document.body.innerText.includes('기간 초기화')})");
     assert(summary.text.includes("학습 요약") && summary.selects >= 1 && summary.dateInputs >= 2 && summary.periodReset && summary.pageScrollWidth <= summary.viewportWidth + 1, `${width}px 보호자 학습 요약 검증 실패`);
     await captureScreenshot(guardianBrowser.cdp, `D:\\Temp\\academy-guardian-summary-${width}-after.png`);
     viewportResults.push({ width, parent: "PASS", summary: "PASS" });
   }
   await browserFetch(guardianBrowser.cdp, "/api/guardian/logout", { method: "POST" });
+  const loggedOutAnnouncements = await browserFetch(guardianBrowser.cdp, "/api/guardian/announcements");
+  const loggedOutInquiries = await browserFetch(guardianBrowser.cdp, "/api/guardian/inquiries");
+  assert(loggedOutAnnouncements.status === 401 && loggedOutInquiries.status === 401, `로그아웃 후 공지·문의 API 차단 실패: ${loggedOutAnnouncements.status}/${loggedOutInquiries.status}`);
+  await navigate(guardianBrowser.cdp, "/parent/announcements");
+  await waitForBodyText(guardianBrowser.cdp, "보호자 로그인", "공지사항 세션 만료 안내");
+  await navigate(guardianBrowser.cdp, "/parent/inquiries");
+  await waitForBodyText(guardianBrowser.cdp, "보호자 로그인", "문의 세션 만료 안내");
   await navigate(guardianBrowser.cdp, "/parent");
   const expired = await evaluate(guardianBrowser.cdp, "({text:document.body.innerText, hasLoginLink:Boolean(document.querySelector('a[href=\"/guardian/login\"]'))})");
   assert(expired.hasLoginLink && expired.text.includes("PARENT HOME"), "보호자 세션 만료/인증 오류 안내가 표시되지 않았습니다.");
-  console.log(JSON.stringify({ inviteWrongCode: "PASS", inviteExpired410: "PASS", inviteNetworkError: "PASS", inviteLoadingAndDuplicateSubmit: "PASS", activation: "PASS", linkedChildren: "PASS", publishedVsUnpublished: "PASS", partialPublicationVisibility: "PASS", otherStudentApiBoundary: "PASS", viewportResults, sessionExpiredState: "PASS", childCount: children.length }, null, 2));
+  console.log(JSON.stringify({ inviteWrongCode: "PASS", inviteExpired410: "PASS", inviteNetworkError: "PASS", inviteLoadingAndDuplicateSubmit: "PASS", activation: "PASS", linkedChildren: "PASS", publishedVsUnpublished: "PASS", partialPublicationVisibility: "PASS", otherStudentApiBoundary: "PASS", announcements: "PASS", notificationRead: "PASS", inquirySubmitAndPersistence: "PASS", inquiryFailurePreservesInput: "PASS", inquiryAnsweredView: "PASS", communicationSessionExpired: "PASS", communicationViewportResults, viewportResults, sessionExpiredState: "PASS", childCount: children.length }, null, 2));
 } finally {
   for (const current of [guardianBrowser, adminBrowser]) {
     try { current?.socket.close(); } catch {}
