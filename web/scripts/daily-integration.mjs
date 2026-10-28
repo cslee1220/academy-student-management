@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { createClient } from "@supabase/supabase-js";
 
+import { assertLocalTestTarget } from "./local-test-target.mjs";
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const webDirectory = path.resolve(scriptDirectory, "..");
 
@@ -31,13 +33,12 @@ const config = {
   academyId: process.env.INTEGRATION_ACADEMY_ID ?? "21000000-0000-4000-8000-000000000001",
   adminEmail: process.env.INTEGRATION_ADMIN_EMAIL ?? "demo-admin@test.invalid",
   adminPassword: process.env.INTEGRATION_ADMIN_PASSWORD,
-  teacherPassword: process.env.INTEGRATION_TEACHER_PASSWORD,
 };
 
-if (!config.serviceRoleKey || !config.adminPassword || !config.teacherPassword) {
-  throw new Error(
-    "INTEGRATION_SUPABASE_SERVICE_ROLE_KEY, INTEGRATION_ADMIN_PASSWORD, INTEGRATION_TEACHER_PASSWORD 환경변수가 필요합니다.",
-  );
+assertLocalTestTarget(config);
+
+if (!config.serviceRoleKey || !config.adminPassword) {
+  throw new Error("INTEGRATION_SUPABASE_SERVICE_ROLE_KEY와 INTEGRATION_ADMIN_PASSWORD 환경변수가 필요합니다.");
 }
 
 const admin = createClient(config.supabaseUrl, config.serviceRoleKey, {
@@ -232,9 +233,10 @@ async function createTemporaryTeacher() {
   const loginId = `T-${suffix}`;
   const email = `${loginId.toLowerCase()}@auth.academy.invalid`;
   const displayName = "__DAILY_INTEGRATION_TEST_TEACHER__";
+  const password = `${randomUUID()}Aa1!`;
   const authResult = await admin.auth.admin.createUser({
     email,
-    password: config.teacherPassword,
+    password,
     email_confirm: true,
   });
   if (authResult.error || !authResult.data.user) {
@@ -246,6 +248,7 @@ async function createTemporaryTeacher() {
     membershipId,
     accountId,
     loginId,
+    password,
     displayName,
   };
   await insertRows("profiles", [{
@@ -574,7 +577,7 @@ async function main() {
     await request("/api/auth/teacher-login", {
       jar: teacherJar,
       method: "POST",
-      body: { loginId: temporaryTeacher.loginId, password: config.teacherPassword },
+      body: { loginId: temporaryTeacher.loginId, password: temporaryTeacher.password },
     });
     logPass("교사 로그인");
 

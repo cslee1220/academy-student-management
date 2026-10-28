@@ -9,7 +9,6 @@ import {
   approveGradePromotion,
   createGradePromotionPreview,
   currentSeoulDate,
-  ensureDueGradePromotion,
   GradePromotionError,
   getGradePromotionDashboard,
   nextPromotionYear,
@@ -490,12 +489,11 @@ export async function GET(request: NextRequest) {
   try {
     const requestedAcademyIdValue = request.nextUrl.searchParams.get("academyId");
     const requestedAcademyId = requestedAcademyIdValue ? parseUuid(requestedAcademyIdValue, "academyId") : undefined;
-    const { academyId, profileId: actorProfileId } = await requireAcademyAdminFromContext(requestedAcademyId);
+    const { academyId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
     const requestedPromotionYear = request.nextUrl.searchParams.get("promotionYear");
     const promotionYear = promotionYearFromInput(requestedPromotionYear, nextPromotionYear());
-    const automaticGradePromotion = await ensureDueGradePromotion(admin, academyId, actorProfileId);
-    const gradePromotion = automaticGradePromotion ?? await getGradePromotionDashboard(admin, academyId, promotionYear);
+    const gradePromotion = await getGradePromotionDashboard(admin, academyId, promotionYear);
 
     const [schoolYearsResult, termsResult, classesResult, classroomsResult, vehiclesResult, subjectsResult, schoolsResult, levelsResult, operationTypesResult, operationSettingsResult, operationSchedulesResult, teacherMembershipsResult, classTeacherAssignmentsResult, classSubjectClassroomAssignmentsResult] = await Promise.all([
       admin

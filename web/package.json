@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test:fixtures": "node scripts/verify-integration-fixtures.mjs",
     "test:academic-periods": "node scripts/academic-period-integration.mjs",
+    "test:grade-promotions-integration": "node scripts/grade-promotion-integration.mjs",
     "test:screens": "node scripts/screen-scenarios.mjs",
     "test:integration": "node scripts/demo-integration.mjs",
     "test:daily-integration": "node scripts/daily-integration.mjs",

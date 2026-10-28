@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { createClient } from "@supabase/supabase-js";
 
+import { assertLocalTestTarget } from "./local-test-target.mjs";
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const webDirectory = path.resolve(scriptDirectory, "..");
 
@@ -33,6 +35,8 @@ const config = {
   adminPassword: process.env.INTEGRATION_ADMIN_PASSWORD,
 };
 
+assertLocalTestTarget(config);
+
 if (!config.serviceRoleKey || !config.adminPassword) {
   throw new Error("INTEGRATION_SUPABASE_SERVICE_ROLE_KEY와 INTEGRATION_ADMIN_PASSWORD 환경변수가 필요합니다.");
 }
@@ -56,7 +60,7 @@ function captureCookies(response, jar) {
   }
 }
 
-async function request(pathname, { jar, method = "GET", body } = {}) {
+async function request(pathname, { jar, method = "GET", body, allowStatuses = [] } = {}) {
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json; charset=utf-8";
   if (jar?.size) headers.Cookie = [...jar.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
@@ -73,10 +77,10 @@ async function request(pathname, { jar, method = "GET", body } = {}) {
   } catch {
     payload = { raw: text };
   }
-  if (!response.ok) {
+  if (!response.ok && !allowStatuses.includes(response.status)) {
     throw new Error(`${method} ${pathname} failed with ${response.status}: ${payload?.error?.message ?? text}`);
   }
-  return payload;
+  return { status: response.status, payload };
 }
 
 async function rows(table, configure) {
@@ -123,50 +127,71 @@ async function main() {
     });
     console.log("[PASS] 운영자 로그인");
 
-    const created = await request("/api/admin/academic", {
+    const removedAutomaticCreation = await request("/api/admin/academic", {
       jar,
       method: "POST",
       body: { resource: "academic_periods", name: fixtureName, startDate: "2098-03-01", endDate: "2099-02-28", currentTerm: "2" },
+      allowStatuses: [410],
     });
-    fixtureYearId = created.data.schoolYear.id;
-    fixtureTermIds = (created.data.terms ?? []).map((term) => term.id);
-    assert(created.data.terms?.length === 2, "신규 학년도에 1·2학기가 모두 생성되지 않았습니다.");
-    console.log("[PASS] 1·2학기 자동 생성");
+    assert(removedAutomaticCreation.status === 410 && removedAutomaticCreation.payload?.error?.code === "manual_academic_periods", "제거된 자동 학기 생성 API가 차단되지 않았습니다.");
+    console.log("[PASS] 제거된 자동 학기 생성 API 회귀 차단");
 
-    const firstUpdate = await request("/api/admin/academic", {
+    const createdYear = await request("/api/admin/academic", {
+      jar,
+      method: "POST",
+      body: { resource: "school_years", name: fixtureName, startDate: "2098-03-01", endDate: "2099-02-28" },
+    });
+    fixtureYearId = createdYear.payload.data.id;
+
+    const firstTerm = await request("/api/admin/academic", {
+      jar,
+      method: "POST",
+      body: { resource: "terms", schoolYearId: fixtureYearId, name: "1학기", startDate: "2098-03-01", endDate: "2098-08-31", isCurrent: false },
+    });
+    const secondTerm = await request("/api/admin/academic", {
+      jar,
+      method: "POST",
+      body: { resource: "terms", schoolYearId: fixtureYearId, name: "2학기", startDate: "2098-09-01", endDate: "2099-02-28", isCurrent: true },
+    });
+    fixtureTermIds = [firstTerm.payload.data.id, secondTerm.payload.data.id];
+    const manuallyCreatedTerms = await rows("terms", (query) => query.eq("academy_id", config.academyId).eq("school_year_id", fixtureYearId).order("start_date"));
+    assert(manuallyCreatedTerms.length === 2 && manuallyCreatedTerms[0].name === "1학기" && manuallyCreatedTerms[1].name === "2학기", "수동 학기 등록 결과가 올바르지 않습니다.");
+    assert(manuallyCreatedTerms.filter((term) => term.is_current).length === 1 && manuallyCreatedTerms[1].is_current, "수동 등록한 현재 학기가 2학기로 지정되지 않았습니다.");
+    console.log("[PASS] 학년도 생성·1학기·2학기 수동 등록");
+
+    const yearUpdate = await request("/api/admin/academic", {
       jar,
       method: "PATCH",
-      body: { resource: "academic_periods", id: fixtureYearId, name: fixtureName, startDate: "2098-03-01", endDate: "2099-03-31", currentTerm: "2" },
+      body: { resource: "school_years", id: fixtureYearId, name: fixtureName, startDate: "2098-03-01", endDate: "2099-03-31" },
     });
-    assert(firstUpdate.data.schoolYear.end_date === "2099-03-31", "운영종료일 수정값이 학년도에 반영되지 않았습니다.");
+    assert(yearUpdate.payload.data.end_date === "2099-03-31", "학년도 종료일 수정값이 반영되지 않았습니다.");
+
+    const termsAfterYearUpdate = await rows("terms", (query) => query.eq("academy_id", config.academyId).eq("school_year_id", fixtureYearId).order("start_date"));
+    const updatedSecondTerm = await request("/api/admin/academic", {
+      jar,
+      method: "PATCH",
+      body: { resource: "terms", id: termsAfterYearUpdate[1].id, name: "2학기", startDate: "2098-09-01", endDate: "2099-03-31", isCurrent: true },
+    });
+    assert(updatedSecondTerm.payload.data.end_date === "2099-03-31", "2학기 종료일 수정값이 반영되지 않았습니다.");
     const twoTerms = await rows("terms", (query) => query.eq("academy_id", config.academyId).eq("school_year_id", fixtureYearId).order("start_date"));
-    assert(twoTerms.length === 2, "2개 학기 수정 후 학기가 추가되거나 누락되었습니다.");
-    assert(twoTerms[1].end_date === "2099-03-31", "2학기 종료일이 수정되지 않았습니다.");
-    assert(twoTerms.filter((term) => term.is_current).length === 1 && twoTerms[1].is_current, "현재 학기가 2학기로 유지되지 않았습니다.");
-    console.log("[PASS] 1·2학기 기간 수정 및 중복 생성 방지");
+    assert(twoTerms.length === 2 && twoTerms.filter((term) => term.is_current).length === 1 && twoTerms[1].is_current, "수동 학기 수정 후 현재 학기 상태가 올바르지 않습니다.");
+    console.log("[PASS] 학년도·학기 기간 수정 및 중복 생성 방지");
 
     await request("/api/admin/academic", {
       jar,
       method: "PATCH",
-      body: { resource: "academic_periods", id: fixtureYearId, name: koreanFixtureName, startDate: "2098-03-01", endDate: "2099-03-31", currentTerm: "2" },
+      body: { resource: "school_years", id: fixtureYearId, name: koreanFixtureName, startDate: "2098-03-01", endDate: "2099-03-31" },
     });
     const koreanYear = await rows("school_years", (query) => query.eq("academy_id", config.academyId).eq("id", fixtureYearId));
     assert(koreanYear[0]?.name === koreanFixtureName, "한글 학년도명이 UTF-8로 보존되지 않았습니다.");
     console.log("[PASS] 한글 학년도명 UTF-8 보존");
 
-    const firstTerm = twoTerms[0];
-    await request(`/api/admin/academic?resource=term&id=${encodeURIComponent(firstTerm.id)}`, { jar, method: "DELETE" });
+    const firstTermRow = twoTerms[0];
+    await request(`/api/admin/academic?resource=term&id=${encodeURIComponent(firstTermRow.id)}`, { jar, method: "DELETE" });
     fixtureTermIds = [twoTerms[1].id];
-    const singleTermUpdate = await request("/api/admin/academic", {
-      jar,
-      method: "PATCH",
-      body: { resource: "academic_periods", id: fixtureYearId, name: koreanFixtureName, startDate: "2098-03-01", endDate: "2099-04-30", currentTerm: "2" },
-    });
-    assert(singleTermUpdate.data.schoolYear.end_date === "2099-04-30", "2학기 단독 학년도의 운영종료일이 수정되지 않았습니다.");
     const singleTerm = await rows("terms", (query) => query.eq("academy_id", config.academyId).eq("school_year_id", fixtureYearId));
-    assert(singleTerm.length === 1 && singleTerm[0].end_date === "2099-04-30", "2학기 단독 수정에서 새 학기가 생성되었거나 종료일이 반영되지 않았습니다.");
-    assert(singleTerm[0].is_current, "2학기 단독 학기의 현재 상태가 유지되지 않았습니다.");
-    console.log("[PASS] 2학기 단독 시작 및 현재 학기 수정");
+    assert(singleTerm.length === 1 && singleTerm[0].is_current, "1학기 삭제 후 2학기 현재 상태가 유지되지 않았습니다.");
+    console.log("[PASS] 운영자 지정 학기 삭제 후 기존 2학기 보존");
 
     const afterStudents = await rows("students", (query) => query.eq("academy_id", config.academyId).order("id"));
     assert(fingerprint(afterStudents) === fingerprint(baselineStudents), "학사기간 테스트가 학생 데이터를 변경했습니다.");

@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertLocalTestTarget } from "./local-test-target.mjs";
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const webDirectory = path.resolve(scriptDirectory, "..");
 
@@ -22,8 +24,11 @@ function loadLocalEnv() {
 loadLocalEnv();
 
 const baseUrl = process.env.INTEGRATION_BASE_URL ?? "http://localhost:3000";
+const supabaseUrl = process.env.INTEGRATION_SUPABASE_URL ?? "http://127.0.0.1:54321";
 const adminPassword = process.env.INTEGRATION_ADMIN_PASSWORD;
 const teacherPassword = process.env.INTEGRATION_TEACHER_PASSWORD;
+
+assertLocalTestTarget({ baseUrl, supabaseUrl });
 
 if (!adminPassword || !teacherPassword) {
   throw new Error("INTEGRATION_ADMIN_PASSWORD와 INTEGRATION_TEACHER_PASSWORD를 web/.env.local에 설정해 주세요.");

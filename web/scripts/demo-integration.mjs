@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { createClient } from "@supabase/supabase-js";
 
+import { assertLocalTestTarget } from "./local-test-target.mjs";
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const webDirectory = path.resolve(scriptDirectory, "..");
 
@@ -34,6 +36,8 @@ const config = {
   teacherLoginId: process.env.INTEGRATION_TEACHER_LOGIN_ID ?? "t-900001",
   teacherPassword: process.env.INTEGRATION_TEACHER_PASSWORD,
 };
+
+assertLocalTestTarget(config);
 
 if (!config.serviceRoleKey || !config.adminPassword || !config.teacherPassword) {
   throw new Error(

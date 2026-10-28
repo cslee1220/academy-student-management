@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { createClient } from "@supabase/supabase-js";
 
+import { assertLocalTestTarget } from "./local-test-target.mjs";
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const webDirectory = path.resolve(scriptDirectory, "..");
 
@@ -26,6 +28,11 @@ loadLocalEnv();
 const academyId = process.env.INTEGRATION_ACADEMY_ID ?? "21000000-0000-4000-8000-000000000001";
 const supabaseUrl = process.env.INTEGRATION_SUPABASE_URL ?? "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.INTEGRATION_SUPABASE_SERVICE_ROLE_KEY;
+
+assertLocalTestTarget({
+  baseUrl: process.env.INTEGRATION_BASE_URL ?? "http://localhost:3000",
+  supabaseUrl,
+});
 
 if (!serviceRoleKey) {
   throw new Error("INTEGRATION_SUPABASE_SERVICE_ROLE_KEY를 로컬 테스트 환경에 설정해 주세요.");
