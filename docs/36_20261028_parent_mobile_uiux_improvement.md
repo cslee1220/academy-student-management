@@ -88,7 +88,7 @@
 | 검증 | 결과 | 근거 |
 |---|---|---|
 | 잘못된 인증번호 | PASS | 서버 오류 표시, alert 연결, 버튼 복귀 확인 |
-| 취소된 초대 링크 410 | PASS | `invite_expired` 410과 관리자 재발급 안내 확인 |
+| 실제 만료 초대 링크 410 | PASS | 합성 초대의 `expires_at`을 과거로 설정한 뒤 `invite_expired` 410과 관리자 재발급 안내 확인 |
 | 네트워크 오류 | PASS | 격리된 fetch 실패 주입에서 재시도 안내 확인 |
 | 처리 중·중복 제출 | PASS | 버튼 disabled·`aria-busy=true`·요청 1회 확인 |
 | 활성 초대 인증 | PASS | UI 인증 후 `/parent` 이동과 세션 생성 확인 |

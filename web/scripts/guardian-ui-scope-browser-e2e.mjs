@@ -163,7 +163,7 @@ try {
   assert(expiredGuardian?.id, "만료 링크용 보호자 계정을 찾지 못했습니다.");
   const [expiredInviteRow] = (await admin.from("guardian_invites").select("id").eq("academy_id", config.academyId).eq("guardian_id", expiredGuardian.id).order("created_at", { ascending: false }).limit(1)).data ?? [];
   assert(expiredInviteRow?.id, "만료 링크용 초대 행을 찾지 못했습니다.");
-  const expiredUpdate = await admin.from("guardian_invites").update({ revoked_at: new Date().toISOString() }).eq("academy_id", config.academyId).eq("id", expiredInviteRow.id);
+  const expiredUpdate = await admin.from("guardian_invites").update({ created_at: new Date(Date.now() - 120_000).toISOString(), expires_at: new Date(Date.now() - 60_000).toISOString() }).eq("academy_id", config.academyId).eq("id", expiredInviteRow.id);
   if (expiredUpdate.error) throw expiredUpdate.error;
 
   const networkSuffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -187,7 +187,8 @@ try {
 
   const expiredToken = new URL(expiredInvite.payload.data.inviteUrl).searchParams.get("token");
   assert(expiredToken, "만료 초대 토큰을 찾지 못했습니다.");
-  await navigate(guardianBrowser.cdp, `/invite?token=${encodeURIComponent(expiredToken)}`);
+  await navigate(guardianBrowser.cdp, "/invite");
+  await setInputValue(guardianBrowser.cdp, "input[placeholder*='전체 링크']", expiredInvite.payload.data.inviteUrl);
   await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", expiredInvite.payload.data.authCode);
   await submitInvite(guardianBrowser.cdp);
   const expiredState = await waitForInviteError(guardianBrowser.cdp, "만료되었거나 취소되었습니다");
@@ -195,7 +196,8 @@ try {
 
   const networkToken = new URL(networkInvite.payload.data.inviteUrl).searchParams.get("token");
   assert(networkToken, "네트워크 오류용 초대 토큰을 찾지 못했습니다.");
-  await navigate(guardianBrowser.cdp, `/invite?token=${encodeURIComponent(networkToken)}`);
+  await navigate(guardianBrowser.cdp, "/invite");
+  await setInputValue(guardianBrowser.cdp, "input[placeholder*='전체 링크']", networkInvite.payload.data.inviteUrl);
   await evaluate(guardianBrowser.cdp, "window.fetch = () => Promise.reject(new TypeError('Failed to fetch'))");
   await setInputValue(guardianBrowser.cdp, "#guardian-auth-code", networkInvite.payload.data.authCode);
   await submitInvite(guardianBrowser.cdp);
