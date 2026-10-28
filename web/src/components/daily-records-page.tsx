@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -98,6 +98,8 @@ const attendanceLabels: Record<AttendanceStatus, string> = {
 };
 const weekdayOrder = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const MAX_TEST_DEFINITIONS = 10;
+const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
+const inputFocusClass = "focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-100";
 
 function today() {
   const date = new Date();
@@ -318,6 +320,7 @@ export default function DailyRecordsPage() {
   const [blockLoadMessage, setBlockLoadMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
   const [consultationStudent, setConsultationStudent] = useState<{ id: string; name: string; studentNo: string } | null>(null);
   const [supplementPopup, setSupplementPopup] = useState<SupplementPopup | null>(null);
 
@@ -360,6 +363,38 @@ export default function DailyRecordsPage() {
     };
   }, [students]);
   const supplementPopupStudent = supplementPopup ? students.find((student) => student.id === supplementPopup.studentId) : null;
+
+  function confirmDiscardChanges() {
+    return !isDirty || window.confirm("저장하지 않은 입력이 있습니다. 화면을 이동하면 입력 내용이 사라집니다. 계속하시겠습니까?");
+  }
+
+  function handleGroupChange(value: string) {
+    if (value === selectedGroupKey) return;
+    if (!confirmDiscardChanges()) return;
+    setIsDirty(false);
+    setSelectedGroupKey(value);
+  }
+
+  function handleRecordDateChange(value: string) {
+    if (value === recordDate) return;
+    if (!confirmDiscardChanges()) return;
+    setIsDirty(false);
+    setRecordDate(value);
+  }
+
+  function confirmNavigation(event: MouseEvent<HTMLAnchorElement>) {
+    if (!confirmDiscardChanges()) event.preventDefault();
+  }
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isDirty]);
 
   const loadBlocks = useCallback(async () => {
     setError("");
@@ -412,6 +447,7 @@ export default function DailyRecordsPage() {
         unassigned: homeworkDraft(commonHomeworkByGroup.unassigned),
       });
       setStudents((data.students ?? []).map((student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null; subjectRecord?: Record<string, unknown> | null; attendance?: Record<string, unknown> | null }) => blankRow(student, student.subjectRecord, student.attendance, recordDate)));
+      setIsDirty(false);
       setMessage("");
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "학생 기록을 불러오지 못했습니다.");
@@ -487,6 +523,7 @@ export default function DailyRecordsPage() {
         ...(key === "attendanceStatus" ? { attendanceRecorded: true } : {}),
       };
     }));
+    setIsDirty(true);
     setMessage("");
   }
 
@@ -495,6 +532,7 @@ export default function DailyRecordsPage() {
       ...current,
       [groupKey]: { ...current[groupKey], [key]: value },
     }));
+    setIsDirty(true);
     setMessage("");
   }
 
@@ -514,6 +552,7 @@ export default function DailyRecordsPage() {
         homeworkSupplementDate: checked ? student.homeworkSupplementDate || recordDate : "",
       };
     }));
+    setIsDirty(true);
     setMessage("");
   }
 
@@ -546,7 +585,11 @@ export default function DailyRecordsPage() {
   function cancelSupplementPopup() {
     if (!supplementPopup) return;
     const key = supplementPopup.kind === "test" ? "testSupplementDate" : "homeworkSupplementDate";
-    if (supplementPopup.originalDate) updateStudent(supplementPopup.studentId, key, supplementPopup.originalDate);
+    if (supplementPopup.originalDate) {
+      setStudents((current) => current.map((student) => student.id === supplementPopup.studentId
+        ? { ...student, [key]: supplementPopup.originalDate }
+        : student));
+    }
     else updateSupplementType(supplementPopup.studentId, supplementPopup.kind, false);
     setSupplementPopup(null);
   }
@@ -569,6 +612,7 @@ export default function DailyRecordsPage() {
       if (index >= 0) results[index] = next; else results.push(next);
       return { ...student, testResults: results };
     }));
+    setIsDirty(true);
   }
 
   function updateDefinition(groupKey: TestGroupKey, index: number, key: "name" | "maxScore", value: string) {
@@ -576,9 +620,11 @@ export default function DailyRecordsPage() {
       ...current,
       [groupKey]: current[groupKey].map((definition, definitionIndex) => definitionIndex === index ? { ...definition, [key]: value } : definition),
     }));
+    setIsDirty(true);
   }
 
   function addTestDefinition(groupKey: TestGroupKey) {
+    setIsDirty(true);
     setTestDefinitionsByGroup((current) => {
       const definitions = current[groupKey];
       if (definitions.length >= MAX_TEST_DEFINITIONS) return current;
@@ -595,6 +641,7 @@ export default function DailyRecordsPage() {
   }
 
   function removeTestDefinition(groupKey: TestGroupKey, definitionId: string) {
+    setIsDirty(true);
     setTestDefinitionsByGroup((current) => ({
       ...current,
       [groupKey]: current[groupKey]
@@ -609,6 +656,7 @@ export default function DailyRecordsPage() {
   }
 
   function toggleTestGroup(groupKey: TestGroupKey, enabled: boolean) {
+    setIsDirty(true);
     setTestDefinitionsByGroup((current) => ({
       ...current,
       [groupKey]: enabled
@@ -700,14 +748,14 @@ export default function DailyRecordsPage() {
   }
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <main aria-busy={isLoading || isSaving} className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
           <p className="text-sm font-bold text-indigo-600">DAILY CLASS RECORDS</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">날짜별 수업 기록</h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">수업 묶음과 수업 날짜를 선택하고, 과목별 출결·학습기록을 저장합니다.</p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2"><Link href="/teacher/announcements" className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">공지·알림</Link><Link href={`/teacher/records/status?kind=supplement&startDate=${recordDate.slice(0, 8)}01&endDate=${recordDate}&attendanceDate=${recordDate}`} className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50">보충 현황</Link><span className="rounded-full bg-slate-100 px-4 py-2 text-center text-sm font-semibold text-slate-700">모든 과목 최종저장 후 학부모 공개 · 공개 후에도 직접 수정 가능</span></div>
+        <div className="flex flex-wrap items-center justify-end gap-2"><Link href="/teacher/announcements" onClick={confirmNavigation} className={`rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50 ${focusRingClass}`}>공지·알림</Link><Link href={`/teacher/records/status?kind=supplement&startDate=${recordDate.slice(0, 8)}01&endDate=${recordDate}&attendanceDate=${recordDate}`} onClick={confirmNavigation} className={`rounded-xl border border-indigo-300 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50 ${focusRingClass}`}>보충 현황</Link><span className="rounded-full bg-slate-100 px-4 py-2 text-center text-sm font-semibold text-slate-700">모든 과목 최종저장 후 학부모 공개 · 공개 후에도 직접 수정 가능</span></div>
       </div>
 
       <TeacherRecordsOverview />
@@ -715,26 +763,27 @@ export default function DailyRecordsPage() {
       <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
           <label className="text-sm font-semibold text-slate-700">수업 묶음
-            <select value={selectedGroupKey} onChange={(event) => setSelectedGroupKey(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500">
+            <select value={selectedGroupKey} onChange={(event) => handleGroupChange(event.target.value)} aria-label="수업 묶음 선택" className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500 ${inputFocusClass}`}>
               <option value="">수업 묶음을 선택해 주세요</option>
               {blockGroups.map((group) => <option key={group.key} value={group.key}>{group.class_name_snapshot} · {group.subject_name_snapshot} · {group.weekdays.map((weekday) => weekdayLabels[weekday]).join("")} {formatTime(group.start_time)}~{formatTime(group.end_time)} ({group.student_count}명)</option>)}
             </select>
           </label>
           <label className="text-sm font-semibold text-slate-700">수업 날짜
-            <input type="date" value={recordDate} onChange={(event) => setRecordDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500" />
+            <input type="date" value={recordDate} onChange={(event) => handleRecordDateChange(event.target.value)} aria-label="수업 날짜" className={`mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-indigo-500 ${inputFocusClass}`} />
           </label>
         </div>
         {selectedGroup ? <div className="mt-4 flex flex-wrap gap-2 text-sm text-slate-600"><span className="rounded-full bg-indigo-50 px-3 py-1.5 font-semibold text-indigo-800">{selectedGroup.class_name_snapshot}</span><span className="rounded-full bg-slate-100 px-3 py-1.5">{selectedGroup.subject_name_snapshot} · {selectedGroup.teacher_name_snapshot}</span><span className="rounded-full bg-slate-100 px-3 py-1.5">{selectedGroup.weekdays.map((weekday) => weekdayLabels[weekday]).join("")} {formatTime(selectedGroup.start_time)}~{formatTime(selectedGroup.end_time)}</span>{selectedGroup.operation_groups.length ? <span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">{selectedGroup.operation_groups.join("/ ")} 구분</span> : null}{selectedGroup.classroom_name_snapshot ? <span className="rounded-full bg-slate-100 px-3 py-1.5">강의실 {selectedGroup.classroom_name_snapshot}</span> : null}</div> : null}
         {selectedGroup && !dateIsValidForBlock ? <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">선택한 날짜는 이 수업 묶음의 요일 또는 운영 기간과 맞지 않습니다.</p> : null}
       </section>
 
-      {error ? <div className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</div> : null}
-      {message ? <div className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</div> : null}
+      {isDirty ? <p role="status" aria-live="polite" className="mt-5 rounded-xl bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">저장하지 않은 변경이 있습니다. 날짜·수업을 바꾸거나 다른 화면으로 이동하면 확인 메시지가 표시됩니다.</p> : null}
+      {error ? <div role="alert" aria-live="assertive" className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</div> : null}
+      {message ? <div role="status" aria-live="polite" className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</div> : null}
       {!blocks.length && !error ? <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900"><p className="font-semibold">현재 선택 가능한 수업 묶음이 없습니다.</p><p className="mt-1">{blockLoadMessage}</p><button type="button" onClick={() => void loadBlocks()} className="mt-3 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100">다시 불러오기</button></div> : null}
 
-      {!selectedGroupKey ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">수업 묶음을 선택해 주세요.</p><p className="mt-2 text-sm text-slate-500">관리자가 등록한 반·과목·담당교사별 운영시간이 표시됩니다.</p></section> : !dateIsValidForBlock ? null : isLoading ? <section className="mt-6 rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">학생 기록을 불러오는 중입니다.</p></section> : <>
+      {!selectedGroupKey ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">수업 묶음을 선택해 주세요.</p><p className="mt-2 text-sm text-slate-500">관리자가 등록한 반·과목·담당교사별 운영시간이 표시됩니다.</p></section> : !dateIsValidForBlock ? null : isLoading ? <section role="status" aria-live="polite" className="mt-6 rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">학생 기록을 불러오는 중입니다.</p></section> : <>
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-sm font-bold text-indigo-600">학생별 기록</p><h2 className="mt-1 text-xl font-bold text-slate-950">전체 학생 {attendanceSummary.totalCount}명</h2></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => void saveRecords("draft")} disabled={isSaving || students.every(isPausedStudent)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">{isSaving ? "저장 중..." : "임시저장"}</button><button type="button" onClick={() => void saveRecords("final")} disabled={isSaving || students.every(isPausedStudent)} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isSaving ? "저장 중..." : "과목 최종저장"}</button></div></div>
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-sm font-bold text-indigo-600">학생별 기록</p><h2 className="mt-1 text-xl font-bold text-slate-950">전체 학생 {attendanceSummary.totalCount}명</h2></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => void saveRecords("draft")} disabled={isSaving || students.every(isPausedStudent)} className={`rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 ${focusRingClass}`}>{isSaving ? "저장 중..." : "임시저장"}</button><button type="button" onClick={() => void saveRecords("final")} disabled={isSaving || students.every(isPausedStudent)} className={`rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300 ${focusRingClass}`}>{isSaving ? "저장 중..." : "과목 최종저장"}</button></div></div>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold"><span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">임시저장 {students.filter((student) => student.saveState === "draft").length}명</span><span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">전체 과목 입력 대기 {students.filter((student) => student.saveState === "final" && student.publicationStatus !== "published").length}명</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">학부모 공개 {students.filter((student) => student.publicationStatus === "published").length}명</span></div>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold" aria-label="출결 집계"><span className="rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-800">출결 대상 {attendanceSummary.eligibleCount}명</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">출석 {attendanceSummary.presentCount}명</span><span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">휴원 {attendanceSummary.pausedCount}명</span><span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">출결 미입력 {attendanceSummary.notEnteredCount}명</span><span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-800">출석률 {attendanceSummary.attendanceRate}%</span></div>
           <div className="mt-4 space-y-4">
@@ -768,7 +817,8 @@ export default function DailyRecordsPage() {
                   {groupTestDefinitions.length ? <div className="mt-3 grid gap-2">{groupTestDefinitions.map((definition, index) => <div key={definition.id} className="grid grid-cols-[minmax(0,1fr)_90px_auto] gap-2 rounded-lg bg-slate-50 p-2"><input value={definition.name} onChange={(event) => updateDefinition(group.key, index, "name", event.target.value)} placeholder="테스트명" className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500" /><input value={definition.maxScore} onChange={(event) => updateDefinition(group.key, index, "maxScore", event.target.value)} type="number" min="1" placeholder="만점" aria-label={`${group.label} 만점`} className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500" /><button type="button" onClick={() => removeTestDefinition(group.key, definition.id)} aria-label={`${definition.name || "테스트"} 삭제`} className="h-9 rounded-lg border border-rose-200 bg-white px-2 text-xs font-semibold text-rose-700 hover:bg-rose-50">삭제</button></div>)}</div> : <p className="mt-3 rounded-lg bg-slate-50 px-3 py-3 text-xs text-slate-500">이 그룹은 테스트 없이 저장됩니다.</p>}
                   <button type="button" onClick={() => addTestDefinition(group.key)} disabled={groupTestDefinitions.length >= MAX_TEST_DEFINITIONS} className="mt-3 rounded-lg border border-indigo-200 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">테스트 추가</button>
                 </div> : null}
-                 <div className="overflow-x-auto">
+                 <p className="mb-2 text-xs text-slate-500 sm:hidden">표는 좌우로 밀어 전체 항목을 확인할 수 있습니다.</p>
+                 <div role="region" aria-label={`${group.label} 학생 기록 표`} tabIndex={0} className="overflow-x-auto rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
                    <table className={`w-full table-fixed border-collapse text-center text-sm [&_th]:text-center [&_th]:text-sm [&_th]:font-bold [&_th_div]:text-sm [&_th_div]:font-bold [&_th_span]:text-sm [&_th_span]:font-bold ${groupTableMinWidthClass}`}>
                      <colgroup><col className="w-[140px]" /><col className="w-[112px]" />{groupTestDefinitions.length ? <col className={groupTestColumnClass} /> : null}<col className="w-[205px]" /><col className="w-[190px]" /><col className="w-[360px]" /></colgroup>
                      <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="px-2 py-3 font-semibold">메모<br /><span className="font-normal">과제내용 · 수업메모</span></th></tr></thead>
