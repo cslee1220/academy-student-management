@@ -103,13 +103,6 @@ async function rows(table, configure) {
   return result.data ?? [];
 }
 
-async function deleteRows(table, configure) {
-  let query = admin.from(table).delete();
-  query = configure(query);
-  const result = await query;
-  if (result.error) throw new Error(`${table} 삭제 실패: ${result.error.message}`);
-}
-
 async function insertRows(table, data) {
   if (!data.length) return;
   const result = await admin.from(table).insert(data);
@@ -118,22 +111,6 @@ async function insertRows(table, data) {
 
 function logPass(label, detail) {
   console.log(`[PASS] ${label}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function removeGuardian(guardianId) {
-  if (!guardianId) return;
-  const guardianRows = await rows("guardians", (query) => query.eq("id", guardianId));
-  const authUserId = guardianRows[0]?.auth_user_id;
-  await deleteRows("guardian_devices", (query) => query.eq("guardian_id", guardianId));
-  await deleteRows("guardian_invites", (query) => query.eq("guardian_id", guardianId));
-  await deleteRows("student_guardians", (query) => query.eq("guardian_id", guardianId));
-  await deleteRows("guardians", (query) => query.eq("id", guardianId));
-  if (authUserId) {
-    const result = await admin.auth.admin.deleteUser(authUserId);
-    if (result.error && !result.error.message.toLowerCase().includes("not found")) {
-      throw new Error(`임시 보호자 인증계정 삭제 실패: ${result.error.message}`);
-    }
-  }
 }
 
 function dateForWeekday(weekday) {
@@ -280,17 +257,6 @@ async function createTemporaryTeacher() {
   return temporaryTeacher;
 }
 
-async function removeTemporaryTeacher(temporaryTeacher) {
-  if (!temporaryTeacher) return;
-  await deleteRows("teacher_accounts", (query) => query.eq("id", temporaryTeacher.accountId));
-  await deleteRows("academy_memberships", (query) => query.eq("id", temporaryTeacher.membershipId));
-  await deleteRows("profiles", (query) => query.eq("id", temporaryTeacher.profileId));
-  const result = await admin.auth.admin.deleteUser(temporaryTeacher.authUserId);
-  if (result.error && !result.error.message.toLowerCase().includes("not found")) {
-    throw new Error(`temporary teacher auth user deletion failed: ${result.error.message}`);
-  }
-}
-
 async function createDailyFixture(seed, currentTerm, temporaryTeacher) {
   const operationTypes = await rows("academy_operation_types", (query) => query
     .eq("academy_id", config.academyId)
@@ -412,34 +378,8 @@ async function createDailyFixture(seed, currentTerm, temporaryTeacher) {
     })));
     return fixture;
   } catch (error) {
-    await removeDailyFixture(fixture);
     throw error;
   }
-}
-
-async function removeDailyFixture(fixture) {
-  if (!fixture) return;
-  const blockIds = fixture.blockIds ?? [];
-  if (blockIds.length) {
-    await deleteRows("student_supplement_tasks", (query) => query.eq("academy_id", config.academyId).in("block_id", blockIds));
-    await deleteRows("daily_subject_records", (query) => query.eq("academy_id", config.academyId).in("block_id", blockIds));
-    await deleteRows("daily_attendance_records", (query) => query.eq("academy_id", config.academyId).in("block_id", blockIds));
-    await deleteRows("class_schedule_block_students", (query) => query.eq("academy_id", config.academyId).in("block_id", blockIds));
-    await deleteRows("class_schedule_blocks", (query) => query.eq("academy_id", config.academyId).in("id", blockIds));
-  }
-  await deleteRows("daily_common_homework", (query) => query.eq("academy_id", config.academyId).eq("class_id", fixture.classId));
-  await deleteRows("daily_record_publications", (query) => query.eq("academy_id", config.academyId).eq("student_id", fixture.studentId));
-  await deleteRows("class_subject_teacher_assignments", (query) => query.eq("academy_id", config.academyId).in("id", fixture.teacherAssignmentIds ?? []));
-  await deleteRows("student_class_assignments", (query) => query.eq("academy_id", config.academyId).eq("id", fixture.assignmentId));
-  await deleteRows("student_risk_results", (query) => query.eq("academy_id", config.academyId).eq("student_id", fixture.studentId));
-  await deleteRows("classes", (query) => query.eq("academy_id", config.academyId).eq("id", fixture.classId));
-  await deleteRows("academy_operation_schedules", (query) => query.eq("academy_id", config.academyId).eq("id", fixture.scheduleId));
-  const students = await rows("students", (query) => query.eq("academy_id", config.academyId).eq("id", fixture.studentId));
-  if (students.some((student) => !String(student.student_no).startsWith("TEST-"))) {
-    throw new Error("일별 통합 테스트가 TEST- 학생이 아닌 행을 삭제하려고 했습니다.");
-  }
-  await deleteRows("student_status_history", (query) => query.eq("academy_id", config.academyId).eq("student_id", fixture.studentId));
-  await deleteRows("students", (query) => query.eq("academy_id", config.academyId).eq("id", fixture.studentId));
 }
 
 async function main() {
@@ -447,7 +387,6 @@ async function main() {
   const teacherJar = new Map();
   const guardianJar = new Map();
   let blockIds = [];
-  let guardianId = null;
   let selected = null;
   let temporaryTeacher = null;
   let dailyFixture = null;
@@ -474,19 +413,15 @@ async function main() {
           testResults: [],
         }],
         commonHomework: {
-          A: { content: "일별 통합 테스트 숙제", noHomework: false, version: null },
+          A: {
+            lessonContent: "일별 통합 테스트 수업 내용",
+            content: "일별 통합 테스트 숙제",
+            noHomework: false,
+            version: null,
+          },
         },
       },
     });
-  }
-
-  async function cleanupStep(label, action) {
-    try {
-      await action();
-    } catch (error) {
-      console.error(`[CLEANUP-FAIL] ${label}: ${error instanceof Error ? error.message : String(error)}`);
-      process.exitCode = 1;
-    }
   }
 
   try {
@@ -647,7 +582,6 @@ async function main() {
     const token = new URL(inviteData.inviteUrl).searchParams.get("token");
     const createdGuardian = await rows("guardians", (query) => query.eq("phone", testPhone));
     assert(createdGuardian.length === 1, "일별 통합 테스트 보호자가 생성되지 않았습니다.");
-    guardianId = createdGuardian[0].id;
 
     await request("/api/guardian/activate", {
       jar: guardianJar,
@@ -676,6 +610,8 @@ async function main() {
     assert(draftRows[0].length === selected.blocks.length && draftRows[0].every((row) => row.save_state === "draft"), "모든 과목기록이 임시저장 상태가 아닙니다.");
     assert(draftRows[1].length === selected.blocks.length && draftRows[1].every((row) => row.save_state === "draft"), "모든 출결기록이 임시저장 상태가 아닙니다.");
     assert(draftRows[2][0]?.status === "draft", "임시저장 후 공개 게이트가 draft 상태가 아닙니다.");
+    const draftCommonSnapshots = await rows("daily_common_homework_publication_snapshots", (query) => query.eq("academy_id", config.academyId).eq("student_id", selected.student.id).eq("record_date", selected.recordDate));
+    assert(draftCommonSnapshots.length === 0, "임시저장 공통 기록 snapshot이 생성되어 공개될 수 있습니다.");
 
     const draftTeacherOverview = await request(`/api/teacher/overview?startDate=${selected.recordDate}&endDate=${selected.recordDate}&attendanceDate=${selected.recordDate}`, { jar: teacherJar });
     const draftAdminReport = await request(`/api/admin/reports?academyId=${config.academyId}&startDate=${selected.recordDate}&endDate=${selected.recordDate}`, { jar: adminJar });
@@ -703,7 +639,11 @@ async function main() {
       assert(finalSaveResult.payload?.data?.subjectRecords?.length === 1, "최종저장 과목기록 결과가 없습니다.");
     }
     assert(finalSaveResult?.payload?.data?.commonHomeworkByGroup?.A?.content === "일별 통합 테스트 숙제", "최종저장 공통 숙제 결과가 올바르지 않습니다.");
+    assert(finalSaveResult?.payload?.data?.commonHomeworkByGroup?.A?.lesson_content === "일별 통합 테스트 수업 내용", "최종저장 공통 수업 내용 결과가 올바르지 않습니다.");
     assert(finalSaveResult?.payload?.data?.publication?.publishedStudentCount === 1, "모든 과목 최종저장 후 공개 게이트가 열리지 않았습니다.");
+    const publishedCommonSnapshots = await rows("daily_common_homework_publication_snapshots", (query) => query.eq("academy_id", config.academyId).eq("student_id", selected.student.id).eq("record_date", selected.recordDate));
+    assert(publishedCommonSnapshots.length === selected.blocks.length, "과목별 공통 기록 공개 snapshot 수가 운영 블록 수와 일치하지 않습니다.");
+    assert(publishedCommonSnapshots.every((snapshot) => snapshot.lesson_content === "일별 통합 테스트 수업 내용" && snapshot.homework_content === "일별 통합 테스트 숙제"), "공개 snapshot에 수업 내용과 숙제가 별도 값으로 보존되지 않았습니다.");
     logPass("교사 일별 기록 최종저장", "모든 과목 블록·출결·과목기록·공통 숙제");
 
     for (const block of selected.blocks) {
@@ -733,6 +673,18 @@ async function main() {
     assert(healedStudent?.publication_status === "published", "final records did not recover a stale draft publication gate.");
     logPass("최종저장 공개 게이트 자동 복구", "완료 기록 재조회 시 보호자 공개 상태 유지");
 
+    const sourceRowsBeforeDirectChange = await rows("daily_common_homework", (query) => query.eq("academy_id", config.academyId).eq("class_id", dailyFixture.classId).eq("record_date", selected.recordDate).eq("save_state", "final"));
+    assert(sourceRowsBeforeDirectChange.length === selected.blocks.length, "원본 공통 기록의 과목별 행 수가 예상과 다릅니다.");
+    const firstPublishedSnapshot = publishedCommonSnapshots[0];
+    const { error: directSourceChangeError } = await admin
+      .from("daily_common_homework")
+      .update({ lesson_content: "원본 직접 변경 검증", content: "원본 직접 변경 숙제" })
+      .eq("id", sourceRowsBeforeDirectChange[0]?.id);
+    if (directSourceChangeError) throw directSourceChangeError;
+    const unchangedPublishedSnapshot = await rows("daily_common_homework_publication_snapshots", (query) => query.eq("id", firstPublishedSnapshot.id));
+    assert(unchangedPublishedSnapshot[0]?.lesson_content === "일별 통합 테스트 수업 내용" && unchangedPublishedSnapshot[0]?.homework_content === "일별 통합 테스트 숙제", "공통 원본을 직접 변경할 때 이미 공개된 snapshot이 함께 바뀝니다.");
+    logPass("공개 snapshot 원본 분리", "원본 직접 변경에도 학부모 공개본 고정");
+
     const after = await request(`/api/teacher/daily-records?academyId=${config.academyId}&blockId=${selected.block.id}&recordDate=${selected.recordDate}`, { jar: teacherJar });
     const savedStudent = after.payload?.data?.students?.find((student) => student.id === selected.student.id);
     assert(savedStudent?.attendance?.attendance_status === "present", "저장 후 출결을 다시 조회하지 못했습니다.");
@@ -758,6 +710,8 @@ async function main() {
       assert(dailyPublication.snapshots.some((snapshot) => snapshot.item_key === `attendance:${blockId}`), "보호자 화면에 모든 과목 출결이 표시되지 않았습니다.");
     }
     assert(dailyPublication.snapshots.some((snapshot) => snapshot.item_key.startsWith("common_homework:")), "보호자 화면에 일별 공통 숙제가 표시되지 않았습니다.");
+    const parentCommonSnapshot = dailyPublication.snapshots.find((snapshot) => snapshot.item_key.startsWith("common_homework:"));
+    assert(parentCommonSnapshot?.value_json?.lessonContent === "일별 통합 테스트 수업 내용" && parentCommonSnapshot?.value_json?.content === "일별 통합 테스트 숙제", "보호자 API가 공개된 수업 내용과 숙제 snapshot을 각각 반환하지 않습니다.");
     logPass("최종저장 공개 게이트", "모든 과목 출결·과목기록·공통 숙제");
   } catch (error) {
     console.error(`[FAIL] ${error instanceof Error ? error.message : String(error)}`);
@@ -766,12 +720,7 @@ async function main() {
     }
     process.exitCode = 1;
   } finally {
-    await cleanupStep("임시 보호자", async () => {
-      if (guardianId) await removeGuardian(guardianId);
-    });
-    await cleanupStep("TEST- 학생·운영 블록·일별 기록", () => removeDailyFixture(dailyFixture));
-    await cleanupStep("임시 교사", () => removeTemporaryTeacher(temporaryTeacher));
-    console.log("[CLEANUP] TEST- 학생·반·운영 블록·일별 기록·임시 보호자·임시 교사 정리 확인");
+    console.log("[PRESERVED] 이번 실행에서 생성한 합성 학생·수업·기록·보호자·교사 데이터는 보존했습니다.");
   }
 
   if (process.exitCode !== 1) console.log("[RESULT] 날짜 기반 통합 테스트 PASS");

@@ -80,7 +80,7 @@ type SupplementPopup = {
 type HomeworkGroupKey = "A" | "B" | "unassigned";
 type TestGroupKey = HomeworkGroupKey;
 type TestDefinitionsByGroup = Record<TestGroupKey, TestDefinition[]>;
-type HomeworkDraft = { content: string; noHomework: boolean; version: number | null };
+type HomeworkDraft = { lessonContent: string; content: string; noHomework: boolean; version: number | null };
 
 const weekdayLabels: Record<string, string> = {
   mon: "월",
@@ -126,12 +126,6 @@ function formatShortDate(value: string) {
 
 function formatTestDefinitionLabel(definition: TestDefinition, index: number) {
   return definition.name.trim() || `테스트 ${index + 1}`;
-}
-
-function commonHomeworkLabel(subjectName: string) {
-  if (subjectName.includes("문법") || subjectName.includes("영작")) return "문법/영작숙제";
-  if (subjectName.includes("독해") || subjectName.includes("듣기")) return "독해/듣기숙제";
-  return "공통숙제";
 }
 
 function groupDailyBlocks(blocks: DailyBlock[]): DailyBlockGroup[] {
@@ -286,6 +280,7 @@ function isPausedStudent(student: Pick<StudentRow, "student_status">) {
 function homeworkDraft(value: unknown): HomeworkDraft {
   const row = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return {
+    lessonContent: typeof row.lesson_content === "string" ? row.lesson_content : "",
     content: typeof row.content === "string" ? row.content : "",
     noHomework: row.no_homework === true,
     version: typeof row.version === "number" ? row.version : null,
@@ -527,7 +522,7 @@ export default function DailyRecordsPage() {
     setMessage("");
   }
 
-  function updateHomework(groupKey: HomeworkGroupKey, key: "content" | "noHomework", value: string | boolean) {
+  function updateHomework(groupKey: HomeworkGroupKey, key: "lessonContent" | "content" | "noHomework", value: string | boolean) {
     setHomeworkByGroup((current) => ({
       ...current,
       [groupKey]: { ...current[groupKey], [key]: value },
@@ -716,7 +711,7 @@ export default function DailyRecordsPage() {
               .filter((group) => group.rows.length > 0)
               .map((group) => {
                 const draft = homeworkByGroup[group.key];
-                return [group.key, { content: draft.content, noHomework: draft.noHomework, version: draft.version }];
+                return [group.key, { lessonContent: draft.lessonContent, content: draft.content, noHomework: draft.noHomework, version: draft.version }];
               }),
           ),
         }),
@@ -784,8 +779,19 @@ export default function DailyRecordsPage() {
       {!selectedGroupKey ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">수업 묶음을 선택해 주세요.</p><p className="mt-2 text-sm text-slate-500">관리자가 등록한 반·과목·담당교사별 운영시간이 표시됩니다.</p></section> : !dateIsValidForBlock ? null : isLoading ? <section role="status" aria-live="polite" className="mt-6 rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center"><p className="font-semibold text-slate-700">학생 기록을 불러오는 중입니다.</p></section> : <>
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-sm font-bold text-indigo-600">학생별 기록</p><h2 className="mt-1 text-xl font-bold text-slate-950">전체 학생 {attendanceSummary.totalCount}명</h2></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => void saveRecords("draft")} disabled={isSaving || students.every(isPausedStudent)} className={`rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 ${focusRingClass}`}>{isSaving ? "저장 중..." : "임시저장"}</button><button type="button" onClick={() => void saveRecords("final")} disabled={isSaving || students.every(isPausedStudent)} className={`rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300 ${focusRingClass}`}>{isSaving ? "저장 중..." : "과목 최종저장"}</button></div></div>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold"><span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">임시저장 {students.filter((student) => student.saveState === "draft").length}명</span><span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">전체 과목 입력 대기 {students.filter((student) => student.saveState === "final" && student.publicationStatus !== "published").length}명</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">학부모 공개 {students.filter((student) => student.publicationStatus === "published").length}명</span></div>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold" aria-label="출결 집계"><span className="rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-800">출결 대상 {attendanceSummary.eligibleCount}명</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">출석 {attendanceSummary.presentCount}명</span><span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">휴원 {attendanceSummary.pausedCount}명</span><span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">출결 미입력 {attendanceSummary.notEnteredCount}명</span><span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-800">출석률 {attendanceSummary.attendanceRate}%</span></div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold" aria-label="저장·공개 및 출결 현황">
+            <span className="whitespace-nowrap text-slate-500">저장·공개</span>
+            <span className="whitespace-nowrap rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">임시저장 {students.filter((student) => student.saveState === "draft").length}명</span>
+            <span className="whitespace-nowrap rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">전체 과목 입력 대기 {students.filter((student) => student.saveState === "final" && student.publicationStatus !== "published").length}명</span>
+            <span className="whitespace-nowrap rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">학부모 공개 {students.filter((student) => student.publicationStatus === "published").length}명</span>
+            <span className="mx-1 hidden h-5 border-l border-slate-200 sm:block" aria-hidden="true" />
+            <span className="whitespace-nowrap text-slate-500">출결</span>
+            <span className="whitespace-nowrap rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-800">대상 {attendanceSummary.eligibleCount}명</span>
+            <span className="whitespace-nowrap rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-800">출석 {attendanceSummary.presentCount}명</span>
+            <span className="whitespace-nowrap rounded-full bg-amber-50 px-3 py-1.5 text-amber-800">휴원 {attendanceSummary.pausedCount}명</span>
+            <span className="whitespace-nowrap rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">미입력 {attendanceSummary.notEnteredCount}명</span>
+            <span className="whitespace-nowrap rounded-full bg-violet-50 px-3 py-1.5 text-violet-800">출석률 {attendanceSummary.attendanceRate}%</span>
+          </div>
           <div className="mt-4 space-y-4">
             {studentGroups.map((group) => {
               const groupTestDefinitions = testDefinitionsByGroup[group.key];
@@ -821,7 +827,7 @@ export default function DailyRecordsPage() {
                  <div role="region" aria-label={`${group.label} 학생 기록 표`} tabIndex={0} className="overflow-x-auto rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
                    <table className={`w-full table-fixed border-collapse text-center text-sm [&_th]:text-center [&_th]:text-sm [&_th]:font-bold [&_th_div]:text-sm [&_th_div]:font-bold [&_th_span]:text-sm [&_th_span]:font-bold ${groupTableMinWidthClass}`}>
                      <colgroup><col className="w-[140px]" /><col className="w-[112px]" />{groupTestDefinitions.length ? <col className={groupTestColumnClass} /> : null}<col className="w-[205px]" /><col className="w-[190px]" /><col className="w-[360px]" /></colgroup>
-                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="px-2 py-3 font-semibold">메모<br /><span className="font-normal">과제내용 · 수업메모</span></th></tr></thead>
+                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="min-w-[250px] px-2 py-3 font-semibold">학생별 수업메모</th></tr></thead>
                      <tbody>
                        {group.rows.map((student) => {
                          const absent = student.attendanceStatus !== "present";
@@ -872,13 +878,9 @@ export default function DailyRecordsPage() {
                                    {student.isHomeworkSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "homework")} disabled={paused} className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-1 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`${student.name} 숙제 보충 예정일 수정`}>{formatShortDate(student.homeworkSupplementDate)}</button> : null}
                                  </div>
                                </div>
+                               <textarea aria-label={`${student.name} 과제보충 내용`} value={student.homeworkSupplementContent} onChange={(event) => updateStudent(student.id, "homeworkSupplementContent", event.target.value)} disabled={absent || paused || !student.isHomeworkSupplementary} placeholder="과제보충 내용" rows={2} className="mt-2 h-12 w-full min-w-0 resize-y overflow-y-auto rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
                              </td>
-                             <td className="px-2 py-2">
-                               <div className="flex flex-nowrap items-center justify-center gap-1 overflow-x-auto pb-1">
-                                 <input aria-label={`${student.name} 과제보충 내용`} value={student.homeworkSupplementContent} onChange={(event) => updateStudent(student.id, "homeworkSupplementContent", event.target.value)} disabled={absent || paused || !student.isHomeworkSupplementary} placeholder="과제내용" className="h-8 w-[168px] shrink-0 rounded-lg border border-slate-300 px-2 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
-                                 <input aria-label={`${student.name} 수업 메모`} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent || paused} placeholder="수업메모" className="h-8 w-[168px] shrink-0 rounded-lg border border-slate-300 px-2 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
-                               </div>
-                             </td>
+                             <td className="px-2 py-2"><textarea aria-label={`${student.name} 학생별 수업메모`} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent || paused} placeholder="학생별 수업메모" rows={2} className="h-14 w-full min-w-[220px] resize-y overflow-y-auto rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" /><p className="mt-1 max-w-[280px] text-left text-[10px] leading-4 text-slate-500">미이행 과제, 칭찬사항, 부족사항, 보충 관련, 학부모 전달사항 등을 입력하세요.</p><p className="mt-1 text-left text-[10px] font-semibold text-indigo-700">학부모 공개 항목</p></td>
                            </tr>
                          );
                        })}
@@ -886,8 +888,11 @@ export default function DailyRecordsPage() {
                    </table>
                  </div>
                    <div className="border-t border-slate-200 bg-slate-50/70 p-4">
-                   <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">공통 기록</p><h4 className="mt-1 text-base font-bold text-slate-900">{group.label} {commonHomeworkLabel(selectedGroup?.subject_name_snapshot ?? "")} </h4></div><span className="text-xs text-slate-500">반·날짜·과목별로 따로 저장됩니다.</span></div>
-                   <div className="mt-3 grid gap-3 md:grid-cols-[auto_minmax(0,1fr)] md:items-start"><label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-700"><input type="checkbox" checked={homeworkByGroup[group.key].noHomework} onChange={(event) => updateHomework(group.key, "noHomework", event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label><textarea value={homeworkByGroup[group.key].content} onChange={(event) => updateHomework(group.key, "content", event.target.value)} disabled={homeworkByGroup[group.key].noHomework} placeholder="예: 교재 32쪽 1~5번" className="min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-indigo-500 disabled:bg-slate-100" /></div>
+                   <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">공통 기록</p><h4 className="mt-1 text-base font-bold text-slate-900">{group.label} · {selectedGroup?.subject_name_snapshot} 수업 내용·숙제</h4></div><span className="text-xs text-slate-500">반·날짜·과목별로 따로 저장됩니다.</span></div>
+                   <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                     <label className="block text-sm font-semibold text-slate-700">수업 내용<textarea value={homeworkByGroup[group.key].lessonContent} onChange={(event) => updateHomework(group.key, "lessonContent", event.target.value)} placeholder="오늘 다룬 수업 내용" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500" /></label>
+                     <div><label className="block text-sm font-semibold text-slate-700">숙제<textarea value={homeworkByGroup[group.key].content} onChange={(event) => updateHomework(group.key, "content", event.target.value)} disabled={homeworkByGroup[group.key].noHomework} placeholder="예: 교재 32쪽 1~5번" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500 disabled:bg-slate-100" /></label><label className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={homeworkByGroup[group.key].noHomework} onChange={(event) => updateHomework(group.key, "noHomework", event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label></div>
+                   </div>
                  </div>
               </div>;
             })}

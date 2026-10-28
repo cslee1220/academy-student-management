@@ -79,6 +79,7 @@ erDiagram
 | 기록 | teacher_subject_records | 교사별 과목 학습기록 | academy_id + student_id + session_id + subject_id + teacher_id |
 | 기록 | daily_attendance_records | 날짜·운영블록별 출결·저장상태 | academy_id + block_id + student_id + record_date |
 | 기록 | daily_common_homework | 날짜·반·운영구분별 공통 숙제·저장상태 | academy_id + class_id + record_date + operation_group(A/B/common) |
+| 공개 | daily_common_homework_publication_snapshots | 공개 당시 학생별 과목 공통 수업 내용·숙제 snapshot | academy_id + student_id + record_date + daily_common_homework_id |
 | 기록 | daily_subject_records | 날짜·운영블록별 과목 학습기록·저장상태 | academy_id + block_id + student_id + record_date |
 | 공개 | daily_record_publications | 학생·수업일 단위 보호자 공개 게이트 | academy_id + student_id + record_date |
 | 기록 | test_definitions | 반 전체 테스트 정의 | academy_id + session_id + subject_id + teacher_id + sequence_no |
@@ -171,11 +172,12 @@ erDiagram
 | 표 | 핵심 필드 | 상태·제약 |
 |---|---|---|
 | daily_attendance_records | academy_id, block_id, student_id, record_date, attendance_status, absence_note, save_state, version | 운영 블록·학생·날짜당 1건. save_state=draft/final |
-| daily_common_homework | academy_id, class_id, record_date, operation_group, content, no_homework, save_state, version | 반·날짜·운영구분당 1건. operation_group=A/B/common, save_state=draft/final |
+| daily_common_homework | academy_id, class_id, record_date, subject_id, operation_group, lesson_content, content, no_homework, save_state, version | 반·날짜·과목·운영구분당 1건. lesson_content는 공통 수업 내용, content는 공통 숙제 |
+| daily_common_homework_publication_snapshots | academy_id, student_id, record_date, class_id, daily_common_homework_id, subject_id, operation_group, subject_name_snapshot, lesson_content, homework_content, no_homework | 공개 시점 학생별 snapshot. 원본 수정만으로 공개 내용은 바뀌지 않음 |
 | daily_subject_records | academy_id, block_id, student_id, record_date, subject_id, teacher_id, homework_score, understanding_score, participation_score, is_supplementary, public_note, test_definitions, test_results, save_state, version | 운영 블록·학생·날짜당 1건. save_state=draft/final |
 | daily_record_publications | academy_id, student_id, record_date, status, updated_by_profile_id, updated_at | 학생·수업일당 1건. status=draft/published |
 
-교사는 임시저장 또는 과목 최종저장을 선택합니다. 임시저장은 기록을 보존하지만 해당 학생·수업일의 `daily_record_publications.status`를 `draft`로 되돌려 이전 공개본도 보호자에게 숨깁니다. 최종저장 후 서버가 해당 날짜에 유효한 모든 과목 운영 블록에 대해 학생의 과목기록과 출결이 모두 `final`인지 확인한 경우에만 `published`로 전환합니다. 운영자가 공개 상태를 직접 입력하지 않으며 보호자 RLS와 조회 API는 공개 게이트가 열린 데이터만 반환합니다. 새 상태 흐름은 날짜별 자료에만 적용하고 과거 `publication_bundle` 승인 흐름은 유지합니다. `version`은 동시 저장 추적용으로 유지합니다.
+교사는 임시저장 또는 과목 최종저장을 선택합니다. 임시저장은 기록을 보존하지만 해당 학생·수업일의 `daily_record_publications.status`를 `draft`로 되돌려 이전 공개본도 보호자에게 숨깁니다. 최종저장 후 서버가 해당 날짜에 유효한 모든 과목 운영 블록에 대해 학생의 과목기록과 출결이 모두 `final`인지 확인한 경우에만 `published`로 전환합니다. 공개 완료 때 `daily_common_homework_publication_snapshots`에 학생별·과목별 수업 내용과 숙제를 고정 저장하며, 보호자 API는 이 snapshot을 공개 게이트와 함께 읽습니다. 교사의 정상 최종저장 트랜잭션에서 새로 공개되거나 재공개될 때 snapshot이 갱신되고, 공통 원본을 별도로 수정해도 기존 공개본은 바뀌지 않습니다. 운영자가 공개 상태를 직접 입력하지 않으며 보호자 RLS와 조회 API는 공개 게이트가 열린 데이터만 반환합니다. 새 상태 흐름은 날짜별 자료에만 적용하고 과거 `publication_bundle` 승인 흐름은 유지합니다. `version`은 동시 저장 추적용으로 유지합니다.
 
 ### 5.6 비공개기록과 상담
 
@@ -227,7 +229,7 @@ erDiagram
 | 운영 블록 | academy_id + class_id + subject_id + teacher_id + weekday + start_time + effective_start |
 | 운영 블록 학생 | block_id + student_id + start_date (operation_group은 A/B) |
 | 날짜별 출결 | academy_id + block_id + student_id + record_date |
-| 날짜별 공통 숙제 | academy_id + class_id + record_date + operation_group |
+| 날짜별 공통 기록 | academy_id + class_id + record_date + subject_id + operation_group |
 | 날짜별 과목기록 | academy_id + block_id + student_id + record_date |
 | 공지사항 | UUID `id` |
 

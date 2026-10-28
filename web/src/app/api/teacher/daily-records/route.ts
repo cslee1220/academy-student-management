@@ -140,7 +140,7 @@ function parseGroupedHomework(value: unknown) {
     throw new HttpError(422, "invalid_homework", "그룹별 공통 숙제 형식이 올바르지 않습니다.");
   }
 
-  const groupedHomework: Record<string, { content: string | null; no_homework: boolean; version: number | null }> = {};
+  const groupedHomework: Record<string, { lesson_content: string | null; lesson_content_present: boolean; content: string | null; no_homework: boolean; version: number | null }> = {};
   for (const [groupKey, rawValue] of Object.entries(value)) {
     if (!["A", "B", "unassigned", "common"].includes(groupKey)) {
       throw new HttpError(422, "invalid_homework_group", "공통 숙제 그룹이 올바르지 않습니다.");
@@ -155,6 +155,8 @@ function parseGroupedHomework(value: unknown) {
       throw new HttpError(422, "invalid_homework_version", "공통 숙제 버전이 올바르지 않습니다.");
     }
     groupedHomework[groupKey] = {
+      lesson_content: parseOptionalText(row.lessonContent, `${groupKey}그룹 수업 내용`, 5000),
+      lesson_content_present: Object.hasOwn(row, "lessonContent"),
       content: parseOptionalText(row.content, `${groupKey}그룹 공통 숙제`, 5000),
       no_homework: row.noHomework === true,
       version,
@@ -546,7 +548,7 @@ export async function GET(request: NextRequest) {
         : Promise.resolve({ data: [], error: null }),
       supabase.from("daily_attendance_records").select("id, student_id, attendance_status, absence_note, version, updated_at").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
       supabase.from("daily_subject_records").select("id, student_id, subject_id, teacher_id, homework_score, understanding_score, participation_score, is_supplementary, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, public_note, test_definitions, test_results, save_state, version, updated_at").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
-      supabase.from("daily_common_homework").select("id, class_id, subject_id, operation_group, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).order("operation_group", { ascending: true }),
+      supabase.from("daily_common_homework").select("id, class_id, subject_id, operation_group, lesson_content, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).order("operation_group", { ascending: true }),
     ]);
     if (studentsResult.error || attendanceResult.error || subjectResult.error || homeworkResult.error) throw new Error("daily record query failed");
     const statusHistoryResult = studentIds.length

@@ -95,40 +95,6 @@ function qualitativeScoreText(field: QualitativeScoreField, value: unknown) {
     : scoreValue(value);
 }
 
-function SnapshotCard({ snapshot }: { snapshot: Snapshot }) {
-  const value = snapshot.value_json ?? {};
-  if (snapshot.item_key === "attendance" || snapshot.item_key.startsWith("attendance:")) {
-    const status = value.status === "present" ? "출석" : value.status === "absent" ? "결석" : "무단결석";
-    return <p className="text-sm text-slate-700">{status}</p>;
-  }
-  if (snapshot.item_key === "common_homework" || snapshot.item_key.startsWith("common_homework:")) {
-    return <p className="text-sm leading-6 text-slate-700">{value.noHomework ? "숙제 없음" : textValue(value.content)}</p>;
-  }
-  if (snapshot.item_key.startsWith("subject:")) {
-    const supplementItems = subjectSupplementLabels(snapshot);
-    const scoreItems = [
-      ["homeworkScore", value.homeworkScore],
-      ["understandingScore", value.understandingScore],
-      ["participationScore", value.participationScore],
-    ].filter(([, score]) => score !== undefined) as Array<[QualitativeScoreField, unknown]>;
-    return (
-      <div className="space-y-2 text-sm text-slate-700">
-        {scoreItems.length ? <p>{scoreItems.map(([field, score]) => qualitativeScoreText(field, score)).join(" · ")}</p> : null}
-        {supplementItems.length ? <div className="space-y-1 font-semibold text-amber-700">{supplementItems.map((item) => <p key={item}>{item}</p>)}</div> : null}
-        {value.publicNote ? <p className="leading-6">{textValue(value.publicNote)}</p> : null}
-      </div>
-    );
-  }
-  if (snapshot.item_key.startsWith("test:")) {
-    return (
-      <p className="text-sm text-slate-700">
-        {value.score === null || value.score === undefined ? `미응시: ${textValue(value.nonAttemptReason)}` : `${scoreValue(value.score)} / ${scoreValue(value.maxScore)}`}
-      </p>
-    );
-  }
-  return <p className="text-sm leading-6 text-slate-700">{textValue(value.content)}</p>;
-}
-
 function subjectName(snapshot: Snapshot) {
   return typeof snapshot.value_json.subjectName === "string" ? snapshot.value_json.subjectName : "과목";
 }
@@ -245,14 +211,35 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
 
       {commonHomeworks.length ? (
         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-          <p className="text-sm font-bold text-slate-800">공통숙제</p>
+          <p className="text-sm font-bold text-slate-800">과목별 수업 내용·숙제</p>
           <div className="mt-2 space-y-3">
-            {commonHomeworks.map((snapshot) => (
-              <div key={snapshot.id} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                <p className="text-xs font-bold text-indigo-700">{commonHomeworkLabel(snapshot)}</p>
-                <div className="mt-1"><SnapshotCard snapshot={snapshot} /></div>
-              </div>
-            ))}
+            {commonHomeworks.map((snapshot) => {
+              const value = snapshot.value_json ?? {};
+              const lessonContent = typeof value.lessonContent === "string" ? value.lessonContent.trim() : "";
+              const homeworkContent = typeof value.content === "string" ? value.content.trim() : "";
+              const noHomework = value.noHomework === true;
+              const subjectName = typeof value.subjectName === "string" && value.subjectName.trim()
+                ? value.subjectName.trim()
+                : commonHomeworkLabel(snapshot).replace(/숙제$/, "");
+              const entries = [
+                lessonContent ? { label: "수업 내용", content: lessonContent } : null,
+                homeworkContent || noHomework ? { label: "숙제", content: noHomework ? "숙제 없음" : homeworkContent } : null,
+              ].filter((entry): entry is { label: string; content: string } => Boolean(entry));
+              if (!entries.length) return null;
+              return (
+                <section key={snapshot.id} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                  <h3 className="text-xs font-bold text-indigo-700">{subjectName}</h3>
+                  <div className="mt-1 grid gap-3 lg:grid-cols-2">
+                    {entries.map((entry, index) => (
+                      <div key={entry.label} className={index > 0 ? "min-w-0 border-t border-slate-200 pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0" : "min-w-0"}>
+                        <p className="text-xs font-semibold text-slate-600">{entry.label}</p>
+                        <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">{entry.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         </div>
       ) : null}

@@ -138,7 +138,7 @@ export async function GET() {
       );
     }
 
-    const [dailyPublicationAccessResult, dailySubjectsResult, dailyAttendanceResult, dailyHomeworkResult, dailyBlocksResult, dailyBlockStudentsResult] = await Promise.all([
+    const [dailyPublicationAccessResult, dailySubjectsResult, dailyAttendanceResult, dailyHomeworkSnapshotsResult, dailyBlocksResult, dailyBlockStudentsResult] = await Promise.all([
       supabase
         .from("daily_record_publications")
         .select("student_id, record_date")
@@ -157,11 +157,11 @@ export async function GET() {
         .eq("academy_id", guardian.academy_id)
         .in("student_id", studentIds)
         .order("record_date", { ascending: false }),
-      supabase
-        .from("daily_common_homework")
-        .select("id, class_id, subject_id, record_date, operation_group, content, no_homework, save_state")
+      admin
+        .from("daily_common_homework_publication_snapshots")
+        .select("id, student_id, record_date, daily_common_homework_id, subject_name_snapshot, lesson_content, homework_content, no_homework")
         .eq("academy_id", guardian.academy_id)
-        .eq("save_state", "final")
+        .in("student_id", studentIds)
         .order("record_date", { ascending: false }),
       admin
         .from("class_schedule_blocks")
@@ -173,7 +173,7 @@ export async function GET() {
         .eq("academy_id", guardian.academy_id)
         .in("student_id", studentIds),
     ]);
-    if (dailyPublicationAccessResult.error || dailySubjectsResult.error || dailyAttendanceResult.error || dailyHomeworkResult.error || dailyBlocksResult.error || dailyBlockStudentsResult.error) {
+    if (dailyPublicationAccessResult.error || dailySubjectsResult.error || dailyAttendanceResult.error || dailyHomeworkSnapshotsResult.error || dailyBlocksResult.error || dailyBlockStudentsResult.error) {
       return NextResponse.json(
         { error: { code: "database_error", message: "날짜별 학습정보를 불러오지 못했습니다." } },
         { status: 500 },
@@ -290,46 +290,20 @@ export async function GET() {
         value_json: { status: row.attendance_status, absenceNote: row.absence_note, subjectName: subjectName ?? "과목" },
       });
     }
-    const dailyHomeworkByClassDate = new Map<string, typeof dailyHomeworkResult.data>();
-    const dailyHomeworkSnapshotKeys = new Set<string>();
-    for (const homework of dailyHomeworkResult.data ?? []) {
-      const key = `${homework.class_id}:${homework.record_date}`;
-      dailyHomeworkByClassDate.set(key, [...(dailyHomeworkByClassDate.get(key) ?? []), homework]);
-    }
-    for (const homework of dailyHomeworkResult.data ?? []) {
-      for (const [blockId, assignments] of dailyAssignmentsByBlock.entries()) {
-        const block = dailyBlockMap.get(blockId);
-        if (!block || block.class_id !== homework.class_id) continue;
-        const homeworkRows = (dailyHomeworkByClassDate.get(`${block.class_id}:${homework.record_date}`) ?? [])
-          .filter((row) => !row.subject_id || row.subject_id === block.subject_id);
-        const effectiveAssignments = (assignments ?? [])
-          .filter((candidate) =>
-            typeof candidate.start_date === "string"
-            && candidate.start_date <= homework.record_date
-            && (!candidate.end_date || candidate.end_date >= homework.record_date),
-          )
-          .sort((left, right) => Number(Boolean(right.is_active)) - Number(Boolean(left.is_active)) || right.start_date.localeCompare(left.start_date));
-        for (const assignment of effectiveAssignments) {
-          if (homework.record_date < assignment.start_date || (assignment.end_date && homework.record_date > assignment.end_date)) continue;
-          if (!publishedDailyKeys.has(`${assignment.student_id}:${homework.record_date}`)) continue;
-          const preferred = homeworkRows.find((row) => row.operation_group === assignment.operation_group)
-            ?? homeworkRows.find((row) => row.operation_group === "common");
-          if (!preferred || preferred.id !== homework.id) continue;
-          const snapshotKey = `${assignment.student_id}:${homework.record_date}:${preferred.id}`;
-          if (dailyHomeworkSnapshotKeys.has(snapshotKey)) continue;
-          dailyHomeworkSnapshotKeys.add(snapshotKey);
-          const publication = getDailyPublication(assignment.student_id, homework.record_date);
-          const subjectName = preferred.subject_id
-            ? block.subject_name_snapshot
-            : null;
-          publication.snapshots.push({
-            id: `daily-homework-${homework.id}-${assignment.student_id}`,
-            item_key: `common_homework:${preferred.subject_id ?? "common"}:${preferred.id}`,
-            label_snapshot: commonHomeworkLabel(subjectName),
-            value_json: { content: homework.content, noHomework: homework.no_homework, subjectName },
-          });
-        }
-      }
+    for (const homework of dailyHomeworkSnapshotsResult.data ?? []) {
+      if (!publishedDailyKeys.has(`${homework.student_id}:${homework.record_date}`)) continue;
+      const publication = getDailyPublication(homework.student_id, homework.record_date);
+      publication.snapshots.push({
+        id: `daily-homework-${homework.daily_common_homework_id}-${homework.student_id}`,
+        item_key: `common_homework:${homework.subject_name_snapshot ?? "common"}:${homework.daily_common_homework_id}`,
+        label_snapshot: commonHomeworkLabel(homework.subject_name_snapshot),
+        value_json: {
+          content: homework.homework_content,
+          lessonContent: homework.lesson_content,
+          noHomework: homework.no_homework,
+          subjectName: homework.subject_name_snapshot,
+        },
+      });
     }
 
     const studentMap = new Map((students ?? []).map((student) => [student.id, student]));
