@@ -23,6 +23,12 @@ function parseUuid(value: unknown, fieldName: string) {
   return value;
 }
 
+function parseOptionalVersion(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new HttpError(400, "invalid_request", "version must be a positive integer.");
+  return value;
+}
+
 function parseDate(value: string | null) {
   const date = value ?? getSeoulDate();
   if (!DATE_PATTERN.test(date)) throw new HttpError(400, "invalid_date", "날짜는 YYYY-MM-DD 형식이어야 합니다.");
@@ -161,6 +167,7 @@ export async function PATCH(request: NextRequest) {
     const requestedAcademyId = input.academyId === undefined ? undefined : parseUuid(input.academyId, "academyId");
     const taskId = parseUuid(input.taskId, "taskId");
     const kind = input.kind === "test" || input.kind === "homework" ? input.kind : null;
+    const expectedVersion = parseOptionalVersion(input.version);
     if (!kind || typeof input.completed !== "boolean") throw new HttpError(400, "invalid_request", "완료 유형과 상태가 필요합니다.");
     const { academyId, profileId, role } = await getTeacherContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
@@ -173,7 +180,7 @@ export async function PATCH(request: NextRequest) {
     const patch = kind === "test"
       ? { test_completed: input.completed, test_completed_by_profile_id: input.completed ? profileId : null, test_completed_at: input.completed ? now : null }
       : { homework_completed: input.completed, homework_completed_by_profile_id: input.completed ? profileId : null, homework_completed_at: input.completed ? now : null };
-    let updateQuery = admin.from("student_supplement_tasks").update(patch).eq("academy_id", academyId).eq("id", taskId).eq("version", task.version);
+    let updateQuery = admin.from("student_supplement_tasks").update(patch).eq("academy_id", academyId).eq("id", taskId).eq("version", expectedVersion ?? task.version);
     if (role === "teacher") updateQuery = updateQuery.eq("teacher_id", profileId);
     const { data: updated, error: updateError } = await updateQuery.select("id, version, test_completed, homework_completed, updated_at").maybeSingle();
     if (updateError) throw updateError;
