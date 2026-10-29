@@ -448,6 +448,48 @@ async function main() {
     assert(adminSettings?.version >= 1 && adminSettings?.metrics && adminSettings?.supplementTypes, "운영자 수업기록 설정 조회가 정상 동작하지 않습니다.");
     assert(adminSettings.metrics.filter((item) => item.isActive).length <= 4 && adminSettings.supplementTypes.filter((item) => item.isActive).length <= 3, "운영자 수업기록 설정 한도가 지켜지지 않았습니다.");
     logPass("운영자 수업기록 설정 조회");
+    const originalRecordSettings = {
+      testsEnabled: adminSettings.testsEnabled,
+      studentMemoEnabled: adminSettings.studentMemoEnabled,
+      commonRecordEnabled: adminSettings.commonRecordEnabled,
+      metrics: adminSettings.metrics,
+      supplementTypes: adminSettings.supplementTypes,
+    };
+    let latestRecordSettings = adminSettings;
+    try {
+      const preservedInactiveMetric = { id: randomUUID(), code: null, name: "통합 테스트 비활성 지표", displayOrder: adminSettings.metrics.length + 1, isActive: false, scaleMax: 5 };
+      const preservedInactiveSupplement = { id: randomUUID(), code: null, name: "통합 테스트 비활성 보충", displayOrder: adminSettings.supplementTypes.length + 1, isActive: false };
+      const inactiveResponse = await request("/api/admin/record-settings", { jar: adminJar, method: "POST", body: { expectedVersion: latestRecordSettings.version, settings: { ...originalRecordSettings, metrics: [...latestRecordSettings.metrics, preservedInactiveMetric], supplementTypes: [...latestRecordSettings.supplementTypes, preservedInactiveSupplement] } } });
+      latestRecordSettings = inactiveResponse.payload?.data;
+      assert(inactiveResponse.status === 200 && latestRecordSettings?.metrics.some((item) => item.id === preservedInactiveMetric.id && item.isActive === false) && latestRecordSettings?.supplementTypes.some((item) => item.id === preservedInactiveSupplement.id && item.isActive === false), "비활성 과거 항목 보존 또는 저장이 실패했습니다.");
+      logPass("비활성 수업지표·보충 유형 보존");
+
+      const inactiveMetric = latestRecordSettings.metrics.find((item) => !item.isActive);
+      if (inactiveMetric) {
+        const activeMetricCount = latestRecordSettings.metrics.filter((item) => item.isActive).length;
+        const reactivateMetricResponse = await request("/api/admin/record-settings", { jar: adminJar, method: "POST", allowStatuses: [422], body: { expectedVersion: latestRecordSettings.version, settings: { ...originalRecordSettings, metrics: latestRecordSettings.metrics.map((item) => item.id === inactiveMetric.id ? { ...item, isActive: true } : item), supplementTypes: latestRecordSettings.supplementTypes } } });
+        assert(reactivateMetricResponse.status === (activeMetricCount < 4 ? 200 : 422), "지표 비활성 항목 재활성화 한도 검증이 올바르지 않습니다.");
+        if (reactivateMetricResponse.status === 200) latestRecordSettings = reactivateMetricResponse.payload?.data;
+      }
+      const inactiveSupplement = latestRecordSettings.supplementTypes.find((item) => !item.isActive);
+      if (inactiveSupplement) {
+        const activeSupplementCount = latestRecordSettings.supplementTypes.filter((item) => item.isActive).length;
+        const reactivateSupplementResponse = await request("/api/admin/record-settings", { jar: adminJar, method: "POST", allowStatuses: [422], body: { expectedVersion: latestRecordSettings.version, settings: { ...originalRecordSettings, metrics: latestRecordSettings.metrics, supplementTypes: latestRecordSettings.supplementTypes.map((item) => item.id === inactiveSupplement.id ? { ...item, isActive: true } : item) } } });
+        assert(reactivateSupplementResponse.status === (activeSupplementCount < 3 ? 200 : 422), "보충 유형 비활성 항목 재활성화 한도 검증이 올바르지 않습니다.");
+        if (reactivateSupplementResponse.status === 200) latestRecordSettings = reactivateSupplementResponse.payload?.data;
+      }
+
+      const overflowMetrics = [...latestRecordSettings.metrics];
+      while (overflowMetrics.filter((item) => item.isActive).length <= 4) overflowMetrics.push({ id: randomUUID(), code: null, name: "통합 테스트 활성 초과 지표", displayOrder: overflowMetrics.length + 1, isActive: true, scaleMax: 5 });
+      const overflowSupplementTypes = [...latestRecordSettings.supplementTypes];
+      while (overflowSupplementTypes.filter((item) => item.isActive).length <= 3) overflowSupplementTypes.push({ id: randomUUID(), code: null, name: "통합 테스트 활성 초과 보충", displayOrder: overflowSupplementTypes.length + 1, isActive: true });
+      const limitResponse = await request("/api/admin/record-settings", { jar: adminJar, method: "POST", allowStatuses: [422], body: { expectedVersion: latestRecordSettings.version, settings: { ...originalRecordSettings, metrics: overflowMetrics, supplementTypes: overflowSupplementTypes } } });
+      assert(limitResponse.status === 422, "활성 수업지표·보충 유형 한도 차단이 동작하지 않습니다.");
+      logPass("활성 수업지표·보충 유형 한도 서버 검증");
+    } finally {
+      const restoreResponse = await request("/api/admin/record-settings", { jar: adminJar, method: "POST", allowStatuses: [422], body: { expectedVersion: latestRecordSettings.version, settings: originalRecordSettings } });
+      assert(restoreResponse.status === 200, "통합 테스트 후 수업기록 설정 원상복구에 실패했습니다.");
+    }
 
     const optionsResponse = await request(`/api/admin/class-operations?academyId=${config.academyId}`, { jar: adminJar });
     const options = optionsResponse.payload?.data;

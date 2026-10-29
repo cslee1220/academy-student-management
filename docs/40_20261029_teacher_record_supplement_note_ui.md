@@ -35,3 +35,11 @@
 보호자 숙제 응답은 `no_homework=true`일 때 `value_json.content=null`로 직렬화한다. DB 원문과 기존 보호자 snapshot은 삭제·재작성하지 않는다.
 
 관리자 기록현황의 명시적 `blockId` 조회는 비활성·기간 만료 원본 블록도 학원·학생·과목·수업일이 정확히 일치하는 기록이면 조회한다. `blockId`가 없는 일반 조회의 현재 유효 블록 기준과, 관리자 확인 RLS의 학원·활성 교사 소속 검증은 유지한다. 변경 migration은 `web/supabase/migrations/20261029120701_harden_record_data_integrity.sql`이며 로컬에서만 적용·검증한다.
+
+## 저장 재시도 및 검증 기준
+
+- 공통 숙제 저장 재시도에서는 사용자가 입력한 수업 내용·숙제·`no_homework` 상태를 유지한다. 네트워크 실패는 성공 상태로 바꾸지 않으며, 재시도 성공 후에만 DB 저장 결과를 표시한다.
+- 활성 지표 4개·보충 유형 3개 한도는 비활성 과거 항목을 제외해 계산한다. 비활성 항목과 기존 과제보충 내용은 보존한다.
+- 보호자 응답의 `no_homework=true`는 원문 숙제 내용을 노출하지 않고 `content=null`로 반환한다.
+- 과제보충 task는 `task_version` 충돌을 검증하고 기존 `homework_content`를 덮어쓰지 않는다.
+- 로컬 DB 테스트는 기본 Docker 네트워크 오류 여부와 `--network-id` 대체 실행 결과를 구분해 기록한다.

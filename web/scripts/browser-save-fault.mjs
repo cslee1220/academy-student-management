@@ -260,7 +260,7 @@ async function evaluate(cdp, expression) {
     returnByValue: true,
     userGesture: true,
   });
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text ?? "브라우저 평가 실패");
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text ?? "브라우저 평가 실패");
   return result.result?.value;
 }
 
@@ -336,7 +336,7 @@ async function main() {
       throw error;
     }
     await evaluate(cdp, `(() => {
-      const homework = document.querySelector('textarea');
+      const homework = [...document.querySelectorAll('textarea')].find((candidate) => candidate.placeholder.includes('교재') || candidate.placeholder.includes('32')) ?? [...document.querySelectorAll('textarea')].at(-1);
       const textareaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
       textareaSetter.call(homework, '네트워크 장애 후 재시도 숙제');
       homework.dispatchEvent(new Event('input', { bubbles: true }));
@@ -345,6 +345,7 @@ async function main() {
     await evaluate(cdp, `([...document.querySelectorAll('button')].find((button) => button.textContent.includes('임시저장'))).click()`);
     await waitFor(async () => evaluate(cdp, `document.body.innerText.includes('기록을 저장하지 못했습니다.') || document.body.innerText.includes('Failed to fetch')`), "첫 저장 오류 상태");
     const afterFailure = await evaluate(cdp, `({ homework: document.querySelector('textarea')?.value ?? '', error: document.body.innerText.includes('기록을 저장하지 못했습니다.') || document.body.innerText.includes('Failed to fetch') })`);
+    afterFailure.homework = await evaluate(cdp, `([...document.querySelectorAll('textarea')].find((candidate) => candidate.placeholder.includes('교재') || candidate.placeholder.includes('32')) ?? [...document.querySelectorAll('textarea')].at(-1))?.value ?? ''`);
     assert(afterFailure.error && afterFailure.homework === "네트워크 장애 후 재시도 숙제", "첫 저장 실패 후 입력값이 유지되지 않았습니다.");
 
     await evaluate(cdp, `([...document.querySelectorAll('button')].find((button) => button.textContent.includes('임시저장'))).click()`);

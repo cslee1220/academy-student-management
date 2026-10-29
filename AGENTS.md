@@ -270,3 +270,11 @@
 - 관리자 `/admin/teacher-records`의 명시적 `blockId` 조회는 현재 활성·기간 조건을 이유로 과거 블록을 숨기지 않는다. 요청 학원·블록·학생·과목·수업일이 정확히 일치하는 원본 기록만 사용하며, 일반 `blockId` 없는 날짜 조회 규칙은 유지한다.
 - `daily_teacher_record_admin_reviews` RLS는 관리자 권한뿐 아니라 review의 `teacher_id`가 같은 학원의 활성 `teacher` membership인지 SELECT/INSERT/UPDATE마다 검증한다. `academy_id`·`teacher_id` scope 변경은 trigger로 차단하며 관리자 확인은 공개 승인이나 snapshot 변경이 아니다.
 - 위 데이터 보존·권한 보강은 `web/supabase/migrations/20261029120701_harden_record_data_integrity.sql`에 기록한다. migration은 로컬에서만 적용·검증하고 원격 DB에는 적용하지 않는다.
+
+## 남은 검증 및 재시도 규칙
+
+- 수업기록 설정의 지표 4개·보충 유형 3개 한도는 활성 항목 수만 계산한다. 비활성 과거 항목은 보존하며, 재활성화할 때만 같은 활성 한도를 다시 검증한다.
+- 공통 숙제 저장 재시도는 화면 입력값과 `no_homework` 상태를 유지해야 하며, 일시 실패를 성공으로 표시하거나 중복 저장하지 않는다. 성공 전에는 DB 저장 완료 상태를 표시하지 않는다.
+- `no_homework=true`인 보호자 응답은 `value_json.content=null`로 반환한다. 내부 DB 원문과 기존 공개 snapshot은 삭제하거나 재작성하지 않는다.
+- 과제보충 저장은 기존 `homework_content`를 보존하고 `task_version` 충돌을 검증한다. 충돌 시 과목기록과 보충 변경을 함께 거부한다.
+- `npx supabase test db --local`이 기본 Docker 네트워크 누락으로 실행되지 않으면 reset·원격 연결 없이 기존 로컬 validation 네트워크를 `--network-id`로 재검증할 수 있다. 기본 명령과 대체 명령의 결과를 구분해 보고한다.
