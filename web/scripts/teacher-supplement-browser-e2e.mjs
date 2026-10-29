@@ -31,7 +31,9 @@ const config = {
   academyId: process.env.INTEGRATION_ACADEMY_ID ?? "21000000-0000-4000-8000-000000000001",
   teacherLoginId: process.env.INTEGRATION_TEACHER_LOGIN_ID ?? "t-900001",
   teacherPassword: process.env.INTEGRATION_TEACHER_PASSWORD,
+  primaryClassId: "7a000000-0000-4000-8000-000000000001",
   primaryBlockId: "7a000000-0000-4000-8000-000000000003",
+  studentIds: ["7a000000-0000-4000-8000-000000000011", "7a000000-0000-4000-8000-000000000012", "7a000000-0000-4000-8000-000000000013"],
   secondaryTaskId: "7a000000-0000-4000-8000-000000000031",
   recordDate: "2026-10-28",
 };
@@ -52,8 +54,10 @@ async function evaluate(cdp, expression) { const result = await cdp.send("Runtim
 async function waitFor(cdp, check, label, timeout = 20000) { const startedAt = Date.now(); while (Date.now() - startedAt < timeout) { const value = await check(); if (value) return value; await sleep(200); } throw new Error(`${label} 대기 시간이 초과되었습니다.`); }
 async function launchBrowser() { const port = await freePort(); const userDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "academy-supplement-e2e-")); const chrome = spawn(process.env.BROWSER_EXECUTABLE ?? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", ["--headless=new", "--disable-gpu", "--disable-extensions", "--no-sandbox", "--no-first-run", "--no-default-browser-check", "--remote-allow-origins=*", `--remote-debugging-port=${port}`, `--user-data-dir=${userDataDirectory}`, "about:blank"], { stdio: "ignore" }); const page = await waitFor({ }, async () => { try { const pages = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); return pages.find((item) => item.type === "page" && item.webSocketDebuggerUrl); } catch { return null; } }, "Chrome DevTools page"); const socket = new WebSocket(page.webSocketDebuggerUrl); await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", reject, { once: true }); }); const cdp = new CdpClient(socket); await cdp.send("Runtime.enable"); await cdp.send("Page.enable"); return { cdp, socket, chrome, userDataDirectory }; }
 async function navigate(cdp, pathname) { await cdp.send("Page.navigate", { url: `${config.baseUrl}${pathname}` }); await sleep(500); await waitFor(cdp, async () => { try { const state = await evaluate(cdp, "({href:location.href, readyState:document.readyState})"); return state?.href?.includes(pathname.split("?")[0]) && state.readyState !== "loading" ? state : null; } catch { return null; } }, pathname); await waitFor(cdp, async () => { try { const text = await evaluate(cdp, "document.body?.innerText ?? ''"); return !text.includes("교사 권한을 확인하는 중입니다.") && !text.includes("학생 기록을 불러오는 중입니다.") ? text : null; } catch { return null; } }, `${pathname} 화면 상태`); }
-async function setDateInput(cdp, ariaLabel, value) { await evaluate(cdp, `(() => { const input=document.querySelector(${JSON.stringify(`input[aria-label="${ariaLabel}"]`)}); if (!input) return false; const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; setter?.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event("input", {bubbles:true})); input.dispatchEvent(new Event("change", {bubbles:true})); return true; })()`); await sleep(250); }
-async function setSupplementRange(cdp) { await setDateInput(cdp, "보충 조회 시작일", config.recordDate); await setDateInput(cdp, "보충 조회 종료일", config.recordDate); await evaluate(cdp, "[...document.querySelectorAll('button')].find((button)=>(button.textContent||'').trim()==='조회')?.click()"); await sleep(250); }
+async function setDateInput(cdp, ariaLabel, value) { for (let attempt = 0; attempt < 4; attempt += 1) { const changed = await evaluate(cdp, `(() => { const input=document.querySelector(${JSON.stringify(`input[aria-label="${ariaLabel}"]`)}); if (!input) return false; const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; setter?.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event("input", {bubbles:true})); input.dispatchEvent(new Event("change", {bubbles:true})); return true; })()`); if (!changed) return; await sleep(250); const current = await evaluate(cdp, `document.querySelector(${JSON.stringify(`input[aria-label="${ariaLabel}"]`)})?.value`); if (current === value) return; } throw new Error(`날짜 입력 반영 실패: ${ariaLabel}`); }
+async function setTextArea(cdp, selector, value) { const changed = await evaluate(cdp, `(() => { const input=document.querySelector(${JSON.stringify(selector)}); if (!input) return false; const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set; setter?.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event("input", {bubbles:true})); input.dispatchEvent(new Event("change", {bubbles:true})); return true; })()`); assert(changed, `입력창을 찾지 못했습니다: ${selector}`); await sleep(150); }
+async function saveDraft(cdp, label) { await evaluate(cdp, "[...document.querySelectorAll('button')].find((button)=>(button.textContent||'').trim()==='임시저장')?.click()"); await waitFor(cdp, async () => (await evaluate(cdp, "document.body?.innerText ?? ''")).includes("임시저장했습니다."), label); }
+async function setSupplementRange(cdp) { await setDateInput(cdp, "보충 조회 시작일", config.recordDate); await setDateInput(cdp, "보충 조회 종료일", config.recordDate); const values = await evaluate(cdp, "({start:document.querySelector('input[aria-label=\"보충 조회 시작일\"]')?.value,end:document.querySelector('input[aria-label=\"보충 조회 종료일\"]')?.value})"); assert(values?.start === config.recordDate && values?.end === config.recordDate, `보충 조회 날짜 설정 실패: ${JSON.stringify(values)}`); await evaluate(cdp, "[...document.querySelectorAll('button')].find((button)=>(button.textContent||'').trim()==='조회')?.click()"); await sleep(250); }
 async function login(cdp) { await navigate(cdp, "/login"); const result = await evaluate(cdp, `fetch('/api/auth/teacher-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loginId:${JSON.stringify(config.teacherLoginId)},password:${JSON.stringify(config.teacherPassword)}})}).then(async r=>({status:r.status,body:await r.text()}))`); assert(result.status === 200, `교사 로그인 실패: ${result.status}`); const payload = JSON.parse(result.body || "{}"); if (payload?.data?.requiresAcademySelection) { const status = await evaluate(cdp, `fetch('/api/auth/academy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({academyId:${JSON.stringify(config.academyId)}})}).then(r=>r.status)`); assert(status === 200, `학원 선택 실패: ${status}`); } }
 async function metrics(cdp, width) { return evaluate(cdp, `(() => { const region=document.querySelector('[role="region"][aria-label="학생별 보충 작업 표"]'); const table=region?.querySelector('table'); if (region) region.focus(); return {width:${width}, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, pageHorizontalOverflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1, rowCount:table?.tBodies[0]?.rows.length ?? 0, tableClientWidth:region?.clientWidth ?? 0, tableScrollWidth:region?.scrollWidth ?? 0, internalTableScroll:Boolean(region && region.scrollWidth > region.clientWidth + 1), mobileHint:Array.from(document.querySelectorAll('p')).some((node)=>(node.textContent||'').includes('좌우로 밀어')), focusableRegion:Boolean(region && document.activeElement === region), statusCount:document.querySelectorAll('[role="status"]').length, alertCount:document.querySelectorAll('[role="alert"]').length}; })()`); }
 async function recordMetrics(cdp, width) { return evaluate(cdp, `(() => { const table=[...document.querySelectorAll('table')].find((node)=>(node.innerText||'').includes('보충 일정')); const region=table?.closest('[class*="overflow-x-auto"]'); const lastRow=table?.tBodies[0]?.rows[table.tBodies[0].rows.length - 1]; return {width:${width}, viewportWidth:document.documentElement.clientWidth, pageScrollWidth:document.documentElement.scrollWidth, pageHorizontalOverflow:document.documentElement.scrollWidth > document.documentElement.clientWidth + 1, rowCount:table?.tBodies[0]?.rows.length ?? 0, tableClientWidth:region?.clientWidth ?? 0, tableScrollWidth:region?.scrollWidth ?? 0, internalTableScroll:Boolean(region && region.scrollWidth > region.clientWidth + 1), lastRowVisible:Boolean(lastRow), lastRowInputs:lastRow?.querySelectorAll('input,select').length ?? 0}; })()`); }
@@ -72,7 +76,7 @@ try {
     const result = await metrics(browser.cdp, width);
     assert(result.rowCount >= 3, `데이터가 있는 보충 표 행이 부족합니다: ${result.rowCount}`);
     assert(!result.pageHorizontalOverflow, `${width}px 보충 페이지 전체 가로 넘침`);
-    const supplementContentChecks = await evaluate(browser.cdp, "(() => { const headers=[...document.querySelectorAll('th')].map((node)=>(node.textContent||'').trim()); const body=document.body?.innerText||''; return {hasMemoHeader:headers.includes('수업메모'), hasSourceNote:body.includes('UIUX-SUPPLEMENT 긴 수업 메모'), hasLegacyHomeworkDisclosure:body.includes('기존 과제보충 내용'), hasEmptyNoteFallback:body.includes('등록된 수업메모 없음')}; })()");
+    const supplementContentChecks = await evaluate(browser.cdp, "(() => { const headers=[...document.querySelectorAll('th')].map((node)=>(node.textContent||'').trim()); const body=document.body?.innerText||''; return {hasMemoHeader:headers.includes('수업메모'), hasSourceNote:body.includes('UIUX-SUPPLEMENT 긴 수업 메모') || body.includes('UIUX-SUPPLEMENT 메모 저장 검증'), hasLegacyHomeworkDisclosure:body.includes('기존 과제보충 내용'), hasEmptyNoteFallback:body.includes('등록된 수업메모 없음')}; })()");
     assert(supplementContentChecks.hasMemoHeader, `${width}px 보충현황 수업메모 열 제목이 없습니다.`);
     assert(supplementContentChecks.hasSourceNote, `${width}px 보충현황에 연결된 원본 수업메모가 없습니다.`);
     assert(supplementContentChecks.hasLegacyHomeworkDisclosure, `${width}px 기존 과제보충 내용 보존 영역이 없습니다.`);
@@ -140,7 +144,65 @@ try {
   const staleStatus = await evaluate(browser.cdp, `fetch('/api/teacher/supplements',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({taskId:${JSON.stringify(staleTarget.id)},kind:'test',completed:false,version:${Math.max(0, staleTarget.version - 1)}})}).then(r=>r.status)`);
   assert(staleStatus === 409, `stale version 차단 실패: ${staleStatus}`);
 
+  const memoMarker = "UIUX-SUPPLEMENT 메모 저장 검증";
+  const beforeSubjectRecords = await admin.from("daily_subject_records").select("student_id, homework_supplement_content").eq("academy_id", config.academyId).eq("block_id", config.primaryBlockId).eq("record_date", config.recordDate);
+  if (beforeSubjectRecords.error) throw beforeSubjectRecords.error;
+  const preservedHomeworkContent = beforeSubjectRecords.data?.find((row) => typeof row.homework_supplement_content === "string" && row.homework_supplement_content.length > 0)?.homework_supplement_content ?? null;
+  await navigate(browser.cdp, `/teacher/records?recordDate=${config.recordDate}`);
+  await setDateInput(browser.cdp, "수업 날짜", config.recordDate);
+  await waitForRecordTableRows(browser.cdp, 3, "학생별 수업메모 저장 전 데이터");
+  await setTextArea(browser.cdp, 'textarea[aria-label$="학생별 수업메모"]', memoMarker);
+  await saveDraft(browser.cdp, "학생별 수업메모 저장 결과");
+  const savedMemoRecord = await admin.from("daily_subject_records").select("student_id, public_note").eq("academy_id", config.academyId).eq("block_id", config.primaryBlockId).eq("record_date", config.recordDate);
+  if (savedMemoRecord.error) throw savedMemoRecord.error;
+  assert(savedMemoRecord.data?.some((row) => row.public_note === memoMarker), "학생별 수업메모 저장 결과가 DB에 반영되지 않았습니다.");
+  const afterMemoSubjectRecords = await admin.from("daily_subject_records").select("student_id, homework_supplement_content").eq("academy_id", config.academyId).eq("block_id", config.primaryBlockId).eq("record_date", config.recordDate);
+  if (afterMemoSubjectRecords.error) throw afterMemoSubjectRecords.error;
+  if (preservedHomeworkContent !== null) assert(afterMemoSubjectRecords.data?.some((row) => row.homework_supplement_content === preservedHomeworkContent), "일반 저장 후 기존 과제보충 내용이 보존되지 않았습니다.");
+
+  await navigate(browser.cdp, `/teacher/records?recordDate=${config.recordDate}`);
+  await setDateInput(browser.cdp, "수업 날짜", config.recordDate);
+  await waitForRecordTableRows(browser.cdp, 3, "학생별 수업메모 재조회 데이터");
+  const reloadedMemo = await evaluate(browser.cdp, "document.querySelector('textarea[aria-label$=\"학생별 수업메모\"]')?.value ?? ''");
+  assert(reloadedMemo === memoMarker, "학생별 수업메모 재조회 값이 저장된 값과 다릅니다.");
+
+  const homeworkSupplementEnabled = await evaluate(browser.cdp, "(() => { const input=[...document.querySelectorAll('input[aria-label$=\"숙제 보충\"]')].find((candidate)=>!candidate.checked); if (!input) return true; input.click(); return true; })()");
+  assert(homeworkSupplementEnabled, "신규 숙제 보충 체크를 찾지 못했습니다.");
+  await saveDraft(browser.cdp, "내용 없는 신규 과제보충 저장 결과");
+  const newHomeworkRecord = await admin.from("daily_subject_records").select("is_homework_supplementary, homework_supplement_content").eq("academy_id", config.academyId).eq("block_id", config.primaryBlockId).eq("record_date", config.recordDate);
+  if (newHomeworkRecord.error) throw newHomeworkRecord.error;
+  assert(newHomeworkRecord.data?.some((row) => row.is_homework_supplementary === true && (row.homework_supplement_content === null || row.homework_supplement_content === "")), "내용 없는 신규 과제보충 저장이 올바르지 않습니다.");
+
+  const commonHomeworkMarker = "UIUX-SUPPLEMENT 숙제 없음 토글 보존 검증";
+  await setTextArea(browser.cdp, 'textarea[placeholder="예: 교재 32쪽 1~5번"]', commonHomeworkMarker);
+  const noHomeworkChecked = await evaluate(browser.cdp, "(() => { const input=[...document.querySelectorAll('label')].find((label)=>(label.textContent||'').includes('숙제 없음'))?.querySelector('input'); if (!input) return false; if (!input.checked) input.click(); return input.checked; })()");
+  assert(noHomeworkChecked, "숙제 없음 체크를 찾지 못했습니다.");
+  await saveDraft(browser.cdp, "숙제 없음 체크 저장 결과");
+  await navigate(browser.cdp, `/teacher/records?recordDate=${config.recordDate}`);
+  await setDateInput(browser.cdp, "수업 날짜", config.recordDate);
+  await waitForRecordTableRows(browser.cdp, 3, "숙제 없음 재조회 데이터");
+  const noHomeworkState = await evaluate(browser.cdp, "(() => { const input=[...document.querySelectorAll('label')].find((label)=>(label.textContent||'').includes('숙제 없음'))?.querySelector('input'); const homework=document.querySelector('textarea[placeholder=\"예: 교재 32쪽 1~5번\"]'); return {checked:Boolean(input?.checked), disabled:Boolean(homework?.disabled), value:homework?.value||''}; })()");
+  assert(noHomeworkState.checked && noHomeworkState.disabled && noHomeworkState.value === commonHomeworkMarker, "숙제 없음 저장·재조회 또는 작성 중 내용 보존이 올바르지 않습니다.");
+  const noHomeworkUnchecked = await evaluate(browser.cdp, "(() => { const input=[...document.querySelectorAll('label')].find((label)=>(label.textContent||'').includes('숙제 없음'))?.querySelector('input'); if (!input) return false; input.click(); return !input.checked; })()");
+  assert(noHomeworkUnchecked, "숙제 없음 해제에 실패했습니다.");
+  await saveDraft(browser.cdp, "숙제 없음 해제 저장 결과");
+  await navigate(browser.cdp, `/teacher/records?recordDate=${config.recordDate}`);
+  await setDateInput(browser.cdp, "수업 날짜", config.recordDate);
+  await waitForRecordTableRows(browser.cdp, 3, "숙제 없음 해제 재조회 데이터");
+  const restoredHomeworkState = await evaluate(browser.cdp, "(() => { const input=[...document.querySelectorAll('label')].find((label)=>(label.textContent||'').includes('숙제 없음'))?.querySelector('input'); const homework=document.querySelector('textarea[placeholder=\"예: 교재 32쪽 1~5번\"]'); return {checked:Boolean(input?.checked), value:homework?.value||''}; })()");
+  assert(!restoredHomeworkState.checked && restoredHomeworkState.value === commonHomeworkMarker, "숙제 없음 해제 후 공통 숙제 내용이 복원되지 않았습니다.");
+  const savedCommonHomework = await admin.from("daily_common_homework").select("content, no_homework").eq("academy_id", config.academyId).eq("class_id", config.primaryClassId).eq("record_date", config.recordDate);
+  if (savedCommonHomework.error) throw savedCommonHomework.error;
+  assert(savedCommonHomework.data?.some((row) => row.content === commonHomeworkMarker && row.no_homework === false), "공통 숙제 체크·해제 저장 결과가 DB에 반영되지 않았습니다.");
+
+  await navigate(browser.cdp, "/teacher/supplements");
+  await setSupplementRange(browser.cdp);
+  await waitForTableRows(browser.cdp, '[role="region"][aria-label="학생별 보충 작업 표"] table', 3, "수업메모 수정 후 보충 재조회 데이터");
+  const refreshedSupplementText = await evaluate(browser.cdp, "document.body?.innerText ?? ''");
+  assert(refreshedSupplementText.includes(memoMarker), "원본 수업메모 수정 후 보충현황 재조회에 반영되지 않았습니다.");
+
   await navigate(browser.cdp, `/teacher/records/status?kind=supplement&startDate=${config.recordDate}&endDate=${config.recordDate}`);
+  await waitForTableRows(browser.cdp, '[role="region"][aria-label="학생별 보충 작업 표"] table', 3, "수업기록 상태 보충 패널 데이터");
   const panel = await metrics(browser.cdp, 390);
   const panelText = await evaluate(browser.cdp, "document.body.innerText");
   assert(panelText.includes("UIUX-SUPPLEMENT"), "수업기록 상태의 보충 패널에서 fixture가 보이지 않습니다.");
