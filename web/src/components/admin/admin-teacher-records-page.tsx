@@ -10,7 +10,7 @@ type Supplement = {
   homework: { enabled: boolean; scheduledDate: string | null; completed: boolean; content: string | null };
   task: { active: boolean; cancelledAt: string | null; version: number } | null;
 };
-type Review = { isChecked: boolean; checkedByProfileId: string | null; checkedAt: string | null; version: number } | null;
+type TeacherReview = { isChecked: boolean; checkedByProfileId: string | null; checkedAt: string | null; version: number } | null;
 type StudentRow = {
   student: { id: string; student_no: string; name: string };
   operationGroup: string;
@@ -24,7 +24,6 @@ type StudentRow = {
   publicationStatus: string | null;
   subjectRecordId: string | null;
   subjectVersion: number | null;
-  review: Review;
 };
 type CommonHomework = { operationGroup: string; lessonContent: string | null; homework: string | null; noHomework: boolean; saveState: "draft" | "final" | null; version: number };
 type RecordBlock = {
@@ -42,7 +41,7 @@ type RecordBlock = {
   commonHomework: CommonHomework[];
   students: StudentRow[];
 };
-type TeacherGroup = { teacherId: string; teacherName: string; blocks: RecordBlock[] };
+type TeacherGroup = { teacherId: string; teacherName: string; review: TeacherReview; blocks: RecordBlock[] };
 type ViewData = {
   recordDate: string;
   weekday: string;
@@ -120,9 +119,8 @@ export default function AdminTeacherRecordsPage() {
     [data?.blocks, teacherId],
   );
 
-  async function toggleReview(row: StudentRow, checked: boolean) {
-    if (!row.subjectRecordId) return;
-    const key = row.subjectRecordId;
+  async function toggleTeacherReview(group: TeacherGroup, checked: boolean) {
+    const key = group.teacherId;
     setUpdatingKey(key);
     setError("");
     setMessage("");
@@ -130,22 +128,16 @@ export default function AdminTeacherRecordsPage() {
       const response = await fetch("/api/admin/teacher-records", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subjectRecordId: row.subjectRecordId, checked, version: row.review?.version }),
+        body: JSON.stringify({ teacherId: group.teacherId, recordDate: data?.recordDate, checked, version: group.review?.version }),
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message ?? "관리자 확인 상태를 저장하지 못했습니다.");
-      const savedReview = payload?.data as { subject_record_id: string; is_checked: boolean; checked_by_profile_id: string | null; checked_at: string | null; version: number };
+      const savedReview = payload?.data as { teacher_id: string; record_date: string; is_checked: boolean; checked_by_profile_id: string | null; checked_at: string | null; version: number };
       setData((current) => current ? {
         ...current,
         groups: current.groups.map((group) => ({
           ...group,
-          blocks: group.blocks.map((block) => ({
-            ...block,
-            students: block.students.map((student) => student.subjectRecordId === savedReview.subject_record_id ? {
-              ...student,
-              review: { isChecked: savedReview.is_checked, checkedByProfileId: savedReview.checked_by_profile_id, checkedAt: savedReview.checked_at, version: savedReview.version },
-            } : student),
-          })),
+          review: group.teacherId === savedReview.teacher_id ? { isChecked: savedReview.is_checked, checkedByProfileId: savedReview.checked_by_profile_id, checkedAt: savedReview.checked_at, version: savedReview.version } : group.review,
         })),
       } : current);
       setMessage(checked ? "관리자 확인 표시를 저장했습니다." : "관리자 확인 표시를 해제했습니다.");
@@ -183,7 +175,7 @@ export default function AdminTeacherRecordsPage() {
 
       {isLoading ? <p role="status" className="mt-6 rounded-2xl bg-white px-4 py-12 text-center text-sm text-slate-500 shadow-sm">선생님 기록현황을 불러오는 중입니다.</p> : data?.groups.length ? <div className="mt-6 space-y-6">
         {data.groups.map((group) => <section key={group.teacherId} className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex min-w-0 max-w-full flex-wrap items-end justify-between gap-3"><div className="min-w-0 max-w-full"><p className="text-sm font-bold text-indigo-600">TEACHER</p><h2 className="mt-1 break-words text-xl font-bold text-slate-950">{group.teacherName}</h2></div><span className="shrink-0 text-sm text-slate-500">수업묶음 {group.blocks.length}개</span></div>
+          <div className="flex min-w-0 max-w-full flex-wrap items-end justify-between gap-3"><div className="min-w-0 max-w-full"><p className="text-sm font-bold text-indigo-600">TEACHER</p><h2 className="mt-1 break-words text-xl font-bold text-slate-950">{group.teacherName}</h2></div><div className="flex shrink-0 flex-wrap items-center justify-end gap-3"><span className="text-sm text-slate-500">수업묶음 {group.blocks.length}개</span><label className="flex items-center gap-2 whitespace-nowrap text-xs font-semibold text-slate-700"><input type="checkbox" aria-label={`${group.teacherName} 관리자 확인`} checked={group.review?.isChecked === true} disabled={updatingKey === group.teacherId} onChange={(event) => void toggleTeacherReview(group, event.target.checked)} className={`h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed ${focusRingClass}`} />{updatingKey === group.teacherId ? "저장 중…" : group.review?.isChecked ? "확인됨" : "관리자 확인"}</label>{group.review?.checkedAt ? <span className="whitespace-nowrap text-[11px] text-slate-500">{new Date(group.review.checkedAt).toLocaleString("ko-KR")}</span> : null}</div></div>
           <div className="mt-4 space-y-4">
             {group.blocks.map((block) => <details key={block.id} className="min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-200">
               <summary className="w-full min-w-0 max-w-full cursor-pointer list-none overflow-hidden bg-slate-50 px-4 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset">
@@ -196,7 +188,7 @@ export default function AdminTeacherRecordsPage() {
                 </section>
                 <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
                   <table className="min-w-[1750px] w-full text-left text-sm">
-                    <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500"><tr><th className="sticky left-0 z-10 bg-slate-50 px-3 py-3">학생</th><th className="px-3 py-3">출결·결석 사유</th><th className="min-w-[220px] px-3 py-3">평가값</th><th className="min-w-[260px] px-3 py-3">테스트 결과</th><th className="min-w-[260px] px-3 py-3">테스트·숙제 보충</th><th className="min-w-[280px] px-3 py-3">학생별 수업메모</th><th className="px-3 py-3">저장 상태</th><th className="px-3 py-3">공개 상태</th><th className="px-3 py-3">관리자 확인</th></tr></thead>
+                    <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500"><tr><th className="sticky left-0 z-10 bg-slate-50 px-3 py-3">학생</th><th className="px-3 py-3">출결·결석 사유</th><th className="min-w-[220px] px-3 py-3">평가값</th><th className="min-w-[260px] px-3 py-3">테스트 결과</th><th className="min-w-[260px] px-3 py-3">테스트·숙제 보충</th><th className="min-w-[280px] px-3 py-3">학생별 수업메모</th><th className="px-3 py-3">저장 상태</th><th className="px-3 py-3">공개 상태</th></tr></thead>
                     <tbody>{block.students.map((row) => <tr key={`${block.id}-${row.student.id}`} className="border-b border-slate-100 align-top last:border-0">
                       <td className="sticky left-0 z-[1] bg-white px-3 py-4"><p className="whitespace-nowrap font-semibold text-slate-900">{row.student.name}</p><p className="mt-1 font-mono text-xs text-slate-500">{row.student.student_no}</p><p className="mt-1 text-xs text-indigo-600">{groupLabel(row.operationGroup)}</p></td>
                       <td className="px-3 py-4"><p className="font-semibold text-slate-700">{attendanceLabel(row.attendance?.status)}</p><p className="mt-1 max-w-[180px] whitespace-pre-wrap break-words text-xs text-slate-500">{row.attendance?.absenceNote || "-"}</p></td>
@@ -206,7 +198,6 @@ export default function AdminTeacherRecordsPage() {
                       <td className="px-3 py-4"><p className="max-w-[260px] whitespace-pre-wrap break-words text-slate-700">{row.memo || "등록된 수업메모 없음"}</p></td>
                       <td className="px-3 py-4"><span className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-bold ${row.saveStatus === "final" ? "bg-emerald-100 text-emerald-700" : row.saveStatus === "draft" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}>{saveStatusLabel(row.saveStatus)}</span></td>
                       <td className="px-3 py-4"><span className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-bold ${row.publicationStatus === "published" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{publicationLabel(row.publicationStatus)}</span></td>
-                      <td className="px-3 py-4"><label className="flex items-center gap-2 whitespace-nowrap text-xs font-semibold text-slate-700"><input type="checkbox" aria-label={`${row.student.name} 관리자 확인`} checked={row.review?.isChecked === true} disabled={!row.subjectRecordId || updatingKey === row.subjectRecordId} onChange={(event) => void toggleReview(row, event.target.checked)} className={`h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed ${focusRingClass}`} />{updatingKey === row.subjectRecordId ? "저장 중…" : row.review?.isChecked ? "확인됨" : "미확인"}</label>{row.review?.checkedAt ? <p className="mt-1 whitespace-nowrap text-[11px] text-slate-500">{new Date(row.review.checkedAt).toLocaleString("ko-KR")}</p> : null}</td>
                     </tr>)}</tbody>
                   </table>
                 </div>

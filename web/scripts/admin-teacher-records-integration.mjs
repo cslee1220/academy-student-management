@@ -98,6 +98,7 @@ try {
 
   const filtered = await request(`/api/admin/teacher-records?recordDate=${source.record_date}&teacherId=${block.teacher_id}&blockId=${source.block_id}`, { jar: adminJar });
   const groups = filtered.payload?.data?.groups ?? [];
+  const filteredTeacher = groups.find((group) => group.teacherId === block.teacher_id);
   const filteredBlock = groups.flatMap((group) => group.blocks ?? []).find((item) => item.id === source.block_id);
   const filteredStudent = filteredBlock?.students?.find((row) => row.subjectRecordId === source.id);
   assert(filteredBlock && filteredStudent, "선생님·수업묶음 필터가 정확한 학생 수업기록을 반환하지 않았습니다.");
@@ -110,16 +111,16 @@ try {
   assert(new Set(listedKeys).size === listedKeys.length, "동일 수업묶음의 활성 중복 블록이 관리자 기록현황에 함께 표시됩니다.");
   logPass("동일 수업묶음 활성 중복 블록 표시 제거");
 
-  const reviewSaved = await request("/api/admin/teacher-records", { jar: adminJar, method: "PATCH", body: { subjectRecordId: source.id, checked: true, version: filteredStudent.review?.version } });
+  const reviewSaved = await request("/api/admin/teacher-records", { jar: adminJar, method: "PATCH", body: { teacherId: block.teacher_id, recordDate: source.record_date, checked: true, version: filteredTeacher?.review?.version } });
   assert(reviewSaved.payload?.data?.is_checked === true, "관리자 확인 표시를 저장하지 못했습니다.");
-  const reviewRows = await rows("daily_subject_record_admin_reviews", (query) => query.eq("academy_id", config.academyId).eq("subject_record_id", source.id));
+  const reviewRows = await rows("daily_teacher_record_admin_reviews", (query) => query.eq("academy_id", config.academyId).eq("teacher_id", block.teacher_id).eq("record_date", source.record_date));
   assert(reviewRows[0]?.is_checked === true, "관리자 확인 표시가 로컬 DB에 저장되지 않았습니다.");
   const afterCheckPublication = await rows("daily_record_publications", (query) => query.eq("academy_id", config.academyId).eq("student_id", source.student_id).eq("record_date", source.record_date));
   assert(JSON.stringify(afterCheckPublication) === JSON.stringify(beforePublication), "관리자 확인 표시가 보호자 공개 상태를 변경했습니다.");
   logPass("관리자 확인 표시 저장·공개 상태 분리");
 
   const reviewVersion = reviewSaved.payload?.data?.version;
-  const reviewCleared = await request("/api/admin/teacher-records", { jar: adminJar, method: "PATCH", body: { subjectRecordId: source.id, checked: false, version: reviewVersion } });
+  const reviewCleared = await request("/api/admin/teacher-records", { jar: adminJar, method: "PATCH", body: { teacherId: block.teacher_id, recordDate: source.record_date, checked: false, version: reviewVersion } });
   assert(reviewCleared.payload?.data?.is_checked === false, "관리자 확인 표시 해제를 저장하지 못했습니다.");
   logPass("관리자 확인 표시 해제와 동시 수정 버전 처리");
   console.log("[PRESERVED] 관리자 기록현황 통합 테스트는 기존 합성 수업기록·공개자료를 삭제하지 않았습니다.");

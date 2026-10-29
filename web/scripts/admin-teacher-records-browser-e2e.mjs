@@ -186,8 +186,8 @@ try {
     if (width <= 390) assert(summary.tableScrollWidth > summary.tableClientWidth, `${width}px 관리자 표 내부 스크롤이 없습니다.`);
     await evaluate(browser.cdp, "document.querySelector('details summary')?.click()");
     await waitFor(async () => (await evaluate(browser.cdp, "document.body?.innerText ?? ''")).includes("공통 수업내용·과제"), `${width}px 수업묶음 펼침`);
-    const expanded = await evaluate(browser.cdp, "(() => { const body=document.body?.innerText||''; const header=[...document.querySelectorAll('th')].map((node)=>(node.textContent||'').trim()); const commonHeadings=[...document.querySelectorAll('details[open] h3')].filter((node)=>(node.textContent||'').trim()==='공통 수업내용·과제'); return {commonOnce:commonHeadings.length, hasMemo:header.includes('학생별 수업메모'), hasReview:header.includes('관리자 확인')}; })()");
-    assert(expanded.commonOnce === 1 && expanded.hasMemo && expanded.hasReview, `${width}px 수업묶음 상세 표시 확인 실패: ${JSON.stringify(expanded)}`);
+    const expanded = await evaluate(browser.cdp, "(() => { const body=document.body?.innerText||''; const header=[...document.querySelectorAll('th')].map((node)=>(node.textContent||'').trim()); const commonHeadings=[...document.querySelectorAll('details[open] h3')].filter((node)=>(node.textContent||'').trim()==='공통 수업내용·과제'); const teacherReview=[...document.querySelectorAll('input')].some((node)=>(node.getAttribute('aria-label')||'').includes('관리자 확인')); return {commonOnce:commonHeadings.length, hasMemo:header.includes('학생별 수업메모'), hasTeacherReview:teacherReview, hasReviewColumn:header.includes('관리자 확인')}; })()");
+    assert(expanded.commonOnce === 1 && expanded.hasMemo && expanded.hasTeacherReview && !expanded.hasReviewColumn, `${width}px 수업묶음 상세 표시 확인 실패: ${JSON.stringify(expanded)}`);
     console.log(`[PASS] ${width}px 관리자 기록현황 반응형·그룹 상세`);
   }
   console.log("[RESULT] 관리자 선생님 기록현황 브라우저 검증 PASS");

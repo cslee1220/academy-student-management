@@ -52,8 +52,10 @@ type SubjectRecordRow = JsonRecord & {
 type AttendanceRow = { block_id: string; student_id: string; record_date: string; attendance_status: string; absence_note: string | null; save_state: "draft" | "final" | null };
 type HomeworkRow = { id: string; class_id: string; subject_id: string | null; operation_group: string | null; lesson_content: string | null; content: string | null; no_homework: boolean; save_state: "draft" | "final" | null; version: number };
 type SupplementTaskRow = { source_subject_record_id: string; is_active: boolean; cancelled_at: string | null; test_supplement_date: string | null; is_test_supplementary: boolean; test_completed: boolean; homework_supplement_date: string | null; is_homework_supplementary: boolean; homework_content: string | null; homework_completed: boolean; version: number };
-type ReviewRow = { subject_record_id: string; is_checked: boolean; checked_by_profile_id: string | null; checked_at: string | null; version: number };
+type TeacherReviewRow = { teacher_id: string; record_date: string; is_checked: boolean; checked_by_profile_id: string | null; checked_at: string | null; version: number };
 type BlockGroup = { members: BlockRow[]; preferred: BlockRow };
+type TeacherReviewView = { isChecked: boolean; checkedByProfileId: string | null; checkedAt: string | null; version: number } | null;
+type TeacherGroupData = { teacherId: string; teacherName: string; review: TeacherReviewView; blocks: Array<Record<string, unknown>> };
 
 class HttpError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) {
@@ -259,7 +261,7 @@ export async function GET(request: NextRequest) {
       studentIds.length ? admin.from("students").select("id, student_no, name").eq("academy_id", academyId).in("id", studentIds) : Promise.resolve({ data: [], error: null }),
       studentIds.length ? admin.from("daily_record_publications").select("student_id, status").eq("academy_id", academyId).eq("record_date", recordDate).in("student_id", studentIds) : Promise.resolve({ data: [], error: null }),
       sourceRecordIds.length ? admin.from("student_supplement_tasks").select("source_subject_record_id, is_active, cancelled_at, test_supplement_date, is_test_supplementary, test_completed, homework_supplement_date, is_homework_supplementary, homework_content, homework_completed, version").eq("academy_id", academyId).in("source_subject_record_id", sourceRecordIds) : Promise.resolve({ data: [], error: null }),
-      sourceRecordIds.length ? admin.from("daily_subject_record_admin_reviews").select("subject_record_id, is_checked, checked_by_profile_id, checked_at, version").eq("academy_id", academyId).in("subject_record_id", sourceRecordIds) : Promise.resolve({ data: [], error: null }),
+      selectedGroups.length ? admin.from("daily_teacher_record_admin_reviews").select("teacher_id, record_date, is_checked, checked_by_profile_id, checked_at, version").eq("academy_id", academyId).eq("record_date", recordDate).in("teacher_id", [...new Set(selectedGroups.map((group) => group.preferred.teacher_id))]) : Promise.resolve({ data: [], error: null }),
     ]);
     if (studentsResult.error || publicationResult.error || taskResult.error || reviewResult.error) throw studentsResult.error ?? publicationResult.error ?? taskResult.error ?? reviewResult.error;
     const studentById = new Map((studentsResult.data ?? []).map((student) => [student.id, student]));
@@ -267,8 +269,8 @@ export async function GET(request: NextRequest) {
     const subjectByKey = new Map(subjectRows.map((row) => [`${row.block_id}:${row.student_id}`, row]));
     const attendanceByKey = new Map(attendanceRows.map((row) => [`${row.block_id}:${row.student_id}`, row]));
     const taskBySourceId = new Map((taskResult.data ?? []).map((row) => [row.source_subject_record_id, row as SupplementTaskRow]));
-    const reviewBySourceId = new Map((reviewResult.data ?? []).map((row) => [row.subject_record_id, row as ReviewRow]));
-    const groupByTeacher = new Map<string, { teacherId: string; teacherName: string; blocks: Array<Record<string, unknown>> }>();
+    const reviewByTeacherId = new Map((reviewResult.data ?? []).map((row) => [row.teacher_id, row as TeacherReviewRow]));
+    const groupByTeacher = new Map<string, TeacherGroupData>();
     for (const blockGroup of selectedGroups) {
       const block = blockGroup.preferred;
       const memberBlockIds = new Set(blockGroup.members.map((member) => member.id));
@@ -288,7 +290,6 @@ export async function GET(request: NextRequest) {
           const priority = preferredBlockIds.indexOf(left.block_id) - preferredBlockIds.indexOf(right.block_id);
           return priority || right.start_date.localeCompare(left.start_date);
         })[0];
-        const review = subject ? reviewBySourceId.get(subject.id) : null;
         return {
           student: studentById.get(studentId) ?? { id: studentId, student_no: "-", name: "학생 정보 없음" },
           operationGroup: roster?.operation_group ?? "common",
@@ -302,10 +303,15 @@ export async function GET(request: NextRequest) {
           publicationStatus: publicationByStudent.get(studentId) ?? null,
           subjectRecordId: subject?.id ?? null,
           subjectVersion: subject?.version ?? null,
-          review: review ? { isChecked: review.is_checked, checkedByProfileId: review.checked_by_profile_id, checkedAt: review.checked_at, version: review.version } : null,
         };
       });
-      const teacherGroup = groupByTeacher.get(block.teacher_id) ?? { teacherId: block.teacher_id, teacherName: block.teacher_name_snapshot, blocks: [] };
+      const teacherReview = reviewByTeacherId.get(block.teacher_id);
+      const teacherGroup = groupByTeacher.get(block.teacher_id) ?? {
+        teacherId: block.teacher_id,
+        teacherName: block.teacher_name_snapshot,
+        review: teacherReview ? { isChecked: teacherReview.is_checked, checkedByProfileId: teacherReview.checked_by_profile_id, checkedAt: teacherReview.checked_at, version: teacherReview.version } : null,
+        blocks: [],
+      };
       teacherGroup.blocks.push({
         id: block.id,
         classId: block.class_id,
@@ -345,23 +351,25 @@ export async function PATCH(request: NextRequest) {
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "invalid_request", "관리자 확인 정보를 입력해 주세요.");
     const input = body as JsonRecord;
     const requestedAcademyId = input.academyId === undefined ? undefined : parseUuid(input.academyId, "academyId");
-    const subjectRecordId = parseUuid(input.subjectRecordId, "subjectRecordId");
+    const teacherId = parseUuid(input.teacherId, "teacherId");
+    const recordDate = parseDate(typeof input.recordDate === "string" ? input.recordDate : null);
     if (typeof input.checked !== "boolean") throw new HttpError(400, "invalid_request", "확인 상태가 필요합니다.");
     const expectedVersion = parseOptionalVersion(input.version);
     const { academyId, profileId } = await requireAcademyAdminFromContext(requestedAcademyId);
     const admin = createSupabaseAdminClient();
-    const subjectResult = await admin.from("daily_subject_records").select("id").eq("academy_id", academyId).eq("id", subjectRecordId).maybeSingle();
-    if (subjectResult.error) throw subjectResult.error;
-    if (!subjectResult.data) throw new HttpError(404, "record_not_found", "수업기록을 찾을 수 없습니다.");
-    const currentResult = await admin.from("daily_subject_record_admin_reviews").select("subject_record_id, version").eq("academy_id", academyId).eq("subject_record_id", subjectRecordId).maybeSingle();
+    const teacherBlockResult = await admin.from("class_schedule_blocks").select("id").eq("academy_id", academyId).eq("teacher_id", teacherId).eq("is_active", true).lte("effective_start", recordDate).gte("effective_end", recordDate).limit(1);
+    if (teacherBlockResult.error) throw teacherBlockResult.error;
+    if (!teacherBlockResult.data?.length) throw new HttpError(404, "teacher_not_found", "해당 수업일의 담당 선생님을 찾을 수 없습니다.");
+    const currentResult = await admin.from("daily_teacher_record_admin_reviews").select("teacher_id, record_date, version").eq("academy_id", academyId).eq("teacher_id", teacherId).eq("record_date", recordDate).maybeSingle();
     if (currentResult.error) throw currentResult.error;
-    const current = currentResult.data as { subject_record_id: string; version: number } | null;
+    const current = currentResult.data as { teacher_id: string; record_date: string; version: number } | null;
     if (expectedVersion !== undefined && current && current.version !== expectedVersion) throw new HttpError(409, "resource_changed", "다른 관리자가 먼저 확인 상태를 변경했습니다. 최신 현황을 다시 조회해 주세요.");
     const now = new Date().toISOString();
     const nextVersion = (current?.version ?? 0) + 1;
     const patch = {
       academy_id: academyId,
-      subject_record_id: subjectRecordId,
+      teacher_id: teacherId,
+      record_date: recordDate,
       is_checked: input.checked,
       checked_by_profile_id: input.checked ? profileId : null,
       checked_at: input.checked ? now : null,
@@ -369,8 +377,8 @@ export async function PATCH(request: NextRequest) {
       version: nextVersion,
     };
     const result = current
-      ? await admin.from("daily_subject_record_admin_reviews").update(patch).eq("academy_id", academyId).eq("subject_record_id", subjectRecordId).eq("version", current.version).select("subject_record_id, is_checked, checked_by_profile_id, checked_at, version").maybeSingle()
-      : await admin.from("daily_subject_record_admin_reviews").insert(patch).select("subject_record_id, is_checked, checked_by_profile_id, checked_at, version").maybeSingle();
+      ? await admin.from("daily_teacher_record_admin_reviews").update(patch).eq("academy_id", academyId).eq("teacher_id", teacherId).eq("record_date", recordDate).eq("version", current.version).select("teacher_id, record_date, is_checked, checked_by_profile_id, checked_at, version").maybeSingle()
+      : await admin.from("daily_teacher_record_admin_reviews").insert(patch).select("teacher_id, record_date, is_checked, checked_by_profile_id, checked_at, version").maybeSingle();
     if (result.error) {
       if (result.error.code === "23505") throw new HttpError(409, "resource_changed", "다른 관리자가 먼저 확인 상태를 변경했습니다. 최신 현황을 다시 조회해 주세요.");
       throw result.error;
