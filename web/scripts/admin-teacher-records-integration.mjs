@@ -103,6 +103,11 @@ try {
   const filteredStudent = filteredBlock?.students?.find((row) => row.subjectRecordId === source.id);
   assert(filteredBlock && filteredStudent, "선생님·수업묶음 필터가 정확한 학생 수업기록을 반환하지 않았습니다.");
   assert(Array.isArray(filteredBlock.commonHomework) && Array.isArray(filteredStudent.metrics) && Array.isArray(filteredStudent.tests), "관리자 기록현황의 공통 기록·평가·테스트 자료가 누락되었습니다.");
+  assert(filtered.payload?.data?.statistics && typeof filtered.payload.data.statistics.scheduledTeacherCount === "number", "관리자 기록현황 종합 통계가 누락되었습니다.");
+  assert(typeof filteredTeacher?.targetStudentCount === "number" && typeof filteredTeacher?.recordedStudentCount === "number" && typeof filteredTeacher?.missingStudentCount === "number", "선생님별 기록 집계 기준이 누락되었습니다.");
+  assert(["missing", "in_progress", "complete"].includes(filteredTeacher?.compositionStatus), "작성현황 상태 축이 올바르지 않습니다.");
+  assert(["missing", "draft", "final"].includes(filteredTeacher?.saveStatus), "저장상태 상태 축이 올바르지 않습니다.");
+  assert(["private", "pending", "published"].includes(filteredTeacher?.publicationStatus), "공개상태 상태 축이 올바르지 않습니다.");
   logPass("선생님·수업묶음 필터와 학생 기록 조회");
 
   const unfiltered = await request(`/api/admin/teacher-records?recordDate=${source.record_date}`, { jar: adminJar });
