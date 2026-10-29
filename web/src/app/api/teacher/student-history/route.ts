@@ -248,7 +248,7 @@ export async function GET(request: NextRequest) {
         return applyDateRange(query, startDate, endDate, "record_date");
       })(),
       (() => {
-        const query = admin.from("daily_subject_records").select("id, block_id, record_date, subject_id, teacher_id, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, is_supplementary, is_test_supplementary, is_homework_supplementary, public_note, test_definitions, test_results, save_state").eq("academy_id", academyId).eq("student_id", studentId).eq("save_state", "final").order("record_date", { ascending: false });
+        const query = admin.from("daily_subject_records").select("id, block_id, record_date, subject_id, teacher_id, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, metric_values, record_form_snapshot, is_supplementary, is_test_supplementary, is_homework_supplementary, public_note, test_definitions, test_results, save_state").eq("academy_id", academyId).eq("student_id", studentId).eq("save_state", "final").order("record_date", { ascending: false });
         return applyDateRange(query, startDate, endDate, "record_date");
       })(),
       (() => {
@@ -444,6 +444,8 @@ export async function GET(request: NextRequest) {
         homeworkScore: row.homework_score,
         understandingScore: row.understanding_score,
         participationScore: row.participation_score,
+        metricValues: row.metric_values ?? {},
+        metricDefinitions: row.record_form_snapshot?.metrics ?? [],
         isSupplementary: row.is_supplementary || row.is_test_supplementary || row.is_homework_supplementary,
         publicNote: row.public_note,
         tests: [...parseJsonArray(row.test_definitions)].map((definition, index) => {

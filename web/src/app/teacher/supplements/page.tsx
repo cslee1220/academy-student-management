@@ -62,8 +62,8 @@ export default function TeacherSupplementsPage() {
     return rows.filter((row) => row.completed === completed);
   }, [rowSort, rows]);
 
-  async function toggle(row: SupplementRow, kind: "test" | "homework", completed: boolean) {
-    const key = `${row.id}:${kind}`;
+  async function toggle(row: SupplementRow, kind: "test" | "homework" | "custom", completed: boolean, supplementTypeId?: string) {
+    const key = kind === "custom" ? `${row.id}:custom:${supplementTypeId}` : `${row.id}:${kind}`;
     setPendingKey(key);
     setError("");
     setMessage("");
@@ -71,7 +71,7 @@ export default function TeacherSupplementsPage() {
       const response = await fetch("/api/teacher/supplements", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskId: row.id, kind, completed, version: row.version }),
+        body: JSON.stringify({ taskId: row.id, kind, supplementTypeId, completed, version: row.version }),
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
@@ -114,7 +114,7 @@ export default function TeacherSupplementsPage() {
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-sm font-bold text-indigo-600">상세 현황</p><h2 className="mt-1 text-xl font-bold text-slate-900">학생별 보충 작업</h2></div><div className="flex flex-wrap items-end gap-3"><label className="text-sm font-semibold text-slate-700">정렬<select aria-label="보충 상세 정렬" value={rowSort} onChange={(event) => setRowSort(event.target.value as RowSort)} className={`mt-1 block h-10 rounded-lg border border-slate-300 bg-white px-3 font-normal ${inputFocusClass}`}><option value="default">기본 순서</option><option value="incomplete">미완료</option><option value="complete">완료</option></select></label><span className="text-sm text-slate-500">현재 필터 {rowSort === "default" ? "기본 순서" : rowSort === "incomplete" ? "미완료" : "완료"} · {sortedRows.length}건</span></div></div>
-        {isLoading ? <p role="status" className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">보충 현황을 불러오는 중입니다.</p> : sortedRows.length ? <TeacherSupplementTable rows={sortedRows} pendingKey={pendingKey} onToggle={(row, kind, completed) => void toggle(row, kind, completed)} /> : <p className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">{rowSort === "default" ? "해당 기간의 보충 대상 학생이 없습니다." : `${rowSort === "incomplete" ? "미완료" : "완료"} 상태의 보충 대상 학생이 없습니다.`}</p>}
+        {isLoading ? <p role="status" className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">보충 현황을 불러오는 중입니다.</p> : sortedRows.length ? <TeacherSupplementTable rows={sortedRows} pendingKey={pendingKey} onToggle={(row, kind, completed, supplementTypeId) => void toggle(row, kind, completed, supplementTypeId)} /> : <p className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">{rowSort === "default" ? "해당 기간의 보충 대상 학생이 없습니다." : `${rowSort === "incomplete" ? "미완료" : "완료"} 상태의 보충 대상 학생이 없습니다.`}</p>}
       </section>
     </main>
   );

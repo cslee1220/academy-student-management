@@ -1,6 +1,7 @@
 "use client";
 
 export type TestItem = { name: string; score: number | string | null; maxScore?: number | string | null; nonAttemptReason?: string | null };
+export type SupplementItem = { typeId: string; name: string; scheduledDate: string | null; completed: boolean };
 export type SupplementRow = {
   id: string;
   class_name_snapshot: string;
@@ -14,6 +15,7 @@ export type SupplementRow = {
   student_note: string | null;
   test_completed: boolean;
   homework_completed: boolean;
+  supplement_items: SupplementItem[];
   completed: boolean;
   version: number;
 };
@@ -21,7 +23,7 @@ export type SupplementRow = {
 type TeacherSupplementTableProps = {
   rows: SupplementRow[];
   pendingKey: string;
-  onToggle: (row: SupplementRow, kind: "test" | "homework", completed: boolean) => void;
+  onToggle: (row: SupplementRow, kind: "test" | "homework" | "custom", completed: boolean, supplementTypeId?: string) => void;
 };
 
 const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
@@ -67,6 +69,7 @@ export default function TeacherSupplementTable({ rows, pendingKey, onToggle }: T
                         <summary className="cursor-pointer font-semibold text-slate-700">기존 과제보충 내용</summary>
                         <p className="mt-2 whitespace-pre-wrap break-words">{homeworkContent}</p>
                       </details> : null}
+                      {row.supplement_items.map((item) => <label key={`${row.id}:${item.typeId}`} className="mt-3 flex items-center gap-2 text-xs font-bold text-indigo-700"><input type="checkbox" checked={item.completed} disabled={pendingKey === `${row.id}:custom:${item.typeId}`} onChange={(event) => onToggle(row, "custom", event.target.checked, item.typeId)} className={`h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed ${focusRingClass}`} /> {pendingKey === `${row.id}:custom:${item.typeId}` ? "저장 중…" : `${item.name} 보충 완료`}</label>)}
                     </div>
                     {row.has_homework_supplementary ? <label className="mt-3 flex items-center gap-2 text-xs font-bold text-indigo-700"><input type="checkbox" checked={row.homework_completed} disabled={pendingKey === `${row.id}:homework`} onChange={(event) => onToggle(row, "homework", event.target.checked)} className={`h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed ${focusRingClass}`} /> {pendingKey === `${row.id}:homework` ? "저장 중…" : "과제보충 완료"}</label> : null}
                   </td>

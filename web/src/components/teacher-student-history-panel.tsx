@@ -82,6 +82,8 @@ type LearningHistory = {
   homeworkScore: number | null;
   understandingScore: number | null;
   participationScore: number | null;
+  metricValues?: Record<string, unknown>;
+  metricDefinitions?: Array<{ id?: string; code?: string | null; name?: string; scaleMax?: number }>;
   isSupplementary: boolean;
   publicNote: string | null;
   tests: TestHistory[];
@@ -171,14 +173,26 @@ function timeText(value: string) {
   return value.slice(0, 5);
 }
 
-function scoreText(value: number | null | undefined) {
-  return value === null || value === undefined ? "-" : String(value);
-}
-
 function testText(tests: TestHistory[]) {
   return tests.length
     ? tests.map((test) => `${String(test.name ?? "테스트")} ${test.score ?? test.nonAttemptReason ?? "-"}`).join(" / ")
     : "-";
+}
+
+function metricText(row: LearningHistory) {
+  const definitions = row.metricDefinitions?.length
+    ? row.metricDefinitions
+    : [
+        { id: "legacy-homework", code: "homework", name: "숙제", scaleMax: 5 },
+        { id: "legacy-understanding", code: "understanding", name: "이해도", scaleMax: 5 },
+        { id: "legacy-participation", code: "participation", name: "참여도", scaleMax: 5 },
+      ];
+  return definitions.map((definition, index) => {
+    const id = definition.id ?? `metric-${index + 1}`;
+    const legacyValue = definition.code === "homework" ? row.homeworkScore : definition.code === "understanding" ? row.understandingScore : definition.code === "participation" ? row.participationScore : undefined;
+    const value = row.metricValues && Object.hasOwn(row.metricValues, id) ? row.metricValues[id] : legacyValue;
+    return `${definition.name ?? `수업지표 ${index + 1}`}: ${value ?? "-"} / ${definition.scaleMax ?? 5}`;
+  }).join(" / ");
 }
 
 function classLabel(row: { className: string | null; classroomName?: string | null; subjectName?: string | null }) {
@@ -335,7 +349,7 @@ export default function TeacherStudentHistoryPanel() {
 
           <details className="order-4 rounded-xl border border-slate-200 bg-white p-4">
             <summary className="cursor-pointer font-bold text-slate-900">학습·테스트 이력 ({history.history.learning.length})</summary>
-            {history.history.learning.length ? <div className="mt-4 overflow-x-auto"><table className="min-w-[1180px] w-full text-left text-xs"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="px-2 py-2">일자</th><th className="px-2 py-2">학기</th><th className="px-2 py-2">반·과목</th><th className="px-2 py-2">강의실</th><th className="px-2 py-2">교사</th><th className="px-2 py-2">숙제</th><th className="px-2 py-2">이해</th><th className="px-2 py-2">참여</th><th className="px-2 py-2">테스트</th><th className="px-2 py-2">수업 메모</th></tr></thead><tbody>{history.history.learning.map((row) => <tr key={row.id} className="border-b border-slate-100 align-top"><td className="px-2 py-3">{dateText(row.recordDate)}</td><td className="px-2 py-3">{row.termName ?? "-"}</td><td className="px-2 py-3">{classLabel(row)}</td><td className="px-2 py-3">{row.classroomName ?? "-"}</td><td className="px-2 py-3">{row.teacherName ?? "-"}</td><td className="px-2 py-3">{scoreText(row.homeworkScore)}</td><td className="px-2 py-3">{scoreText(row.understandingScore)}</td><td className="px-2 py-3">{scoreText(row.participationScore)}</td><td className="max-w-[280px] whitespace-pre-wrap px-2 py-3">{testText(row.tests)}{row.isSupplementary ? " · 보충" : ""}</td><td className="max-w-[260px] whitespace-pre-wrap px-2 py-3">{row.publicNote ?? "-"}</td></tr>)}</tbody></table></div> : <p className="mt-4 text-sm text-slate-500">조회할 학습 이력이 없습니다.</p>}
+            {history.history.learning.length ? <div className="mt-4 overflow-x-auto"><table className="min-w-[1180px] w-full text-left text-xs"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="px-2 py-2">일자</th><th className="px-2 py-2">학기</th><th className="px-2 py-2">반·과목</th><th className="px-2 py-2">강의실</th><th className="px-2 py-2">교사</th><th className="min-w-[320px] px-2 py-2">수업 지표</th><th className="px-2 py-2">테스트</th><th className="px-2 py-2">수업 메모</th></tr></thead><tbody>{history.history.learning.map((row) => <tr key={row.id} className="border-b border-slate-100 align-top"><td className="px-2 py-3">{dateText(row.recordDate)}</td><td className="px-2 py-3">{row.termName ?? "-"}</td><td className="px-2 py-3">{classLabel(row)}</td><td className="px-2 py-3">{row.classroomName ?? "-"}</td><td className="px-2 py-3">{row.teacherName ?? "-"}</td><td className="max-w-[420px] whitespace-pre-wrap break-words px-2 py-3">{metricText(row)}</td><td className="max-w-[280px] whitespace-pre-wrap px-2 py-3">{testText(row.tests)}{row.isSupplementary ? " · 보충" : ""}</td><td className="max-w-[260px] whitespace-pre-wrap px-2 py-3">{row.publicNote ?? "-"}</td></tr>)}</tbody></table></div> : <p className="mt-4 text-sm text-slate-500">조회할 학습 이력이 없습니다.</p>}
           </details>
 
           <details className="order-5 rounded-xl border border-slate-200 bg-white p-4">

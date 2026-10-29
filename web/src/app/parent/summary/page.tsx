@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { LEGACY_METRIC_IDS } from "@/lib/lesson-record-settings";
 
 type Snapshot = { item_key: string; value_json: Record<string, unknown> };
 type Publication = { id: string; session_id: string; session_date: string | null; snapshots: Snapshot[] };
@@ -14,6 +15,34 @@ function numberValue(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
   return null;
+}
+
+type MetricDefinition = { id: string; code: string | null; name: string };
+
+function metricDefinitions(value: Record<string, unknown>): MetricDefinition[] {
+  const rawDefinitions = value.metricDefinitions;
+  if (Array.isArray(rawDefinitions)) {
+    return rawDefinitions
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      .map((item, index) => ({
+        id: typeof item.id === "string" && item.id ? item.id : `legacy-metric-${index + 1}`,
+        code: typeof item.code === "string" && item.code ? item.code : null,
+        name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : `수업지표 ${index + 1}`,
+      }));
+  }
+  return [
+    { id: LEGACY_METRIC_IDS.homework, code: "homework", name: "숙제" },
+    { id: LEGACY_METRIC_IDS.understanding, code: "understanding", name: "이해도" },
+    { id: LEGACY_METRIC_IDS.participation, code: "participation", name: "참여도" },
+  ];
+}
+
+function metricValue(value: Record<string, unknown>, definition: MetricDefinition) {
+  const metricValues = value.metricValues;
+  if (metricValues && typeof metricValues === "object" && !Array.isArray(metricValues) && Object.hasOwn(metricValues, definition.id)) {
+    return (metricValues as Record<string, unknown>)[definition.id];
+  }
+  return definition.code ? value[`${definition.code}Score`] : undefined;
 }
 
 export default function ParentSummaryPage() {
@@ -56,6 +85,7 @@ export default function ParentSummaryPage() {
     const attendance = { present: 0, absent: 0, unexcused: 0 };
     const scores: number[] = [];
     const testScores: number[] = [];
+    const metricTotals = new Map<string, { label: string; total: number; count: number }>();
     let supplementCount = 0;
     for (const publication of publications) {
       for (const snapshot of publication.snapshots) {
@@ -70,6 +100,14 @@ export default function ParentSummaryPage() {
             const score = numberValue(value[key]);
             if (score !== null) scores.push(score);
           }
+          for (const definition of metricDefinitions(value)) {
+            const score = numberValue(metricValue(value, definition));
+            if (score === null) continue;
+            const current = metricTotals.get(definition.id) ?? { label: definition.name, total: 0, count: 0 };
+            current.total += score;
+            current.count += 1;
+            metricTotals.set(definition.id, current);
+          }
           if (value.isSupplementary === true) supplementCount += 1;
         }
         if (snapshot.item_key.startsWith("test:")) {
@@ -79,7 +117,8 @@ export default function ParentSummaryPage() {
       }
     }
     const average = (values: number[]) => values.length ? (values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2) : "-";
-    return { attendance, scoreAverage: average(scores), testAverage: average(testScores), supplementCount };
+    const metricAverages = [...metricTotals.entries()].map(([id, item]) => ({ id, label: item.label, average: (item.total / item.count).toFixed(2) }));
+    return { attendance, scoreAverage: average(scores), testAverage: average(testScores), supplementCount, metricAverages };
   }, [publications]);
 
   return (
@@ -108,6 +147,7 @@ export default function ParentSummaryPage() {
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><p className="text-xs font-bold text-amber-700">보충 표시</p><p className="mt-2 text-2xl font-bold text-amber-900">{summary.supplementCount}</p></div>
         </section>
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-slate-900">테스트 평균</h2><p className="mt-2 text-3xl font-bold text-slate-950">{summary.testAverage}</p><p className="mt-2 text-xs text-slate-500">점수가 입력되고 공개 완료된 테스트만 계산됩니다.</p></section>
+        {summary.metricAverages.length ? <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-slate-900">지표별 평균</h2><div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{summary.metricAverages.map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">{item.label}</p><p className="mt-1 text-2xl font-bold text-slate-950">{item.average}</p><p className="mt-1 text-xs text-slate-500">5점 척도</p></div>)}</div><p className="mt-3 text-xs text-slate-500">기존 숙제·이해도·참여도 평균과 새 지표 평균을 항목별로 분리해 표시합니다.</p></section> : null}
       </> : null}
     </main>
   );

@@ -8,6 +8,7 @@ import ConsultationRecordDialog from "@/components/teacher/consultation-record-d
 import TeacherStudentHistoryPanel from "@/components/teacher-student-history-panel";
 import TeacherRecordsOverview from "@/components/teacher-records-overview";
 import TeacherSupplementsPanel from "@/components/teacher-supplements-panel";
+import { activeMetrics, activeSupplementTypes, normalizeLessonRecordForm, normalizeLessonRecordSettings, type LessonRecordFormSnapshot, type LessonRecordSettings, type LessonRecordSupplementType } from "@/lib/lesson-record-settings";
 
 type AttendanceStatus = "present" | "absent" | "unexcused_absent";
 type DailyBlock = {
@@ -47,6 +48,7 @@ type DailyBlockGroup = {
   blocks: DailyBlock[];
 };
 type TestDefinition = { id: string; sequenceNo: number; name: string; maxScore: string };
+type SupplementItemRow = { typeId: string; name: string; enabled: boolean; scheduledDate: string };
 type StudentRow = {
   id: string;
   student_no: string;
@@ -61,6 +63,8 @@ type StudentRow = {
   homeworkScore: string;
   understandingScore: string;
   participationScore: string;
+  metricValues: Record<string, string>;
+  recordFormSnapshot: LessonRecordFormSnapshot | null;
   saveState: "draft" | "final" | null;
   publicationStatus: "draft" | "published" | null;
   legacySupplementary: boolean;
@@ -72,6 +76,7 @@ type StudentRow = {
   subjectVersion: number;
   publicNote: string;
   testResults: Array<{ testDefinitionId: string; score: string; nonAttemptReason: string }>;
+  supplementItems: SupplementItemRow[];
 };
 type SupplementPopup = {
   studentId: string;
@@ -99,7 +104,7 @@ const attendanceLabels: Record<AttendanceStatus, string> = {
   unexcused_absent: "무단결석",
 };
 const weekdayOrder = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-const MAX_TEST_DEFINITIONS = 10;
+const MAX_TEST_DEFINITIONS = 2;
 const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
 const inputFocusClass = "focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-100";
 
@@ -221,17 +226,42 @@ function definitionsForLoadedGroup(
   students: Array<{ operation_group?: "A" | "B" | null; subjectRecord?: Record<string, unknown> | null }>,
   groupKey: TestGroupKey,
   subjectName?: string | null,
+  testsEnabled = true,
 ) {
   const existingStudent = students.find((student) =>
     (student.operation_group ?? "unassigned") === groupKey && Boolean(student.subjectRecord),
   );
   return existingStudent?.subjectRecord
     ? makeTestDefinitions(existingStudent.subjectRecord.test_definitions)
-    : defaultTestDefinitions(groupKey, subjectName);
+    : testsEnabled ? defaultTestDefinitions(groupKey, subjectName) : [];
 }
 
-function blankRow(student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null }, existing: Record<string, unknown> | null | undefined, attendance: Record<string, unknown> | null | undefined, recordDate: string): StudentRow {
+function normalizeSupplementItems(value: unknown, form: LessonRecordFormSnapshot, recordDate: string, existing: Record<string, unknown> | null | undefined) {
+  const saved = Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+  const savedById = new Map(saved.map((item) => [typeof item.typeId === "string" ? item.typeId : "", item]));
+  return form.supplementTypes.map((type) => {
+    const savedItem = savedById.get(type.id);
+    const legacyEnabled = type.code === "test" ? existing?.is_test_supplementary === true : type.code === "homework" ? existing?.is_homework_supplementary === true : false;
+    const legacyDate = type.code === "test" ? existing?.test_supplement_date : type.code === "homework" ? existing?.homework_supplement_date : null;
+    return {
+      typeId: type.id,
+      name: type.name,
+      enabled: savedItem?.enabled === true || legacyEnabled,
+      scheduledDate: typeof savedItem?.scheduledDate === "string" ? savedItem.scheduledDate : typeof legacyDate === "string" ? legacyDate : recordDate,
+    };
+  });
+}
+
+function blankRow(student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null }, existing: Record<string, unknown> | null | undefined, attendance: Record<string, unknown> | null | undefined, recordDate: string, settings: LessonRecordSettings): StudentRow {
   const results = Array.isArray(existing?.test_results) ? existing?.test_results : [];
+  const recordFormSnapshot = existing?.record_form_snapshot && typeof existing.record_form_snapshot === "object" && !Array.isArray(existing.record_form_snapshot)
+    ? normalizeLessonRecordForm(existing.record_form_snapshot)
+    : null;
+  const effectiveForm = recordFormSnapshot ?? settings;
+  const savedMetricValues = existing?.metric_values && typeof existing.metric_values === "object" && !Array.isArray(existing.metric_values) ? existing.metric_values as Record<string, unknown> : {};
+  const metricValues = Object.fromEntries(Object.entries(savedMetricValues).map(([key, value]) => [key, value === null || value === undefined ? "" : String(value)]));
   const savedAttendanceStatus = attendance?.attendance_status;
   const attendanceRecorded = savedAttendanceStatus === "present"
     || savedAttendanceStatus === "absent"
@@ -250,6 +280,8 @@ function blankRow(student: { id: string; student_no: string; name: string; stude
     homeworkScore: existing?.homework_score === null || existing?.homework_score === undefined ? "5" : String(existing.homework_score),
     understandingScore: existing?.understanding_score === null || existing?.understanding_score === undefined ? "5" : String(existing.understanding_score),
     participationScore: existing?.participation_score === null || existing?.participation_score === undefined ? "5" : String(existing.participation_score),
+    metricValues,
+    recordFormSnapshot,
     saveState: existing?.save_state === "draft" || existing?.save_state === "final" ? existing.save_state : null,
     publicationStatus: student.publication_status === "draft" || student.publication_status === "published" ? student.publication_status : null,
     legacySupplementary: existing?.legacy_supplementary === true
@@ -273,6 +305,7 @@ function blankRow(student: { id: string; student_no: string; name: string; stude
         nonAttemptReason: typeof row.nonAttemptReason === "string" ? row.nonAttemptReason : "",
       };
     }),
+    supplementItems: normalizeSupplementItems(existing?.supplement_items, effectiveForm, recordDate, existing),
   };
 }
 
@@ -294,6 +327,7 @@ export default function DailyRecordsPage() {
   const router = useRouter();
   const [isRouteChecking, setIsRouteChecking] = useState(true);
   const [isTeacherAuthorized, setIsTeacherAuthorized] = useState(false);
+  const [recordSettings, setRecordSettings] = useState<LessonRecordSettings>(() => normalizeLessonRecordSettings(null, ""));
   const [blocks, setBlocks] = useState<DailyBlock[]>([]);
   const [selectedGroupKey, setSelectedGroupKey] = useState("");
   const [recordDate, setRecordDate] = useState(today);
@@ -432,11 +466,13 @@ export default function DailyRecordsPage() {
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message ?? "학생 기록을 불러오지 못했습니다.");
       const data = payload.data;
+      const loadedRecordSettings = normalizeLessonRecordSettings(data.recordSettings, data.recordSettings?.academyId ?? "");
+      setRecordSettings(loadedRecordSettings);
       const loadedStudents = (data.students ?? []) as Array<{ operation_group?: "A" | "B" | null; subjectRecord?: Record<string, unknown> | null }>;
       setTestDefinitionsByGroup({
-        A: definitionsForLoadedGroup(loadedStudents, "A", selectedBlock.subject_name_snapshot),
-        B: definitionsForLoadedGroup(loadedStudents, "B", selectedBlock.subject_name_snapshot),
-        unassigned: definitionsForLoadedGroup(loadedStudents, "unassigned", selectedBlock.subject_name_snapshot),
+        A: definitionsForLoadedGroup(loadedStudents, "A", selectedBlock.subject_name_snapshot, loadedRecordSettings.testsEnabled),
+        B: definitionsForLoadedGroup(loadedStudents, "B", selectedBlock.subject_name_snapshot, loadedRecordSettings.testsEnabled),
+        unassigned: definitionsForLoadedGroup(loadedStudents, "unassigned", selectedBlock.subject_name_snapshot, loadedRecordSettings.testsEnabled),
       });
       const commonHomeworkByGroup = data.commonHomeworkByGroup ?? {};
       setHomeworkByGroup({
@@ -444,7 +480,7 @@ export default function DailyRecordsPage() {
         B: homeworkDraft(commonHomeworkByGroup.B),
         unassigned: homeworkDraft(commonHomeworkByGroup.unassigned),
       });
-      setStudents((data.students ?? []).map((student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null; subjectRecord?: Record<string, unknown> | null; attendance?: Record<string, unknown> | null }) => blankRow(student, student.subjectRecord, student.attendance, recordDate)));
+      setStudents((data.students ?? []).map((student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null; subjectRecord?: Record<string, unknown> | null; attendance?: Record<string, unknown> | null }) => blankRow(student, student.subjectRecord, student.attendance, recordDate, loadedRecordSettings)));
       setIsDirty(false);
       setMessage("");
     } catch (loadError) {
@@ -525,6 +561,23 @@ export default function DailyRecordsPage() {
     setMessage("");
   }
 
+  function updateMetricValue(studentId: string, metricId: string, value: string) {
+    setStudents((current) => current.map((student) => student.id === studentId ? { ...student, metricValues: { ...student.metricValues, [metricId]: value } } : student));
+    setIsDirty(true);
+    setMessage("");
+  }
+
+  function updateCustomSupplement(studentId: string, type: LessonRecordSupplementType, enabled: boolean, scheduledDate?: string) {
+    setStudents((current) => current.map((student) => {
+      if (student.id !== studentId) return student;
+      const existing = student.supplementItems.find((item) => item.typeId === type.id);
+      const next: SupplementItemRow = { typeId: type.id, name: type.name, enabled, scheduledDate: scheduledDate ?? existing?.scheduledDate ?? recordDate };
+      return { ...student, supplementItems: [...student.supplementItems.filter((item) => item.typeId !== type.id), next] };
+    }));
+    setIsDirty(true);
+    setMessage("");
+  }
+
   function updateHomework(groupKey: HomeworkGroupKey, key: "lessonContent" | "content" | "noHomework", value: string | boolean) {
     setHomeworkByGroup((current) => ({
       ...current,
@@ -537,17 +590,24 @@ export default function DailyRecordsPage() {
   function updateSupplementType(studentId: string, kind: "test" | "homework", checked: boolean) {
     setStudents((current) => current.map((student) => {
       if (student.id !== studentId) return student;
+      const form = student.recordFormSnapshot ?? recordSettings;
+      const type = form.supplementTypes.find((item) => item.code === kind);
+      const nextItems = type
+        ? [...student.supplementItems.filter((item) => item.typeId !== type.id), { typeId: type.id, name: type.name, enabled: checked, scheduledDate: checked ? (kind === "test" ? student.testSupplementDate : student.homeworkSupplementDate) || recordDate : recordDate }]
+        : student.supplementItems;
       if (kind === "test") {
         return {
           ...student,
           isTestSupplementary: checked,
           testSupplementDate: checked ? student.testSupplementDate || recordDate : "",
+          supplementItems: nextItems,
         };
       }
       return {
         ...student,
         isHomeworkSupplementary: checked,
         homeworkSupplementDate: checked ? student.homeworkSupplementDate || recordDate : "",
+        supplementItems: nextItems,
       };
     }));
     setIsDirty(true);
@@ -577,6 +637,12 @@ export default function DailyRecordsPage() {
     }
     const key = supplementPopup.kind === "test" ? "testSupplementDate" : "homeworkSupplementDate";
     updateStudent(supplementPopup.studentId, key, supplementPopup.date);
+    setStudents((current) => current.map((student) => {
+      if (student.id !== supplementPopup.studentId) return student;
+      const form = student.recordFormSnapshot ?? recordSettings;
+      const type = form.supplementTypes.find((item) => item.code === supplementPopup.kind);
+      return type ? { ...student, supplementItems: student.supplementItems.map((item) => item.typeId === type.id ? { ...item, scheduledDate: supplementPopup.date, enabled: true } : item) } : student;
+    }));
     setSupplementPopup(null);
   }
 
@@ -700,6 +766,7 @@ export default function DailyRecordsPage() {
             homeworkScore: student.homeworkScore,
             understandingScore: student.understandingScore,
             participationScore: student.participationScore,
+            metricValues: student.metricValues,
             isSupplementary: student.legacySupplementary,
             isTestSupplementary: student.isTestSupplementary,
             testSupplementDate: student.testSupplementDate,
@@ -709,6 +776,7 @@ export default function DailyRecordsPage() {
             subjectVersion: student.subjectVersion,
             publicNote: student.publicNote,
             testResults: student.testResults,
+            supplementItems: student.supplementItems,
           })),
           commonHomework: Object.fromEntries(
             studentGroups
@@ -819,12 +887,13 @@ export default function DailyRecordsPage() {
                 ? groupTestDefinitions.map((definition, index) => `${formatTestDefinitionLabel(definition, index)} · ${definition.maxScore || "-"}점`).join(" / ")
                 : "테스트 사용 안 함";
               const memoHelpId = `student-note-help-${group.key}`;
+              const commonRecordEnabled = group.rows.some((student) => (student.recordFormSnapshot ?? recordSettings).commonRecordEnabled);
               return <div key={group.key} className="overflow-hidden rounded-xl border border-slate-200">
                 <div className={`flex items-center justify-between px-4 py-3 ${group.key === "A" ? "bg-indigo-50 text-indigo-900" : group.key === "B" ? "bg-amber-50 text-amber-900" : "bg-slate-50 text-slate-700"}`}>
                   <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold">{group.label}</h3><span className="text-xs font-semibold opacity-80">{group.rows.length}명</span></div><div className="mt-2 flex flex-wrap items-center gap-2"><span className="max-w-full truncate text-xs font-semibold" title={testSummary}>테스트 · {testSummary}</span><button type="button" onClick={() => setExpandedTestSettings((current) => ({ ...current, [group.key]: !current[group.key] }))} className="rounded-lg border border-white/80 bg-white/80 px-2 py-1 text-xs font-bold text-indigo-700 shadow-sm hover:bg-white">{expandedTestSettings[group.key] ? "설정 닫기" : "설정"}</button>{group.rows.map((student) => <button type="button" key={`consultation-${group.key}-${student.id}`} onClick={() => setConsultationStudent({ id: student.id, name: student.name, studentNo: student.student_no })} className="rounded-lg border border-white/80 bg-white/80 px-2 py-1 text-xs font-bold text-indigo-700 shadow-sm hover:bg-white">{student.name} · 상담</button>)}</div></div>
                 </div>
                 {expandedTestSettings[group.key] ? <div className="border-b border-slate-200 bg-white p-4">
-                  <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">{group.label} 테스트 설정</p><p className="mt-1 text-xs text-slate-500">이 그룹 학생에게만 적용됩니다.</p></div>{group.key === "unassigned" ? null : <label className="flex items-center gap-2 text-xs font-bold text-slate-700"><input type="checkbox" checked={groupTestDefinitions.length > 0} onChange={(event) => toggleTestGroup(group.key, event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 테스트 사용</label>}</div>
+                  <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">{group.label} 테스트 설정</p><p className="mt-1 text-xs text-slate-500">이 그룹 학생에게만 적용됩니다.</p></div>{group.key === "unassigned" ? null : <label className="flex items-center gap-2 text-xs font-bold text-slate-700"><input type="checkbox" checked={groupTestDefinitions.length > 0} disabled={!recordSettings.testsEnabled && !group.rows.some((student) => student.recordFormSnapshot?.testsEnabled)} onChange={(event) => toggleTestGroup(group.key, event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 테스트 사용</label>}</div>
                   {groupTestDefinitions.length ? <div className="mt-3 grid gap-2">{groupTestDefinitions.map((definition, index) => <div key={definition.id} className="grid grid-cols-[minmax(0,1fr)_90px_auto] gap-2 rounded-lg bg-slate-50 p-2"><input value={definition.name} onChange={(event) => updateDefinition(group.key, index, "name", event.target.value)} placeholder="테스트명" className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500" /><input value={definition.maxScore} onChange={(event) => updateDefinition(group.key, index, "maxScore", event.target.value)} type="number" min="1" placeholder="만점" aria-label={`${group.label} 만점`} className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-sm outline-none focus:border-indigo-500" /><button type="button" onClick={() => removeTestDefinition(group.key, definition.id)} aria-label={`${definition.name || "테스트"} 삭제`} className="h-9 rounded-lg border border-rose-200 bg-white px-2 text-xs font-semibold text-rose-700 hover:bg-rose-50">삭제</button></div>)}</div> : <p className="mt-3 rounded-lg bg-slate-50 px-3 py-3 text-xs text-slate-500">이 그룹은 테스트 없이 저장됩니다.</p>}
                   <button type="button" onClick={() => addTestDefinition(group.key)} disabled={groupTestDefinitions.length >= MAX_TEST_DEFINITIONS} className="mt-3 rounded-lg border border-indigo-200 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">테스트 추가</button>
                 </div> : null}
@@ -832,12 +901,17 @@ export default function DailyRecordsPage() {
                  <div role="region" aria-label={`${group.label} 학생 기록 표`} tabIndex={0} className="overflow-x-auto rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
                    <table className={`w-full table-fixed border-collapse text-center text-sm [&_th]:text-center [&_th]:text-sm [&_th]:font-bold [&_th_div]:text-sm [&_th_div]:font-bold [&_th_span]:text-sm [&_th_span]:font-bold ${groupTableMinWidthClass}`}>
                      <colgroup><col className="w-[140px]" /><col className="w-[112px]" />{groupTestDefinitions.length ? <col className={groupTestColumnClass} /> : null}<col className="w-[205px]" /><col className="w-[190px]" /><col className="w-[360px]" /></colgroup>
-                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="min-w-[250px] px-2 py-3 font-semibold"><div>학생별 수업메모</div><p id={memoHelpId} className="mt-2 text-left text-[10px] font-normal leading-4 text-slate-500">미이행 과제, 칭찬사항, 부족사항, 보충 관련, 학부모 전달사항 등을 입력하세요.</p></th></tr></thead>
+                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid gap-1 text-center text-xs font-semibold" style={{ gridTemplateColumns: `repeat(${Math.max(1, activeMetrics(group.rows[0]?.recordFormSnapshot ?? recordSettings).length)}, minmax(0, 1fr))` }}>{activeMetrics(group.rows[0]?.recordFormSnapshot ?? recordSettings).map((metric) => <span key={metric.id} className="min-w-0 truncate" title={metric.name}>{metric.name}</span>)}</div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid gap-1 text-center text-xs font-semibold" style={{ gridTemplateColumns: `repeat(${Math.max(1, activeSupplementTypes(group.rows[0]?.recordFormSnapshot ?? recordSettings).length)}, minmax(0, 1fr))` }}>{activeSupplementTypes(group.rows[0]?.recordFormSnapshot ?? recordSettings).map((type) => <span key={type.id} className="min-w-0 truncate" title={type.name}>{type.name}</span>)}</div></th><th className="min-w-[250px] px-2 py-3 font-semibold"><div>학생별 수업메모</div><p id={memoHelpId} className="mt-2 text-left text-[10px] font-normal leading-4 text-slate-500">미이행 과제, 칭찬사항, 부족사항, 보충 관련, 학부모 전달사항 등을 입력하세요.</p></th></tr></thead>
                      <tbody>
                        {group.rows.map((student) => {
                          const absent = student.attendanceStatus !== "present";
                          const paused = student.student_status === "paused" || student.student_status === "on_hold";
                          const operationLabel = student.operation_group ?? (selectedGroup?.is_exam_class ? "내신대비반" : "미구분");
+                         const studentForm = student.recordFormSnapshot ?? recordSettings;
+                         const studentSupplementTypes = activeSupplementTypes(studentForm);
+                         const testSupplementType = studentSupplementTypes.find((type) => type.code === "test") ?? student.recordFormSnapshot?.supplementTypes.find((type) => type.code === "test" && type.isActive);
+                         const homeworkSupplementType = studentSupplementTypes.find((type) => type.code === "homework") ?? student.recordFormSnapshot?.supplementTypes.find((type) => type.code === "homework" && type.isActive);
+                         const customSupplementTypes = studentSupplementTypes.filter((type) => type.code !== "test" && type.code !== "homework");
                          return (
                            <tr key={student.id} className="border-t border-slate-100 align-middle">
                              <td className="sticky left-0 z-[1] whitespace-nowrap bg-white px-2 py-2">
@@ -866,25 +940,31 @@ export default function DailyRecordsPage() {
                                </td>
                              ) : null}
                              <td className="px-2 py-2">
-                               <div className="grid grid-cols-3 gap-1">
-                                 <select aria-label={`${student.name} 숙제 점수`} value={student.homeworkScore} onChange={(event) => updateStudent(student.id, "homeworkScore", event.target.value)} disabled={absent || paused} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
-                                 <select aria-label={`${student.name} 이해도`} value={student.understandingScore} onChange={(event) => updateStudent(student.id, "understandingScore", event.target.value)} disabled={absent || paused} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
-                                 <select aria-label={`${student.name} 참여도`} value={student.participationScore} onChange={(event) => updateStudent(student.id, "participationScore", event.target.value)} disabled={absent || paused} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>
+                               <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.max(1, activeMetrics(student.recordFormSnapshot ?? recordSettings).length)}, minmax(0, 1fr))` }}>
+                                 {activeMetrics(student.recordFormSnapshot ?? recordSettings).map((metric) => {
+                                   const legacyKey = metric.code === "homework" ? "homeworkScore" : metric.code === "understanding" ? "understandingScore" : metric.code === "participation" ? "participationScore" : null;
+                                   const value = legacyKey ? student[legacyKey] : (student.metricValues[metric.id] ?? "5");
+                                   return <select key={metric.id} aria-label={`${student.name} ${metric.name} 점수`} value={value} onChange={(event) => legacyKey ? updateStudent(student.id, legacyKey, event.target.value) : updateMetricValue(student.id, metric.id, event.target.value)} disabled={absent || paused} className="h-8 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-1 text-center text-xs font-bold outline-none disabled:bg-slate-100"><option value="">-</option>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}</option>)}</select>;
+                                 })}
                                </div>
                              </td>
                              <td className="px-2 py-2">
-                               <div className="grid grid-cols-2 gap-1">
-                                 <div className="flex min-w-0 items-center justify-center gap-1 overflow-hidden">
+                               <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${Math.max(1, [testSupplementType, homeworkSupplementType, ...customSupplementTypes].filter(Boolean).length)}, minmax(0, 1fr))` }}>
+                                 {testSupplementType ? <div className="flex min-w-0 items-center justify-center gap-1 overflow-hidden">
                                    <label className="flex shrink-0 items-center gap-1 text-xs font-bold text-indigo-700" title="테스트 보충"><input aria-label={`${student.name} 테스트 보충`} type="checkbox" checked={student.isTestSupplementary} onChange={(event) => toggleSupplementType(student.id, "test", event.target.checked)} disabled={absent || paused} className="h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed" />테</label>
                                    {student.isTestSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "test")} disabled={paused} className="shrink-0 rounded-md border border-indigo-200 bg-indigo-50 px-1 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`${student.name} 테스트 보충 예정일 수정`}>{formatShortDate(student.testSupplementDate)}</button> : null}
-                                 </div>
-                                 <div className="flex min-w-0 items-center justify-center gap-1 overflow-hidden">
+                                 </div> : null}
+                                 {homeworkSupplementType ? <div className="flex min-w-0 items-center justify-center gap-1 overflow-hidden">
                                    <label className="flex shrink-0 items-center gap-1 text-xs font-bold text-emerald-700" title="숙제 보충"><input aria-label={`${student.name} 숙제 보충`} type="checkbox" checked={student.isHomeworkSupplementary} onChange={(event) => toggleSupplementType(student.id, "homework", event.target.checked)} disabled={absent || paused} className="h-4 w-4 accent-emerald-600 disabled:cursor-not-allowed" />숙</label>
                                    {student.isHomeworkSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "homework")} disabled={paused} className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-1 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`${student.name} 숙제 보충 예정일 수정`}>{formatShortDate(student.homeworkSupplementDate)}</button> : null}
-                                 </div>
+                                 </div> : null}
+                                 {customSupplementTypes.map((type) => {
+                                   const item = student.supplementItems.find((candidate) => candidate.typeId === type.id);
+                                   return <label key={type.id} className="flex min-w-0 items-center justify-center gap-1 text-xs font-bold text-slate-700" title={`${type.name} 보충`}><input aria-label={`${student.name} ${type.name} 보충`} type="checkbox" checked={item?.enabled === true} onChange={(event) => updateCustomSupplement(student.id, type, event.target.checked)} disabled={absent || paused} className="h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed" />{type.name}</label>;
+                                 })}
                                </div>
                              </td>
-                             <td className="px-2 py-2"><textarea aria-label={`${student.name} 학생별 수업메모`} aria-describedby={memoHelpId} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent || paused} placeholder="학생별 수업메모" rows={2} className="h-10 w-full min-w-[220px] resize-y overflow-y-auto rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" /></td>
+                             <td className="px-2 py-2">{studentForm.studentMemoEnabled ? <textarea aria-label={`${student.name} 학생별 수업메모`} aria-describedby={memoHelpId} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent || paused} placeholder="학생별 수업메모" rows={2} className="h-10 w-full min-w-[220px] resize-y overflow-y-auto rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" /> : <span className="text-xs text-slate-400">현재 양식에서 사용하지 않음</span>}</td>
                            </tr>
                          );
                        })}
@@ -894,8 +974,8 @@ export default function DailyRecordsPage() {
                    <div className="border-t border-slate-200 bg-slate-50/70 p-4">
                    <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">공통 기록</p><h4 className="mt-1 text-base font-bold text-slate-900">{group.label} · {selectedGroup?.subject_name_snapshot} 수업 내용·숙제</h4></div><span className="text-xs text-slate-500">반·날짜·과목별로 따로 저장됩니다.</span></div>
                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                     <label className="block text-sm font-semibold text-slate-700">수업 내용<textarea value={homeworkByGroup[group.key].lessonContent} onChange={(event) => updateHomework(group.key, "lessonContent", event.target.value)} placeholder="오늘 다룬 수업 내용" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500" /></label>
-                     <div><div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold text-slate-700"><span>숙제</span><label className="flex items-center gap-2"><input type="checkbox" checked={homeworkByGroup[group.key].noHomework} onChange={(event) => updateHomework(group.key, "noHomework", event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label></div><textarea value={homeworkByGroup[group.key].content} onChange={(event) => updateHomework(group.key, "content", event.target.value)} disabled={homeworkByGroup[group.key].noHomework} placeholder="예: 교재 32쪽 1~5번" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500 disabled:bg-slate-100" /></div>
+                     <label className="block text-sm font-semibold text-slate-700">수업 내용<textarea value={homeworkByGroup[group.key].lessonContent} onChange={(event) => updateHomework(group.key, "lessonContent", event.target.value)} placeholder="오늘 다룬 수업 내용" rows={3} disabled={!commonRecordEnabled} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500 disabled:bg-slate-100" /></label>
+                     <div><div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold text-slate-700"><span>숙제</span><label className="flex items-center gap-2"><input type="checkbox" checked={homeworkByGroup[group.key].noHomework} onChange={(event) => updateHomework(group.key, "noHomework", event.target.checked)} disabled={!commonRecordEnabled} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label></div><textarea value={homeworkByGroup[group.key].content} onChange={(event) => updateHomework(group.key, "content", event.target.value)} disabled={!commonRecordEnabled || homeworkByGroup[group.key].noHomework} placeholder="예: 교재 32쪽 1~5번" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500 disabled:bg-slate-100" /></div>
                    </div>
                  </div>
               </div>;

@@ -147,7 +147,7 @@ export async function GET() {
         .eq("status", "published"),
       supabase
         .from("daily_subject_records")
-        .select("id, block_id, student_id, record_date, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, is_supplementary, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, public_note, test_definitions, test_results, save_state")
+        .select("id, block_id, student_id, record_date, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, metric_values, record_form_snapshot, supplement_items, is_supplementary, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, public_note, test_definitions, test_results, save_state")
         .eq("academy_id", guardian.academy_id)
         .in("student_id", studentIds)
         .order("record_date", { ascending: false }),
@@ -237,6 +237,9 @@ export async function GET() {
           homeworkScore: row.homework_score,
           understandingScore: row.understanding_score,
           participationScore: row.participation_score,
+          metricValues: row.metric_values ?? {},
+          metricDefinitions: row.record_form_snapshot?.metrics ?? [],
+          supplementItems: row.supplement_items ?? [],
           isSupplementary: row.is_supplementary,
            isTestSupplementary: row.is_test_supplementary,
            testSupplementDate: row.test_supplement_date,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
 import { AuthorizationError, requireAcademyMembership } from "@/lib/auth/authorization";
+import { normalizeLessonRecordSettings, toLessonRecordRow } from "@/lib/lesson-record-settings";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -64,6 +65,22 @@ export async function GET(request: NextRequest) {
     const classIds = [...new Set((blocks ?? []).map((block) => block.class_id))];
     const subjectIds = [...new Set((blocks ?? []).map((block) => block.subject_id))];
     const admin = createSupabaseAdminClient();
+    const { data: initialRecordSettingsRow, error: recordSettingsError } = await admin
+      .from("academy_lesson_record_settings")
+      .select("*")
+      .eq("academy_id", academyId)
+      .maybeSingle();
+    if (recordSettingsError) throw recordSettingsError;
+    let recordSettingsRow = initialRecordSettingsRow;
+    if (!recordSettingsRow) {
+      const inserted = await admin
+        .from("academy_lesson_record_settings")
+        .insert(toLessonRecordRow(normalizeLessonRecordSettings(null, academyId), academyId, null, 1))
+        .select("*")
+        .single();
+      if (inserted.error && inserted.error.code !== "23505") throw inserted.error;
+      recordSettingsRow = inserted.data ?? (await admin.from("academy_lesson_record_settings").select("*").eq("academy_id", academyId).single()).data;
+    }
     const [classesResult, subjectsResult, teacherAssignmentsResult] = await Promise.all([
       classIds.length
         ? admin.from("classes").select("id, category, operation_schedule_id").eq("academy_id", academyId).eq("is_active", true).in("id", classIds)
@@ -210,6 +227,7 @@ export async function GET(request: NextRequest) {
           student_count: studentsByBlock.get(block.id)?.size ?? 0,
           operation_groups: [...(groupsByBlock.get(block.id) ?? new Set<string>())].sort(),
         })),
+        recordSettings: recordSettingsRow ? normalizeLessonRecordSettings(recordSettingsRow, academyId) : normalizeLessonRecordSettings(null, academyId),
       },
     });
   } catch (error) {

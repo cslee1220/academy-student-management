@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 
 import { AuthorizationError, requireAcademyMembership } from "@/lib/auth/authorization";
 import { resolveEffectiveAssignment } from "@/lib/assignment-resolution";
+import { normalizeLessonRecordForm, normalizeLessonRecordSettings, snapshotFromSettings, toLessonRecordRow, type LessonRecordFormSnapshot, type LessonRecordSettings } from "@/lib/lesson-record-settings";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -245,6 +246,67 @@ function makeSupplementTestItems(testDefinitions: unknown[], testResults: unknow
       };
     })
     .filter((item) => item.testDefinitionId || item.name);
+}
+
+type SupplementItemInput = { typeId: string; name: string; enabled: boolean; scheduledDate: string | null };
+
+function parseMetricValues(value: unknown, settings: LessonRecordFormSnapshot, fieldName: string) {
+  if (value === undefined || value === null) return {} as Record<string, number | null>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(422, "invalid_metric_values", `${fieldName} 형식이 올바르지 않습니다.`);
+  const allowedIds = new Set(settings.metrics.map((item) => item.id));
+  const parsed: Record<string, number | null> = {};
+  for (const [id, rawScore] of Object.entries(value as Record<string, unknown>)) {
+    if (!allowedIds.has(id)) throw new HttpError(422, "invalid_metric", "수업지표가 현재 수업기록 양식에 없습니다.");
+    if (rawScore === null || rawScore === undefined || rawScore === "") {
+      parsed[id] = null;
+      continue;
+    }
+    const score = Number(rawScore);
+    if (!Number.isInteger(score) || score < 1 || score > 5) throw new HttpError(422, "invalid_metric_score", "수업지표 점수는 1~5점이어야 합니다.");
+    parsed[id] = score;
+  }
+  return parsed;
+}
+
+function parseSupplementItems(value: unknown, settings: LessonRecordFormSnapshot, recordDate: string, fieldName: string) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > 10) throw new HttpError(422, "invalid_supplement_items", `${fieldName} 형식이 올바르지 않습니다.`);
+  const allowed = new Map(settings.supplementTypes.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  const items: SupplementItemInput[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HttpError(422, "invalid_supplement_items", `${fieldName} 형식이 올바르지 않습니다.`);
+    const row = raw as Record<string, unknown>;
+    const typeId = typeof row.typeId === "string" ? row.typeId : "";
+    const type = allowed.get(typeId);
+    if (!type || seen.has(typeId)) throw new HttpError(422, "invalid_supplement_type", "보충 유형이 현재 수업기록 양식에 없습니다.");
+    seen.add(typeId);
+    const enabled = row.enabled === true;
+    const rawDate = row.scheduledDate;
+    const scheduledDate = enabled
+      ? parseSupplementDate(rawDate, recordDate, `${type.name} 보충 예정일`, true)
+      : null;
+    items.push({ typeId, name: type.name, enabled, scheduledDate });
+  }
+  return items;
+}
+
+async function loadLessonRecordSettings(admin: AdminClient, academyId: string): Promise<LessonRecordSettings> {
+  const { data, error } = await admin.from("academy_lesson_record_settings").select("*").eq("academy_id", academyId).maybeSingle();
+  let settingsData = data;
+  if (error) throw error;
+  if (!settingsData) {
+    const inserted = await admin.from("academy_lesson_record_settings").insert(toLessonRecordRow(normalizeLessonRecordForm(null), academyId, null, 1)).select("*").single();
+    if (inserted.error && inserted.error.code !== "23505") throw inserted.error;
+    settingsData = inserted.data ?? (await admin.from("academy_lesson_record_settings").select("*").eq("academy_id", academyId).single()).data;
+  }
+  return normalizeLessonRecordSettings(settingsData, academyId);
+}
+
+function formSnapshotForRecord(row: Record<string, unknown> | null | undefined, settings: LessonRecordSettings): LessonRecordFormSnapshot {
+  return row?.record_form_snapshot && typeof row.record_form_snapshot === "object" && !Array.isArray(row.record_form_snapshot)
+    ? normalizeLessonRecordForm(row.record_form_snapshot)
+    : snapshotFromSettings(settings);
 }
 
 function errorResponse(error: unknown) {
@@ -503,6 +565,7 @@ export async function GET(request: NextRequest) {
     const { academyId, profileId, supabase } = await getTeacherContext(academyValue);
     const block = await getBlockForDate(supabase, academyId, profileId, blockId, recordDate);
     const admin = createSupabaseAdminClient();
+    const recordSettings = await loadLessonRecordSettings(admin, academyId);
 
     const [{ data: classAssignments, error: classAssignmentsError }, { data: examAssignments, error: examAssignmentsError }, { data: blockAssignments, error: blockAssignmentsError }] = await Promise.all([
       admin
@@ -556,7 +619,7 @@ export async function GET(request: NextRequest) {
         ? supabase.from("students").select("id, student_no, name, grade, current_status").eq("academy_id", academyId).in("id", studentIds).order("name", { ascending: true })
         : Promise.resolve({ data: [], error: null }),
       supabase.from("daily_attendance_records").select("id, student_id, attendance_status, absence_note, version, updated_at").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
-      supabase.from("daily_subject_records").select("id, student_id, subject_id, teacher_id, homework_score, understanding_score, participation_score, is_supplementary, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, public_note, test_definitions, test_results, save_state, version, updated_at").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
+      supabase.from("daily_subject_records").select("id, student_id, subject_id, teacher_id, homework_score, understanding_score, participation_score, metric_values, record_form_snapshot, supplement_items, is_supplementary, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, public_note, test_definitions, test_results, save_state, version, updated_at").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
       supabase.from("daily_common_homework").select("id, class_id, subject_id, operation_group, lesson_content, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).order("operation_group", { ascending: true }),
     ]);
     if (studentsResult.error || attendanceResult.error || subjectResult.error || homeworkResult.error) throw new Error("daily record query failed");
@@ -590,6 +653,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       data: {
         block,
+        recordSettings,
         commonHomeworkByGroup: mapGroupedHomework(homeworkResult.data ?? [], block.subject_id),
         students: (studentsResult.data ?? []).map((student) => ({
           ...student,
@@ -626,6 +690,7 @@ export async function POST(request: NextRequest) {
     const { academyId, profileId, supabase } = await getTeacherContext(requestedAcademyId);
     const block = await getBlockForDate(supabase, academyId, profileId, blockId, recordDate);
     const admin = createSupabaseAdminClient();
+    const recordSettings = await loadLessonRecordSettings(admin, academyId);
 
     const [{ data: assignments, error: assignmentsError }, { data: examAssignments, error: examAssignmentsError }] = await Promise.all([
       admin
@@ -708,7 +773,29 @@ export async function POST(request: NextRequest) {
       throw new HttpError(422, "paused_student_record_blocked", "휴원 상태 학생의 수업기록은 입력하거나 저장할 수 없습니다.");
     }
 
+    const { data: existingSubjectRows, error: existingSubjectRowsError } = await admin
+      .from("daily_subject_records")
+      .select("id, student_id, record_form_snapshot, metric_values, supplement_items, test_definitions, public_note, version")
+      .eq("academy_id", academyId)
+      .eq("block_id", blockId)
+      .eq("record_date", recordDate)
+      .in("student_id", studentIds);
+    if (existingSubjectRowsError) throw existingSubjectRowsError;
+    const existingSubjectByStudent = new Map((existingSubjectRows ?? []).map((row) => [row.student_id, row]));
     const testDefinitionsByGroup = parseTestDefinitionsByGroup(input.testDefinitionsByGroup ?? input.testDefinitions);
+    for (const groupKey of ["A", "B", "unassigned"] as const) {
+      const existingOverLimit = (existingSubjectRows ?? []).some((row) => {
+        const savedDefinitions = Array.isArray(row.test_definitions) ? row.test_definitions : [];
+        const studentGroup = operationGroupByStudent.get(row.student_id) === "A" || operationGroupByStudent.get(row.student_id) === "B" ? operationGroupByStudent.get(row.student_id) : "unassigned";
+        return studentGroup === groupKey && savedDefinitions.length > 2;
+      });
+      const hasExistingGroupRecord = (existingSubjectRows ?? []).some((row) => {
+        const studentGroup = operationGroupByStudent.get(row.student_id) === "A" || operationGroupByStudent.get(row.student_id) === "B" ? operationGroupByStudent.get(row.student_id) : "unassigned";
+        return studentGroup === groupKey;
+      });
+      if (testDefinitionsByGroup[groupKey].length > 2 && !existingOverLimit) throw new HttpError(422, "test_limit_exceeded", "새 수업기록의 활성 테스트는 과목·회차당 최대 2개까지 사용할 수 있습니다.");
+      if (!recordSettings.testsEnabled && !hasExistingGroupRecord && testDefinitionsByGroup[groupKey].length > 0) throw new HttpError(422, "tests_disabled", "현재 학원 수업기록 설정에서 테스트를 사용하지 않습니다.");
+    }
     validateTestScoresWithinMaximum(testDefinitionsByGroup, studentInputs, operationGroupByStudent);
     const attendanceRows = studentInputs.map((student) => {
       const status = student.attendanceStatus ?? "present";
@@ -743,9 +830,38 @@ export async function POST(request: NextRequest) {
       });
       const attendanceStatus = student.attendanceStatus ?? "present";
       const absent = attendanceStatus !== "present";
+      const existingSubject = existingSubjectByStudent.get(studentId) as Record<string, unknown> | undefined;
+      const recordFormSnapshot = formSnapshotForRecord(existingSubject, recordSettings);
+      const hasExistingRecord = Boolean(existingSubject);
+      const metricValues = parseMetricValues(student.metricValues, recordFormSnapshot, "수업지표");
+      const fixedMetricValues: Record<string, number | null> = {
+        homework: absent ? null : parseScoreWithDefault(student.homeworkScore, "숙제 점수"),
+        understanding: absent ? null : parseScoreWithDefault(student.understandingScore, "이해도"),
+        participation: absent ? null : parseScoreWithDefault(student.participationScore, "참여도"),
+      };
+      for (const metric of recordFormSnapshot.metrics) {
+        if (!metric.isActive && !hasExistingRecord) continue;
+        if (Object.hasOwn(metricValues, metric.id)) continue;
+        if (metric.code && Object.hasOwn(fixedMetricValues, metric.code)) metricValues[metric.id] = fixedMetricValues[metric.code];
+        else metricValues[metric.id] = absent ? null : 5;
+      }
+      const supplementItems = parseSupplementItems(student.supplementItems, recordFormSnapshot, recordDate, "보충 유형");
+      if (!hasExistingRecord) {
+        if (Object.entries(metricValues).some(([metricId, value]) => value !== null && value !== undefined && !recordFormSnapshot.metrics.find((metric) => metric.id === metricId)?.isActive)) {
+          throw new HttpError(422, "metric_disabled", "현재 양식에서 사용하지 않는 수업지표는 입력할 수 없습니다.");
+        }
+        if (supplementItems?.some((item) => item.enabled && !recordFormSnapshot.supplementTypes.find((type) => type.id === item.typeId)?.isActive)) {
+          throw new HttpError(422, "supplement_type_disabled", "현재 양식에서 사용하지 않는 보충 유형은 입력할 수 없습니다.");
+        }
+      }
+      const customSupplementary = Boolean(supplementItems?.some((item) => item.enabled && !["test", "homework"].includes(recordFormSnapshot.supplementTypes.find((type) => type.id === item.typeId)?.code ?? "")));
       const isTestSupplementary = !absent && Boolean(student.isTestSupplementary);
       const isHomeworkSupplementary = !absent && Boolean(student.isHomeworkSupplementary);
-      const legacySupplementary = !absent && Boolean(student.isSupplementary);
+      const testTypeEnabled = recordFormSnapshot.supplementTypes.some((type) => type.code === "test" && type.isActive);
+      const homeworkTypeEnabled = recordFormSnapshot.supplementTypes.some((type) => type.code === "homework" && type.isActive);
+      if (!hasExistingRecord && isTestSupplementary && !testTypeEnabled) throw new HttpError(422, "supplement_type_disabled", "현재 양식에서 테스트 보충을 사용하지 않습니다.");
+      if (!hasExistingRecord && isHomeworkSupplementary && !homeworkTypeEnabled) throw new HttpError(422, "supplement_type_disabled", "현재 양식에서 숙제 보충을 사용하지 않습니다.");
+      const legacySupplementary = !absent && (Boolean(student.isSupplementary) || customSupplementary);
       return {
         academy_id: academyId,
         block_id: blockId,
@@ -764,9 +880,12 @@ export async function POST(request: NextRequest) {
         is_homework_supplementary: isHomeworkSupplementary,
         homework_supplement_date: parseSupplementDate(student.homeworkSupplementDate, recordDate, "숙제 보충 예정일", isHomeworkSupplementary),
         homework_supplement_content: parseOptionalText(student.homeworkSupplementContent, "과제보충 내용", 5000),
-        public_note: absent ? null : parseOptionalText(student.publicNote, "수업 메모", 2000),
+        public_note: absent || (!recordFormSnapshot.studentMemoEnabled && !hasExistingRecord) ? null : parseOptionalText(student.publicNote, "수업 메모", 2000),
         test_definitions: testDefinitions,
         test_results: absent ? [] : testResults,
+        record_form_snapshot: recordFormSnapshot,
+        metric_values: metricValues,
+        supplement_items: supplementItems ?? (existingSubject?.supplement_items ?? []),
         save_state: saveMode,
         version: parseRecordVersion(student.subjectVersion) + 1,
         expected_version: parseRecordVersion(student.subjectVersion),
@@ -781,6 +900,7 @@ export async function POST(request: NextRequest) {
       is_homework_supplementary: row.is_homework_supplementary,
       homework_supplement_date: row.homework_supplement_date,
       homework_content: row.homework_supplement_content,
+      supplement_items: row.supplement_items,
     }));
 
     const oldAttendanceResult = await supabase
@@ -802,8 +922,17 @@ export async function POST(request: NextRequest) {
       throw new HttpError(422, "invalid_expected_blocks", "선택한 과목은 현재 수업묶음의 필수 과목 블록에 포함되지 않습니다.");
     }
 
-    const transactionalHomework = parseGroupedHomework(input.commonHomework);
-    const { error: transactionalSaveError } = await admin.rpc("save_daily_records_with_grouped_homework_transaction", {
+    const parsedHomework = parseGroupedHomework(input.commonHomework);
+    const transactionalHomework = parsedHomework
+      ? Object.fromEntries(Object.entries(parsedHomework).filter(([groupKey]) => {
+        const relevantRows = groupKey === "common"
+          ? subjectRows
+          : subjectRows.filter((row) => (operationGroupByStudent.get(row.student_id) ?? "unassigned") === groupKey);
+        return relevantRows.some((row) => (row.record_form_snapshot as LessonRecordFormSnapshot).commonRecordEnabled);
+      }))
+      : null;
+    const homeworkToSave = transactionalHomework && Object.keys(transactionalHomework).length ? transactionalHomework : null;
+    const { error: transactionalSaveError } = await admin.rpc("save_daily_records_with_record_settings_transaction", {
       p_academy_id: academyId,
       p_block_id: blockId,
       p_class_id: block.class_id,
@@ -811,7 +940,7 @@ export async function POST(request: NextRequest) {
       p_save_mode: saveMode,
       p_attendance_rows: attendanceRows,
       p_subject_rows: subjectRows,
-      p_homework: transactionalHomework,
+      p_homework: homeworkToSave,
       p_expected_block_ids: expectedBlockIds,
       p_draft_student_ids: uniqueStudentIds,
       p_published_student_ids: uniqueStudentIds,
@@ -828,7 +957,7 @@ export async function POST(request: NextRequest) {
     const [transactionalAttendanceResult, transactionalSubjectResult, transactionalHomeworkResult, transactionalPublicationResult] = await Promise.all([
       admin.from("daily_attendance_records").select("*").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate).in("student_id", uniqueStudentIds),
       admin.from("daily_subject_records").select("*").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate).in("student_id", uniqueStudentIds),
-      transactionalHomework
+      homeworkToSave
         ? admin.from("daily_common_homework").select("*").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).order("operation_group", { ascending: true })
         : Promise.resolve({ data: null, error: null }),
       admin.from("daily_record_publications").select("student_id, status").eq("academy_id", academyId).eq("record_date", recordDate).in("student_id", uniqueStudentIds),

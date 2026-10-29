@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import PwaInstallPrompt from "@/components/pwa-install-prompt";
 import WebPushRegistration from "@/components/web-push-registration";
+import { LEGACY_METRIC_IDS } from "@/lib/lesson-record-settings";
 
 type Snapshot = {
   id: string;
@@ -99,6 +100,54 @@ function subjectName(snapshot: Snapshot) {
   return typeof snapshot.value_json.subjectName === "string" ? snapshot.value_json.subjectName : "과목";
 }
 
+type PublicMetricDefinition = { id: string; code: string | null; name: string; scaleMax: number };
+
+function metricDefinitions(snapshot: Snapshot): PublicMetricDefinition[] {
+  const rawDefinitions = snapshot.value_json.metricDefinitions;
+  if (Array.isArray(rawDefinitions)) {
+    return rawDefinitions
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      .map((item, index) => ({
+        id: typeof item.id === "string" && item.id ? item.id : `legacy-metric-${index + 1}`,
+        code: typeof item.code === "string" && item.code ? item.code : null,
+        name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : `수업지표 ${index + 1}`,
+        scaleMax: 5,
+      }));
+  }
+  return [
+    { id: LEGACY_METRIC_IDS.homework, code: "homework", name: "숙제", scaleMax: 5 },
+    { id: LEGACY_METRIC_IDS.understanding, code: "understanding", name: "이해도", scaleMax: 5 },
+    { id: LEGACY_METRIC_IDS.participation, code: "participation", name: "참여도", scaleMax: 5 },
+  ];
+}
+
+function metricValue(snapshot: Snapshot, definition: PublicMetricDefinition) {
+  const metricValues = snapshot.value_json.metricValues;
+  if (metricValues && typeof metricValues === "object" && !Array.isArray(metricValues) && Object.hasOwn(metricValues, definition.id)) {
+    return (metricValues as Record<string, unknown>)[definition.id];
+  }
+  if (definition.code) return snapshot.value_json[`${definition.code}Score`];
+  return undefined;
+}
+
+function subjectMetricCells(subjects: Snapshot[]) {
+  const grouped = new Map<string, { label: string; values: string[] }>();
+  for (const snapshot of subjects) {
+    const subject = subjectName(snapshot);
+    for (const definition of metricDefinitions(snapshot)) {
+      const value = metricValue(snapshot, definition);
+      if (value === undefined) continue;
+      const valueText = definition.code === "homework" || definition.code === "understanding" || definition.code === "participation"
+        ? qualitativeScoreText(definition.code === "homework" ? "homeworkScore" : definition.code === "understanding" ? "understandingScore" : "participationScore", value)
+        : `${scoreValue(value)} / ${definition.scaleMax}`;
+      const current = grouped.get(definition.id) ?? { label: definition.name, values: [] };
+      current.values.push(`${subject}: ${valueText}`);
+      grouped.set(definition.id, current);
+    }
+  }
+  return [...grouped.values()].map((item) => ({ label: item.label, value: item.values.join(" / ") || "-" }));
+}
+
 function subjectSupplementLabels(snapshot: Snapshot) {
   const value = snapshot.value_json;
   const subject = subjectName(snapshot);
@@ -117,16 +166,6 @@ function subjectSupplementLabels(snapshot: Snapshot) {
 function supplementSummary(subjects: Snapshot[]) {
   const values = subjects.flatMap((snapshot) => subjectSupplementLabels(snapshot));
   return values.length ? values.join(" / ") : "없음";
-}
-
-function subjectFieldValues(subjects: Snapshot[], field: QualitativeScoreField) {
-  const values = subjects
-    .map((snapshot) => {
-      const value = snapshot.value_json[field];
-      return value === undefined ? null : subjectName(snapshot) + ": " + qualitativeScoreText(field, value);
-    })
-    .filter((value): value is string => Boolean(value));
-  return values.length ? values.join(" / ") : "-";
 }
 
 function testName(snapshot: Snapshot) {
@@ -157,6 +196,7 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
   const tests = snapshots.filter((snapshot) => snapshot.item_key.startsWith("test:"));
   const subjects = snapshots.filter((snapshot) => snapshot.item_key.startsWith("subject:"));
   const commonHomeworks = snapshots.filter((snapshot) => snapshot.item_key === "common_homework" || snapshot.item_key.startsWith("common_homework:"));
+  const metricCells = subjectMetricCells(subjects);
   const subjectNotes = subjects
     .map((snapshot) => {
       const note = snapshot.value_json.publicNote;
@@ -189,9 +229,7 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
   const cells = [
     { label: "출석", value: subjectAttendanceValue },
     { label: "테스트 결과", value: testValues(tests) },
-    { label: "숙제", value: subjectFieldValues(subjects, "homeworkScore") },
-    { label: "이해도", value: subjectFieldValues(subjects, "understandingScore") },
-    { label: "참여도", value: subjectFieldValues(subjects, "participationScore") },
+    ...metricCells,
     { label: "나머지/보충", value: supplementSummary(subjects) },
   ];
 
@@ -200,11 +238,11 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
       <p className="mt-5 text-xs text-slate-500 sm:hidden">작은 화면에서는 자료 표를 좌우로 밀어 전체 항목을 확인할 수 있습니다.</p>
       <div role="region" aria-label="공개 학습자료 요약 표" tabIndex={0} className={`mt-2 overflow-x-auto rounded-xl ${focusRingClass}`}>
         <div className="min-w-[720px] overflow-hidden rounded-xl border border-slate-200 bg-white">
-          <div className="grid grid-cols-6 border-b border-slate-200 bg-slate-100 text-center text-xs font-bold text-slate-600">
-            {cells.map((cell) => <div key={cell.label} className="border-r border-slate-200 px-3 py-3 last:border-r-0">{cell.label}</div>)}
+          <div className="grid border-b border-slate-200 bg-slate-100 text-center text-xs font-bold text-slate-600" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(150px, 1fr))` }}>
+            {cells.map((cell, index) => <div key={`${cell.label}-${index}`} className="border-r border-slate-200 px-3 py-3 last:border-r-0">{cell.label}</div>)}
           </div>
-          <div className="grid grid-cols-6 text-center text-sm text-slate-700">
-            {cells.map((cell) => <div key={cell.label} className="min-h-16 border-r border-slate-200 px-3 py-4 last:border-r-0">{cell.value}</div>)}
+          <div className="grid text-center text-sm text-slate-700" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(150px, 1fr))` }}>
+            {cells.map((cell, index) => <div key={`${cell.label}-${index}`} className="min-h-16 border-r border-slate-200 px-3 py-4 last:border-r-0">{cell.value}</div>)}
           </div>
         </div>
       </div>

@@ -392,6 +392,11 @@ async function main() {
   let dailyFixture = null;
 
   async function saveDailyRecord(blockId, saveMode, publicNote = "일별 통합 테스트 기록") {
+    const currentSubjectRows = await rows("daily_subject_records", (query) => query
+      .eq("academy_id", config.academyId)
+      .eq("block_id", blockId)
+      .eq("student_id", selected.student.id)
+      .eq("record_date", selected.recordDate));
     return request("/api/teacher/daily-records", {
       jar: teacherJar,
       method: "POST",
@@ -409,6 +414,7 @@ async function main() {
           isSupplementary: false,
           isTestSupplementary: true,
           testSupplementDate: selected.recordDate,
+          subjectVersion: currentSubjectRows[0]?.version ?? 0,
           publicNote,
           testResults: [],
         }],
@@ -436,6 +442,12 @@ async function main() {
       body: { academyId: config.academyId },
     });
     logPass("운영자 로그인");
+
+    const adminRecordSettings = await request(`/api/admin/record-settings?academyId=${config.academyId}`, { jar: adminJar });
+    const adminSettings = adminRecordSettings.payload?.data;
+    assert(adminSettings?.version >= 1 && adminSettings?.metrics && adminSettings?.supplementTypes, "운영자 수업기록 설정 조회가 정상 동작하지 않습니다.");
+    assert(adminSettings.metrics.filter((item) => item.isActive).length <= 4 && adminSettings.supplementTypes.filter((item) => item.isActive).length <= 3, "운영자 수업기록 설정 한도가 지켜지지 않았습니다.");
+    logPass("운영자 수업기록 설정 조회");
 
     const optionsResponse = await request(`/api/admin/class-operations?academyId=${config.academyId}`, { jar: adminJar });
     const options = optionsResponse.payload?.data;
@@ -524,6 +536,9 @@ async function main() {
     const dailyOptions = await request(`/api/teacher/daily-record-options?academyId=${config.academyId}&recordDate=${selected.recordDate}`, { jar: teacherJar });
     const selectedOption = (dailyOptions.payload?.data?.blocks ?? []).find((block) => block.id === selected.block.id);
     assert((selectedOption?.student_count ?? 0) > 0, "교사 일별 수업 선택지에 학생이 없습니다.");
+    const recordSettings = dailyOptions.payload?.data?.recordSettings;
+    assert(recordSettings?.testsEnabled === true && recordSettings?.studentMemoEnabled === true && recordSettings?.commonRecordEnabled === true, "학원별 수업기록 기본 사용 설정이 현재 기본 동작과 다릅니다.");
+    assert(recordSettings?.metrics?.filter((item) => item.isActive).length <= 4 && recordSettings?.supplementTypes?.filter((item) => item.isActive).length <= 3, "학원별 수업기록 활성 항목 한도가 지켜지지 않았습니다.");
     logPass("교사 일별 수업 선택지 조회", `${selectedOption.student_count}명 · 공통 학생 ${selected.student.name}`);
 
     const nextWeekday = { mon: "tue", tue: "wed", wed: "thu", thu: "fri", fri: "sat", sat: "sun", sun: "mon" }[selected.block.weekday];
@@ -541,6 +556,7 @@ async function main() {
 
     const before = await request(`/api/teacher/daily-records?academyId=${config.academyId}&blockId=${selected.block.id}&recordDate=${selected.recordDate}`, { jar: teacherJar });
     assert(before.payload?.data?.students?.some((student) => student.id === selected.student.id), "두 과목에 공통 배정된 학생이 일별 기록 조회에 포함되지 않았습니다.");
+    assert(before.payload?.data?.recordSettings?.metrics?.length >= 3 && before.payload?.data?.recordSettings?.supplementTypes?.length >= 2, "교사 수업기록 조회에 학원별 설정 항목이 포함되지 않았습니다.");
     logPass("교사 일별 기록 초기 조회");
 
     const duplicateStudentRequest = await request(`/api/teacher/daily-records?academyId=${config.academyId}&blockId=${selected.block.id}&recordDate=${selected.recordDate}`, {
