@@ -104,6 +104,12 @@ try {
   assert(Array.isArray(filteredBlock.commonHomework) && Array.isArray(filteredStudent.metrics) && Array.isArray(filteredStudent.tests), "관리자 기록현황의 공통 기록·평가·테스트 자료가 누락되었습니다.");
   logPass("선생님·수업묶음 필터와 학생 기록 조회");
 
+  const unfiltered = await request(`/api/admin/teacher-records?recordDate=${source.record_date}`, { jar: adminJar });
+  const listedBlocks = (unfiltered.payload?.data?.groups ?? []).flatMap((group) => (group.blocks ?? []).map((item) => ({ ...item, teacherId: group.teacherId })));
+  const listedKeys = listedBlocks.map((item) => [item.teacherId, item.classId, item.subjectId, item.weekday, item.startTime, item.endTime].join("|"));
+  assert(new Set(listedKeys).size === listedKeys.length, "동일 수업묶음의 활성 중복 블록이 관리자 기록현황에 함께 표시됩니다.");
+  logPass("동일 수업묶음 활성 중복 블록 표시 제거");
+
   const reviewSaved = await request("/api/admin/teacher-records", { jar: adminJar, method: "PATCH", body: { subjectRecordId: source.id, checked: true, version: filteredStudent.review?.version } });
   assert(reviewSaved.payload?.data?.is_checked === true, "관리자 확인 표시를 저장하지 못했습니다.");
   const reviewRows = await rows("daily_subject_record_admin_reviews", (query) => query.eq("academy_id", config.academyId).eq("subject_record_id", source.id));

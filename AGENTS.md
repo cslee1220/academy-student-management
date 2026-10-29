@@ -255,3 +255,4 @@
 - 학생별 관리자 조회는 읽기 전용이며 출결·결석 사유·평가값·테스트·테스트/숙제 보충·학생별 수업메모·저장 상태·보호자 공개 상태를 포함한다.
 - 관리자 확인 표시는 `daily_subject_record_admin_reviews`에 원본 학생별 수업기록 단위로 별도 저장한다. 이는 최종저장·공개·정정 권한이나 공개 승인 절차가 아니며 `daily_record_publications`와 보호자 공개 snapshot을 변경하지 않는다.
 - 보충현황의 원본 메모는 `student_supplement_tasks.source_subject_record_id`로 연결하고 학원·학생·블록·과목·수업일이 모두 일치할 때만 최신 저장 학생별 수업메모를 읽기 전용으로 표시한다. 기존 과제보충 내용은 별도 표시하고 삭제·덮어쓰지 않는다.
+- 관리자 기록현황의 수업묶음 중복 제거 기준은 기존 교사 수업 선택과 동일하게 `class_id + subject_id + teacher_id + classroom_id + start_time + end_time`로 한다. 같은 수업이 여러 요일에 운영되면 하나의 수업묶음으로 표시하고, 그룹 안에서 조회일 요일의 원본 블록을 우선 사용한다. 같은 기준의 활성 중복 snapshot은 `effective_start`가 최신인 한 건을 대표로 사용하며, 원본 `class_schedule_blocks`와 수업기록은 삭제·병합하지 않는다. 직접 지정한 기존 `blockId` 조회는 원본 블록을 계속 조회할 수 있어야 한다.

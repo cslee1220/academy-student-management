@@ -13,6 +13,7 @@ type BlockRow = {
   class_id: string;
   subject_id: string;
   teacher_id: string;
+  classroom_id: string | null;
   classroom_name_snapshot: string | null;
   class_name_snapshot: string;
   subject_name_snapshot: string;
@@ -52,6 +53,7 @@ type AttendanceRow = { block_id: string; student_id: string; record_date: string
 type HomeworkRow = { id: string; class_id: string; subject_id: string | null; operation_group: string | null; lesson_content: string | null; content: string | null; no_homework: boolean; save_state: "draft" | "final" | null; version: number };
 type SupplementTaskRow = { source_subject_record_id: string; is_active: boolean; cancelled_at: string | null; test_supplement_date: string | null; is_test_supplementary: boolean; test_completed: boolean; homework_supplement_date: string | null; is_homework_supplementary: boolean; homework_content: string | null; homework_completed: boolean; version: number };
 type ReviewRow = { subject_record_id: string; is_checked: boolean; checked_by_profile_id: string | null; checked_at: string | null; version: number };
+type BlockGroup = { members: BlockRow[]; preferred: BlockRow };
 
 class HttpError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) {
@@ -180,6 +182,27 @@ function chooseCommonHomework(rows: HomeworkRow[], block: BlockRow) {
   });
 }
 
+function canonicalBlockKey(block: BlockRow) {
+  return [block.class_id, block.subject_id, block.teacher_id, block.classroom_id ?? "", block.start_time, block.end_time].join("|");
+}
+
+function canonicalizeBlocks(blocks: BlockRow[], preferredWeekday: string) {
+  const byKey = new Map<string, BlockGroup>();
+  for (const block of blocks) {
+    const key = canonicalBlockKey(block);
+    const current = byKey.get(key) ?? { members: [], preferred: block };
+    current.members.push(block);
+    const blockMatchesDate = block.weekday === preferredWeekday;
+    const currentMatchesDate = current.preferred.weekday === preferredWeekday;
+    if (
+      (blockMatchesDate && !currentMatchesDate)
+      || (blockMatchesDate === currentMatchesDate && block.effective_start > current.preferred.effective_start)
+    ) current.preferred = block;
+    byKey.set(key, current);
+  }
+  return [...byKey.values()];
+}
+
 function supplementView(subject: SubjectRecordRow, task: SupplementTaskRow | null) {
   return {
     test: { enabled: subject.is_test_supplementary, scheduledDate: subject.test_supplement_date, completed: task?.test_completed ?? false },
@@ -198,7 +221,7 @@ export async function GET(request: NextRequest) {
     const admin = createSupabaseAdminClient();
     const blockResult = await admin
       .from("class_schedule_blocks")
-      .select("id, class_id, subject_id, teacher_id, classroom_name_snapshot, class_name_snapshot, subject_name_snapshot, teacher_name_snapshot, weekday, start_time, end_time, effective_start, effective_end")
+      .select("id, class_id, subject_id, teacher_id, classroom_id, classroom_name_snapshot, class_name_snapshot, subject_name_snapshot, teacher_name_snapshot, weekday, start_time, end_time, effective_start, effective_end")
       .eq("academy_id", academyId)
       .eq("is_active", true)
       .lte("effective_start", recordDate)
@@ -207,11 +230,17 @@ export async function GET(request: NextRequest) {
       .order("start_time", { ascending: true });
     if (blockResult.error) throw blockResult.error;
     const allBlocks = (blockResult.data ?? []) as BlockRow[];
-    const teacherOptions = [...new Map(allBlocks.map((block) => [block.teacher_id, { id: block.teacher_id, name: block.teacher_name_snapshot }])).values()];
-    const selectedBlocks = allBlocks.filter((block) => (!teacherId || block.teacher_id === teacherId) && (!blockId || block.id === blockId));
-    if (blockId && !selectedBlocks.length) throw new HttpError(422, "invalid_block", "선택한 수업묶음이 조회 조건과 일치하지 않습니다.");
-    const blockIds = selectedBlocks.map((block) => block.id);
-    const classIds = [...new Set(selectedBlocks.map((block) => block.class_id))];
+    const canonicalGroups = canonicalizeBlocks(allBlocks, dateWeekday(recordDate));
+    const canonicalBlocks = canonicalGroups.map((group) => group.preferred);
+    const teacherOptions = [...new Map(canonicalBlocks.map((block) => [block.teacher_id, { id: block.teacher_id, name: block.teacher_name_snapshot }])).values()];
+    // A direct blockId request must continue to support an existing historical block.
+    // The normal list view uses canonical blocks so duplicate active snapshots do not render twice.
+    const selectedGroups = blockId
+      ? allBlocks.filter((block) => (!teacherId || block.teacher_id === teacherId) && block.id === blockId).map((block) => ({ members: [block], preferred: block }))
+      : canonicalGroups.filter((group) => !teacherId || group.preferred.teacher_id === teacherId);
+    if (blockId && !selectedGroups.length) throw new HttpError(422, "invalid_block", "선택한 수업묶음이 조회 조건과 일치하지 않습니다.");
+    const blockIds = [...new Set(selectedGroups.flatMap((group) => group.members.map((block) => block.id)))];
+    const classIds = [...new Set(selectedGroups.flatMap((group) => group.members.map((block) => block.class_id)))];
     const [rosterResult, subjectResult, attendanceResult, homeworkResult] = await Promise.all([
       blockIds.length ? admin.from("class_schedule_block_students").select("block_id, student_id, operation_group, start_date, end_date").eq("academy_id", academyId).in("block_id", blockIds) : Promise.resolve({ data: [], error: null }),
       blockIds.length ? admin.from("daily_subject_records").select("id, block_id, student_id, record_date, subject_id, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, public_note, test_definitions, test_results, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, save_state, record_form_snapshot, metric_values, version").eq("academy_id", academyId).eq("record_date", recordDate).in("block_id", blockIds) : Promise.resolve({ data: [], error: null }),
@@ -240,9 +269,12 @@ export async function GET(request: NextRequest) {
     const taskBySourceId = new Map((taskResult.data ?? []).map((row) => [row.source_subject_record_id, row as SupplementTaskRow]));
     const reviewBySourceId = new Map((reviewResult.data ?? []).map((row) => [row.subject_record_id, row as ReviewRow]));
     const groupByTeacher = new Map<string, { teacherId: string; teacherName: string; blocks: Array<Record<string, unknown>> }>();
-    for (const block of selectedBlocks) {
-      const blockRoster = validRosterRows.filter((row) => row.block_id === block.id);
-      const blockSubjects = subjectRows.filter((row) => row.block_id === block.id);
+    for (const blockGroup of selectedGroups) {
+      const block = blockGroup.preferred;
+      const memberBlockIds = new Set(blockGroup.members.map((member) => member.id));
+      const preferredBlockIds = [block.id, ...blockGroup.members.map((member) => member.id).filter((id) => id !== block.id)];
+      const blockRoster = validRosterRows.filter((row) => memberBlockIds.has(row.block_id));
+      const blockSubjects = subjectRows.filter((row) => memberBlockIds.has(row.block_id));
       const studentKeySet = new Set([...blockRoster.map((row) => row.student_id), ...blockSubjects.map((row) => row.student_id)]);
       const orderedStudentIds = [...studentKeySet].sort((left, right) => {
         const leftStudent = studentById.get(left);
@@ -250,9 +282,12 @@ export async function GET(request: NextRequest) {
         return `${leftStudent?.name ?? ""}|${leftStudent?.student_no ?? ""}`.localeCompare(`${rightStudent?.name ?? ""}|${rightStudent?.student_no ?? ""}`, "ko", { numeric: true, sensitivity: "base" });
       });
       const students = orderedStudentIds.map((studentId) => {
-        const subject = subjectByKey.get(`${block.id}:${studentId}`) ?? null;
-        const attendance = attendanceByKey.get(`${block.id}:${studentId}`) ?? null;
-        const roster = blockRoster.filter((row) => row.student_id === studentId).sort((left, right) => right.start_date.localeCompare(left.start_date))[0];
+        const subject = preferredBlockIds.map((blockId) => subjectByKey.get(`${blockId}:${studentId}`)).find((row): row is SubjectRecordRow => Boolean(row)) ?? null;
+        const attendance = preferredBlockIds.map((blockId) => attendanceByKey.get(`${blockId}:${studentId}`)).find((row): row is AttendanceRow => Boolean(row)) ?? null;
+        const roster = blockRoster.filter((row) => row.student_id === studentId).sort((left, right) => {
+          const priority = preferredBlockIds.indexOf(left.block_id) - preferredBlockIds.indexOf(right.block_id);
+          return priority || right.start_date.localeCompare(left.start_date);
+        })[0];
         const review = subject ? reviewBySourceId.get(subject.id) : null;
         return {
           student: studentById.get(studentId) ?? { id: studentId, student_no: "-", name: "학생 정보 없음" },
@@ -295,7 +330,7 @@ export async function GET(request: NextRequest) {
         weekday: WEEKDAY_LABELS[dateWeekday(recordDate)] ?? dateWeekday(recordDate),
         filters: { teacherId, blockId },
         teachers: teacherOptions,
-        blocks: allBlocks.map((block) => ({ id: block.id, teacherId: block.teacher_id, teacherName: block.teacher_name_snapshot, name: `${block.class_name_snapshot} · ${block.subject_name_snapshot}`, className: block.class_name_snapshot, subjectName: block.subject_name_snapshot })),
+        blocks: canonicalBlocks.map((block) => ({ id: block.id, teacherId: block.teacher_id, teacherName: block.teacher_name_snapshot, name: `${block.class_name_snapshot} · ${block.subject_name_snapshot}`, className: block.class_name_snapshot, subjectName: block.subject_name_snapshot })),
         groups,
       },
     });
