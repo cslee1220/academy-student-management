@@ -184,6 +184,11 @@ try {
     assert(summary.hasTeacherFilter && summary.hasBlockFilter && !summary.hasClassroomFilter && !summary.hasStudentFilter && summary.filterChildren === 4, `${width}px 조회 행 구성 확인 실패`);
     assert(summary.tableExists && summary.bodyHasReview && summary.hasStatistics && summary.hasTeacherSummary && !summary.pageOverflow, `${width}px 관리자 기록현황 표/종합 통계/가로넘침 확인 실패: ${JSON.stringify(summary)} body=${(await evaluate(browser.cdp, "document.body?.innerText ?? ''")).slice(-800)}`);
     if (width <= 390) assert(summary.tableScrollWidth > summary.tableClientWidth, `${width}px 관리자 표 내부 스크롤이 없습니다.`);
+    const statisticClicked = await evaluate(browser.cdp, "(() => { const button=document.querySelector('[data-testid=\"teacher-stat-card\"]'); if (!button) return false; button.click(); return true; })()");
+    assert(statisticClicked, `${width}px 종합 통계 카드를 찾지 못했습니다.`);
+    await waitFor(async () => (await evaluate(browser.cdp, "Boolean(document.querySelector('[data-testid=\"teacher-stat-detail\"]'))")), `${width}px 통계 세부현황`);
+    const statisticDetail = await evaluate(browser.cdp, "({title: document.querySelector('[data-testid=\"teacher-stat-detail\"] h2')?.textContent ?? '', teachers: document.querySelectorAll('[data-testid=\"teacher-stat-detail-name\"]').length})");
+    assert(statisticDetail.teachers > 0 && statisticDetail.title.includes("선생님 세부현황"), `${width}px 통계별 선생님 명단 표시 실패: ${JSON.stringify(statisticDetail)}`);
     const selectedTeacherId = await evaluate(browser.cdp, "(() => { const button=document.querySelector('[data-testid=\"teacher-name-filter\"]'); if (!button) return null; const teacherId=button.getAttribute('data-teacher-id'); button.click(); return teacherId; })()");
     assert(selectedTeacherId, `${width}px 선생님 이름 필터 버튼을 찾지 못했습니다.`);
     await waitFor(async () => (await evaluate(browser.cdp, `document.querySelector('select[aria-label=\"기록현황 선생님\"]')?.value === ${JSON.stringify(selectedTeacherId)} && !document.body?.innerText.includes('선생님 기록현황을 불러오는 중입니다.')`)), `${width}px 선생님 이름 필터 적용`);

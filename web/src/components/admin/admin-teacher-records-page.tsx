@@ -83,6 +83,7 @@ type ViewData = {
     publishedTeacherCount: number;
   };
 };
+type StatisticKey = "scheduled" | "complete" | "in_progress" | "missing" | "final" | "published";
 
 const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
 
@@ -126,6 +127,19 @@ function groupLabel(value: string) {
   return value === "A" || value === "B" ? `${value}그룹` : "공통";
 }
 
+function statisticLabel(key: StatisticKey) {
+  return key === "scheduled" ? "수업 예정" : key === "complete" ? "기록 완료" : key === "in_progress" ? "작성 중" : key === "missing" ? "미기록" : key === "final" ? "최종저장 완료" : "공개완료";
+}
+
+function statisticGroups(groups: TeacherGroup[], key: StatisticKey) {
+  if (key === "scheduled") return groups;
+  if (key === "complete") return groups.filter((group) => group.compositionStatus === "complete");
+  if (key === "in_progress") return groups.filter((group) => group.compositionStatus === "in_progress");
+  if (key === "missing") return groups.filter((group) => group.compositionStatus === "missing");
+  if (key === "final") return groups.filter((group) => group.saveStatus === "final");
+  return groups.filter((group) => group.publicationStatus === "published");
+}
+
 export default function AdminTeacherRecordsPage() {
   const [recordDate, setRecordDate] = useState(today);
   const [teacherId, setTeacherId] = useState("");
@@ -135,6 +149,7 @@ export default function AdminTeacherRecordsPage() {
   const [updatingKey, setUpdatingKey] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [selectedStatistic, setSelectedStatistic] = useState<StatisticKey | null>(null);
 
   const load = useCallback(async (nextDate: string, nextTeacherId: string, nextBlockId: string) => {
     setIsLoading(true);
@@ -172,6 +187,7 @@ export default function AdminTeacherRecordsPage() {
   function selectTeacherFromResult(nextTeacherId: string) {
     setTeacherId(nextTeacherId);
     setBlockId("");
+    setSelectedStatistic(null);
     void load(recordDate, nextTeacherId, "");
   }
 
@@ -204,6 +220,16 @@ export default function AdminTeacherRecordsPage() {
     }
   }
 
+  const statisticCards: Array<{ key: StatisticKey; label: string; count: number; description: string }> = data ? [
+    { key: "scheduled", label: "수업 예정 선생님", count: data.statistics.scheduledTeacherCount, description: "조회일 유효 수업묶음 기준" },
+    { key: "complete", label: "기록 완료 선생님", count: data.statistics.recordCompleteTeacherCount, description: "입력 대상 학생 기록 완료" },
+    { key: "in_progress", label: "작성 중 선생님", count: data.statistics.inProgressTeacherCount, description: "일부 학생 또는 묶음 완료" },
+    { key: "missing", label: "미기록 선생님", count: data.statistics.missingTeacherCount, description: "저장된 기록 없음" },
+    { key: "final", label: "최종저장 완료 선생님", count: data.statistics.finalSavedTeacherCount, description: "모든 입력 대상 최종저장" },
+    { key: "published", label: "공개완료 선생님", count: data.statistics.publishedTeacherCount, description: "기존 공개 조건 충족" },
+  ] : [];
+  const selectedStatisticGroups = data && selectedStatistic ? statisticGroups(data.groups, selectedStatistic) : [];
+
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -230,14 +256,12 @@ export default function AdminTeacherRecordsPage() {
       {message ? <p role="status" className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</p> : null}
 
       {data && !isLoading ? <section aria-label="선생님 기록 종합 통계" className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        {[
-          ["수업 예정 선생님", data.statistics.scheduledTeacherCount, "조회일 유효 수업묶음 기준"],
-          ["기록 완료 선생님", data.statistics.recordCompleteTeacherCount, "입력 대상 학생 기록 완료"],
-          ["작성 중 선생님", data.statistics.inProgressTeacherCount, "일부 학생 또는 묶음 완료"],
-          ["미기록 선생님", data.statistics.missingTeacherCount, "저장된 기록 없음"],
-          ["최종저장 완료 선생님", data.statistics.finalSavedTeacherCount, "모든 입력 대상 최종저장"],
-          ["공개완료 선생님", data.statistics.publishedTeacherCount, "기존 공개 조건 충족"],
-        ].map(([label, count, description]) => <div key={String(label)} className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold text-slate-950">{count}명</p><p className="mt-1 text-[11px] leading-4 text-slate-500">{description}</p></div>)}
+        {statisticCards.map((card) => <button key={card.key} type="button" data-testid="teacher-stat-card" data-statistic-key={card.key} aria-expanded={selectedStatistic === card.key} onClick={() => setSelectedStatistic((current) => current === card.key ? null : card.key)} className={`rounded-2xl border bg-white px-4 py-4 text-left shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50/30 ${selectedStatistic === card.key ? "border-indigo-500 ring-2 ring-indigo-100" : "border-slate-200"} ${focusRingClass}`}><span className="block text-xs font-bold text-slate-500">{card.label}</span><span className="mt-2 block text-2xl font-bold text-slate-950">{card.count}명</span><span className="mt-1 block text-[11px] leading-4 text-slate-500">{card.description}</span><span className="mt-2 block text-[11px] font-semibold text-indigo-600">{selectedStatistic === card.key ? "세부현황 닫기" : "세부현황 보기"}</span></button>)}
+      </section> : null}
+
+      {data && !isLoading && selectedStatistic ? <section data-testid="teacher-stat-detail" aria-label={`${statisticLabel(selectedStatistic)} 선생님 세부현황`} className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-bold text-indigo-600">선생님 명단</p><h2 className="mt-1 text-lg font-bold text-slate-950">{statisticLabel(selectedStatistic)} 선생님 세부현황</h2></div><button type="button" onClick={() => setSelectedStatistic(null)} className={`rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 ${focusRingClass}`}>닫기</button></div>
+        {selectedStatisticGroups.length ? <ul className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{selectedStatisticGroups.map((group) => <li key={group.teacherId} className="rounded-xl border border-white bg-white p-3 shadow-sm"><button type="button" data-testid="teacher-stat-detail-name" aria-label={`${group.teacherName} 선생님 기록만 조회`} onClick={() => selectTeacherFromResult(group.teacherId)} className={`block max-w-full truncate text-left font-bold text-slate-950 underline decoration-indigo-300 underline-offset-4 hover:text-indigo-700 ${focusRingClass}`}>{group.teacherName}</button><p className="mt-2 text-xs text-slate-500">수업묶음 {group.blocks.length}개 · 대상 학생 {group.targetStudentCount}명</p><p className="mt-1 text-xs text-slate-600">{compositionLabel(group.compositionStatus)} · {saveStatusLabel(group.saveStatus)} · {publicationLabel(group.publicationStatus)}</p></li>)}</ul> : <p className="mt-4 rounded-xl bg-white px-4 py-6 text-center text-sm text-slate-500">해당 기준의 선생님이 없습니다.</p>}
       </section> : null}
 
       {isLoading ? <p role="status" className="mt-6 rounded-2xl bg-white px-4 py-12 text-center text-sm text-slate-500 shadow-sm">선생님 기록현황을 불러오는 중입니다.</p> : data?.groups.length ? <div className="mt-6 space-y-6">
