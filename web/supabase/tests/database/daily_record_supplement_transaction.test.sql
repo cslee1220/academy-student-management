@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(5);
+select plan(10);
 
 select ok(
   to_regprocedure('public.save_daily_records_with_supplements_transaction(uuid,uuid,uuid,date,text,jsonb,jsonb,jsonb,uuid[],uuid[],uuid[],uuid,jsonb)') is not null,
@@ -102,6 +102,104 @@ select is(
   ),
   0,
   'supplement task failure rolls back core attendance, subject, and publication rows'
+);
+
+select lives_ok(
+  $$select public.save_daily_records_with_supplements_transaction(
+    '21000000-0000-4000-8000-000000000001'::uuid,
+    '35000000-0000-4000-8000-000000000002'::uuid,
+    '44000000-0000-4000-8000-000000000001'::uuid,
+    '2026-10-13'::date,
+    'draft',
+    '[{"student_id":"51000000-0000-4000-8000-000000000001","attendance_status":"present","absence_note":null,"version":1,"expected_version":0}]'::jsonb,
+    '[{"student_id":"51000000-0000-4000-8000-000000000001","subject_id":"45000000-0000-4000-8000-000000000001","teacher_id":"31000000-0000-4000-8000-000000000002","subject_name_snapshot":"supplement transaction test subject","teacher_name_snapshot":"supplement transaction test teacher","homework_score":5,"understanding_score":5,"participation_score":5,"is_supplementary":false,"is_test_supplementary":false,"is_homework_supplementary":true,"homework_supplement_date":"2026-10-14","homework_supplement_content":"legacy homework content","public_note":"atomicity probe","test_definitions":[],"test_results":[],"version":1,"expected_version":0}]'::jsonb,
+    null,
+    '{}'::uuid[],
+    '{"51000000-0000-4000-8000-000000000001"}'::uuid[],
+    '{}'::uuid[],
+    '31000000-0000-4000-8000-000000000002'::uuid,
+    '[{"student_id":"51000000-0000-4000-8000-000000000001","is_homework_supplementary":true,"homework_supplement_date":"2026-10-14","task_version":0}]'::jsonb
+  )$$,
+  'new supplementary task can be saved without a homework content field'
+);
+
+select is(
+  (
+    select homework_content
+    from public.student_supplement_tasks
+    where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+      and source_subject_record_id = (
+        select id from public.daily_subject_records
+        where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+          and block_id = '35000000-0000-4000-8000-000000000002'::uuid
+          and student_id = '51000000-0000-4000-8000-000000000001'::uuid
+          and record_date = '2026-10-13'::date
+      )
+  ),
+  'legacy homework content',
+  'new task keeps the existing subject homework content as its initial legacy value'
+);
+
+update public.student_supplement_tasks
+set homework_content = 'latest homework content'
+where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+  and source_subject_record_id = (
+    select id from public.daily_subject_records
+    where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+      and block_id = '35000000-0000-4000-8000-000000000002'::uuid
+      and student_id = '51000000-0000-4000-8000-000000000001'::uuid
+      and record_date = '2026-10-13'::date
+  );
+
+select throws_ok(
+  $$select public.save_daily_records_with_supplements_transaction(
+    '21000000-0000-4000-8000-000000000001'::uuid,
+    '35000000-0000-4000-8000-000000000002'::uuid,
+    '44000000-0000-4000-8000-000000000001'::uuid,
+    '2026-10-13'::date,
+    'draft',
+    '[{"student_id":"51000000-0000-4000-8000-000000000001","attendance_status":"present","absence_note":null,"version":2,"expected_version":1}]'::jsonb,
+    '[{"student_id":"51000000-0000-4000-8000-000000000001","subject_id":"45000000-0000-4000-8000-000000000001","teacher_id":"31000000-0000-4000-8000-000000000002","subject_name_snapshot":"supplement transaction test subject","teacher_name_snapshot":"supplement transaction test teacher","homework_score":4,"understanding_score":5,"participation_score":5,"is_supplementary":false,"is_test_supplementary":false,"is_homework_supplementary":true,"homework_supplement_date":"2026-10-14","homework_supplement_content":"stale hidden client content","public_note":"atomicity probe updated","test_definitions":[],"test_results":[],"version":2,"expected_version":1}]'::jsonb,
+    null,
+    '{}'::uuid[],
+    '{"51000000-0000-4000-8000-000000000001"}'::uuid[],
+    '{}'::uuid[],
+    '31000000-0000-4000-8000-000000000002'::uuid,
+    '[{"student_id":"51000000-0000-4000-8000-000000000001","is_homework_supplementary":true,"homework_supplement_date":"2026-10-14","homework_content":"stale hidden client content","task_version":1}]'::jsonb
+  )$$,
+  '40001',
+  null,
+  'stale supplementary task version is rejected'
+);
+
+select is(
+  (
+    select homework_content
+    from public.student_supplement_tasks
+    where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+      and source_subject_record_id = (
+        select id from public.daily_subject_records
+        where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+          and block_id = '35000000-0000-4000-8000-000000000002'::uuid
+          and student_id = '51000000-0000-4000-8000-000000000001'::uuid
+          and record_date = '2026-10-13'::date
+      )
+  ),
+  'latest homework content',
+  'stale hidden client content cannot overwrite the latest task value'
+);
+
+select is(
+  (
+    select version
+    from public.daily_subject_records
+    where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+      and block_id = '35000000-0000-4000-8000-000000000002'::uuid
+      and student_id = '51000000-0000-4000-8000-000000000001'::uuid
+      and record_date = '2026-10-13'::date
+  ),
+  1,
+  'a task version conflict rolls back the preceding subject update'
 );
 
 select * from finish();

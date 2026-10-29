@@ -301,7 +301,7 @@ export async function GET() {
         item_key: `common_homework:${homework.subject_name_snapshot ?? "common"}:${homework.daily_common_homework_id}`,
         label_snapshot: commonHomeworkLabel(homework.subject_name_snapshot),
         value_json: {
-          content: homework.homework_content,
+          content: homework.no_homework ? null : homework.homework_content,
           lessonContent: homework.lesson_content,
           noHomework: homework.no_homework,
           subjectName: homework.subject_name_snapshot,

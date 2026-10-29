@@ -263,3 +263,10 @@
 - 보충현황의 원본 메모는 `student_supplement_tasks.source_subject_record_id`로 연결하고 학원·학생·블록·과목·수업일이 모두 일치할 때만 최신 저장 학생별 수업메모를 읽기 전용으로 표시한다. 기존 과제보충 내용은 별도 표시하고 삭제·덮어쓰지 않는다.
 - 관리자 기록현황의 수업묶음 중복 제거 기준은 기존 교사 수업 선택과 동일하게 `class_id + subject_id + teacher_id + classroom_id + start_time + end_time`로 한다. 같은 수업이 여러 요일에 운영되면 하나의 수업묶음으로 표시하고, 그룹 안에서 조회일 요일의 원본 블록을 우선 사용한다. 같은 기준의 활성 중복 snapshot은 `effective_start`가 최신인 한 건을 대표로 사용하며, 원본 `class_schedule_blocks`와 수업기록은 삭제·병합하지 않는다. 직접 지정한 기존 `blockId` 조회는 원본 블록을 계속 조회할 수 있어야 한다.
 - 관리자 종합현황은 기존 기록·`daily_record_publications`·보호자 공개 snapshot을 수정하지 않는다. 기존 선생님 단위 관리자 확인 테이블을 재사용하므로 이 기능을 위한 새 migration은 만들지 않으며, 로컬 migration 이력만 검증한다.
+- `/teacher/records` 일반 저장 payload에는 제거된 과제보충 내용 입력값을 포함하지 않는다. 서버의 보충 task transaction은 기존 `homework_content`를 갱신하지 않고, 현재 화면이 읽은 task `version`이 다르면 `40001` 충돌로 전체 저장을 rollback한다. 신규 task는 내용 없이 생성할 수 있으며 `daily_subject_records.homework_supplement_content`와 `student_supplement_tasks.homework_content`의 기존 값은 보존한다.
+- 학원별 수업기록 설정 저장은 `save_academy_lesson_record_settings_transaction`을 통해 설정 행·`academy_setting_history`·`audit_logs`를 하나의 DB transaction으로 저장한다. 설정 버전 충돌이나 이력·감사로그 실패 시 설정도 함께 rollback하며, 감사로그는 DB의 잠긴 변경 전 값을 기준으로 남긴다.
+- 수업지표 4개·보충 유형 3개 제한은 전체 배열이 아니라 `isActive=true` 항목 수에만 적용한다. 사용 중지된 과거 항목은 보존하고, 활성화 재시에도 서버 RPC와 API가 같은 한도를 검증한다.
+- 보호자 숙제 응답은 `no_homework=true`이면 `value_json.content`를 `null`로 직렬화한다. 내부 교사·관리자 조회와 DB의 기존 숙제 원문은 유지하며, 보호자 공개 snapshot을 재작성하거나 삭제하지 않는다.
+- 관리자 `/admin/teacher-records`의 명시적 `blockId` 조회는 현재 활성·기간 조건을 이유로 과거 블록을 숨기지 않는다. 요청 학원·블록·학생·과목·수업일이 정확히 일치하는 원본 기록만 사용하며, 일반 `blockId` 없는 날짜 조회 규칙은 유지한다.
+- `daily_teacher_record_admin_reviews` RLS는 관리자 권한뿐 아니라 review의 `teacher_id`가 같은 학원의 활성 `teacher` membership인지 SELECT/INSERT/UPDATE마다 검증한다. `academy_id`·`teacher_id` scope 변경은 trigger로 차단하며 관리자 확인은 공개 승인이나 snapshot 변경이 아니다.
+- 위 데이터 보존·권한 보강은 `web/supabase/migrations/20261029120701_harden_record_data_integrity.sql`에 기록한다. migration은 로컬에서만 적용·검증하고 원격 DB에는 적용하지 않는다.

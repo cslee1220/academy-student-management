@@ -8,7 +8,7 @@
 
 ## 데이터 보존
 
-`homework_supplement_content` 컬럼과 `student_supplement_tasks.homework_content` 저장·조회 경로는 삭제하거나 마이그레이션하지 않았다. 수업기록 화면은 기존 값을 계속 로드하고 저장 payload에 유지하므로 입력창 제거만으로 빈 값으로 덮어쓰지 않는다. 신규 과제보충은 내용 없이도 저장할 수 있다.
+`homework_supplement_content` 컬럼과 `student_supplement_tasks.homework_content` 저장·조회 경로는 삭제하거나 값 변환 migration을 하지 않았다. 수업기록 화면은 기존 값을 확인하지만 제거된 입력값은 저장 payload에서 생략하고, 서버 transaction이 기존 task 내용을 보존한다. 신규 과제보충은 내용 없이도 저장할 수 있다.
 
 학생별 수업기록의 `subjectVersion`을 저장 요청에 포함하고 서버의 기존 transaction RPC에 전달되는 버전과 비교한다. 오래 열린 화면이 보이지 않는 기존 과제보충 내용이나 수업메모를 최신 저장 위에 덮으려 하면 `resource_changed` 충돌로 저장을 차단하고 최신 자료를 다시 불러오게 한다. 기존 API의 선택 텍스트 처리(누락·빈 문자열은 null)는 유지하며, UI 제거를 위해 명시적 빈 값으로 변환하지 않는다.
 
@@ -24,4 +24,14 @@
 
 ## migration 및 검증 메모
 
-스키마 변경이 없으므로 migration은 필요하지 않다. 변경 파일과 로컬 검증 결과는 작업 종료 보고에 기록한다. 실제 휴대전화 검증과 원격 DB·EC2 배포는 이번 범위에서 수행하지 않는다.
+컬럼 삭제·데이터 변환은 없지만 보충 task 버전 검증, 설정 원자 저장, 관리자 확인 RLS 보강을 위해 `20261029120701_harden_record_data_integrity.sql` migration이 필요하다. migration은 로컬에서만 적용·검증하며 실제 휴대전화 검증과 원격 DB·EC2 배포는 이번 범위에서 수행하지 않는다.
+-
+## 운영 전 보강 기준
+
+일반 수업기록 저장 요청에서는 제거된 과제보충 내용 필드를 생략한다. 서버는 기존 `daily_subject_records.homework_supplement_content`를 확인해 legacy 값을 보존하고, 기존 `student_supplement_tasks.homework_content`는 task 갱신에서 제외한다. 현재 화면이 읽은 task `version`과 저장 시점의 버전이 다르면 `40001` 충돌로 subject record와 task 변경을 함께 rollback한다. 따라서 신규 과제보충은 내용 없이 저장할 수 있고, 오래 열린 화면의 숨은 값은 최신 내용을 덮어쓸 수 없다.
+
+학원별 수업기록 설정은 설정·이력·감사로그를 `save_academy_lesson_record_settings_transaction` 한 번의 DB transaction으로 저장한다. 활성 지표 4개·활성 보충 유형 3개 제한은 활성 항목 수에만 적용하며, 사용 중지된 항목은 보존한다.
+
+보호자 숙제 응답은 `no_homework=true`일 때 `value_json.content=null`로 직렬화한다. DB 원문과 기존 보호자 snapshot은 삭제·재작성하지 않는다.
+
+관리자 기록현황의 명시적 `blockId` 조회는 비활성·기간 만료 원본 블록도 학원·학생·과목·수업일이 정확히 일치하는 기록이면 조회한다. `blockId`가 없는 일반 조회의 현재 유효 블록 기준과, 관리자 확인 RLS의 학원·활성 교사 소속 검증은 유지한다. 변경 migration은 `web/supabase/migrations/20261029120701_harden_record_data_integrity.sql`이며 로컬에서만 적용·검증한다.

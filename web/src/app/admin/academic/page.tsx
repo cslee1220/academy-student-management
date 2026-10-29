@@ -9,7 +9,7 @@ import ClassOperationsPanel from "@/components/admin/class-operations-panel";
 import ExamClassSetupPanel from "@/components/admin/exam-class-setup-panel";
 import TeacherAccountsPanel from "@/components/admin/teacher-accounts-panel";
 import { redirectAdminOnAuthFailure } from "@/lib/admin-session";
-import type { LessonRecordSettings } from "@/lib/lesson-record-settings";
+import { LESSON_RECORD_LIMITS, type LessonRecordSettings } from "@/lib/lesson-record-settings";
 import { formatOperationWeekdays } from "@/lib/operation-schedules";
 
 type SchoolYear = {
@@ -778,17 +778,21 @@ function AcademicSettingsPageContent() {
   }
 
   function addRecordMetric() {
-    updateRecordSettings((current) => ({
-      ...current,
-      metrics: [...current.metrics, { id: crypto.randomUUID(), code: null, name: "새 수업지표", displayOrder: current.metrics.length + 1, isActive: false, scaleMax: 5 }],
-    }));
+    updateRecordSettings((current) => current.metrics.filter((item) => item.isActive).length >= LESSON_RECORD_LIMITS.metrics
+      ? current
+      : {
+          ...current,
+          metrics: [...current.metrics, { id: crypto.randomUUID(), code: null, name: "새 수업지표", displayOrder: current.metrics.length + 1, isActive: false, scaleMax: 5 }],
+        });
   }
 
   function addRecordSupplementType() {
-    updateRecordSettings((current) => ({
-      ...current,
-      supplementTypes: [...current.supplementTypes, { id: crypto.randomUUID(), code: null, name: "새 보충 유형", displayOrder: current.supplementTypes.length + 1, isActive: false }],
-    }));
+    updateRecordSettings((current) => current.supplementTypes.filter((item) => item.isActive).length >= LESSON_RECORD_LIMITS.supplements
+      ? current
+      : {
+          ...current,
+          supplementTypes: [...current.supplementTypes, { id: crypto.randomUUID(), code: null, name: "새 보충 유형", displayOrder: current.supplementTypes.length + 1, isActive: false }],
+        });
   }
 
   function removeRecordItem(kind: "metrics" | "supplementTypes", id: string) {
@@ -1546,12 +1550,12 @@ function AcademicSettingsPageContent() {
           </div>
 
           <section className="rounded-xl border border-slate-200 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">수업지표</h3><p className="mt-1 text-xs text-slate-500">활성 {recordSettings.metrics.filter((item) => item.isActive).length} / 최대 4개 · 모든 지표는 기존 5점 척도를 사용합니다.</p>{recordSettings.limitExceeded.metrics ? <p className="mt-1 text-xs font-semibold text-amber-700">기존 기록에 한도를 초과한 활성 지표가 있어 새 기록에는 최대 4개만 적용됩니다. 기존 기록은 보존됩니다.</p> : null}</div><button type="button" onClick={addRecordMetric} className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50">지표 추가</button></div>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">수업지표</h3><p className="mt-1 text-xs text-slate-500">활성 {recordSettings.metrics.filter((item) => item.isActive).length} / 최대 {LESSON_RECORD_LIMITS.metrics}개 · 현재 등록 {recordSettings.metrics.length}개 · 모든 지표는 기존 5점 척도를 사용합니다.</p>{recordSettings.limitExceeded.metrics ? <p className="mt-1 text-xs font-semibold text-amber-700">기존 기록에 한도를 초과한 활성 지표가 있어 새 기록에는 최대 {LESSON_RECORD_LIMITS.metrics}개만 적용됩니다. 기존 기록은 보존됩니다.</p> : null}</div><button type="button" onClick={addRecordMetric} disabled={recordSettings.metrics.filter((item) => item.isActive).length >= LESSON_RECORD_LIMITS.metrics} className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">지표 추가</button></div>
             {recordSettings.metrics.length ? <div className="mt-4 space-y-2">{recordSettings.metrics.map((metric, index) => {
               const activeCount = recordSettings.metrics.filter((item) => item.isActive).length;
               return <div key={metric.id} className="grid gap-2 rounded-lg bg-slate-50 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
                 <input value={metric.name} onChange={(event) => updateRecordSettings((current) => ({ ...current, metrics: current.metrics.map((item) => item.id === metric.id ? { ...item, name: event.target.value } : item) }))} aria-label={`${metric.name} 지표명`} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm" />
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={metric.isActive} disabled={!metric.isActive && activeCount >= 4} onChange={(event) => updateRecordSettings((current) => ({ ...current, metrics: current.metrics.map((item) => item.id === metric.id ? { ...item, isActive: event.target.checked } : item) }))} className="h-4 w-4 accent-indigo-600" />사용</label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={metric.isActive} disabled={!metric.isActive && activeCount >= LESSON_RECORD_LIMITS.metrics} onChange={(event) => updateRecordSettings((current) => ({ ...current, metrics: current.metrics.map((item) => item.id === metric.id ? { ...item, isActive: event.target.checked } : item) }))} className="h-4 w-4 accent-indigo-600" />사용</label>
                 <div className="flex gap-1"><button type="button" onClick={() => moveRecordItem("metrics", index, -1)} disabled={index === 0} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">위</button><button type="button" onClick={() => moveRecordItem("metrics", index, 1)} disabled={index === recordSettings.metrics.length - 1} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">아래</button></div>
                 <button type="button" onClick={() => removeRecordItem("metrics", metric.id)} disabled={metric.isActive} className="rounded border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-40">삭제</button>
               </div>;
@@ -1559,12 +1563,12 @@ function AcademicSettingsPageContent() {
           </section>
 
           <section className="rounded-xl border border-slate-200 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">보충 유형</h3><p className="mt-1 text-xs text-slate-500">활성 {recordSettings.supplementTypes.filter((item) => item.isActive).length} / 최대 3개 · 체크·예정일·완료·동시 수정 방지는 유지됩니다.</p>{recordSettings.limitExceeded.supplements ? <p className="mt-1 text-xs font-semibold text-amber-700">기존 기록에 한도를 초과한 활성 보충 유형이 있어 새 기록에는 최대 3개만 적용됩니다. 기존 기록은 보존됩니다.</p> : null}</div><button type="button" onClick={addRecordSupplementType} className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50">보충 유형 추가</button></div>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">보충 유형</h3><p className="mt-1 text-xs text-slate-500">활성 {recordSettings.supplementTypes.filter((item) => item.isActive).length} / 최대 {LESSON_RECORD_LIMITS.supplements}개 · 현재 등록 {recordSettings.supplementTypes.length}개 · 체크·예정일·완료·동시 수정 방지는 유지됩니다.</p>{recordSettings.limitExceeded.supplements ? <p className="mt-1 text-xs font-semibold text-amber-700">기존 기록에 한도를 초과한 활성 보충 유형이 있어 새 기록에는 최대 {LESSON_RECORD_LIMITS.supplements}개만 적용됩니다. 기존 기록은 보존됩니다.</p> : null}</div><button type="button" onClick={addRecordSupplementType} disabled={recordSettings.supplementTypes.filter((item) => item.isActive).length >= LESSON_RECORD_LIMITS.supplements} className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">보충 유형 추가</button></div>
             {recordSettings.supplementTypes.length ? <div className="mt-4 space-y-2">{recordSettings.supplementTypes.map((type, index) => {
               const activeCount = recordSettings.supplementTypes.filter((item) => item.isActive).length;
               return <div key={type.id} className="grid gap-2 rounded-lg bg-slate-50 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
                 <input value={type.name} onChange={(event) => updateRecordSettings((current) => ({ ...current, supplementTypes: current.supplementTypes.map((item) => item.id === type.id ? { ...item, name: event.target.value } : item) }))} aria-label={`${type.name} 보충 유형명`} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm" />
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={type.isActive} disabled={!type.isActive && activeCount >= 3} onChange={(event) => updateRecordSettings((current) => ({ ...current, supplementTypes: current.supplementTypes.map((item) => item.id === type.id ? { ...item, isActive: event.target.checked } : item) }))} className="h-4 w-4 accent-indigo-600" />사용</label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={type.isActive} disabled={!type.isActive && activeCount >= LESSON_RECORD_LIMITS.supplements} onChange={(event) => updateRecordSettings((current) => ({ ...current, supplementTypes: current.supplementTypes.map((item) => item.id === type.id ? { ...item, isActive: event.target.checked } : item) }))} className="h-4 w-4 accent-indigo-600" />사용</label>
                 <div className="flex gap-1"><button type="button" onClick={() => moveRecordItem("supplementTypes", index, -1)} disabled={index === 0} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">위</button><button type="button" onClick={() => moveRecordItem("supplementTypes", index, 1)} disabled={index === recordSettings.supplementTypes.length - 1} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">아래</button></div>
                 <button type="button" onClick={() => removeRecordItem("supplementTypes", type.id)} disabled={type.isActive} className="rounded border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-40">삭제</button>
               </div>;

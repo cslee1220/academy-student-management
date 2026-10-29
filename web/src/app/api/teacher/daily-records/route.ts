@@ -623,6 +623,11 @@ export async function GET(request: NextRequest) {
       supabase.from("daily_common_homework").select("id, class_id, subject_id, operation_group, lesson_content, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("class_id", block.class_id).eq("record_date", recordDate).order("operation_group", { ascending: true }),
     ]);
     if (studentsResult.error || attendanceResult.error || subjectResult.error || homeworkResult.error) throw new Error("daily record query failed");
+    const sourceSubjectRecordIds = (subjectResult.data ?? []).map((row) => row.id);
+    const supplementTaskResult = sourceSubjectRecordIds.length
+      ? await admin.from("student_supplement_tasks").select("source_subject_record_id, version").eq("academy_id", academyId).in("source_subject_record_id", sourceSubjectRecordIds)
+      : { data: [], error: null };
+    if (supplementTaskResult.error) throw supplementTaskResult.error;
     const statusHistoryResult = studentIds.length
       ? await admin
         .from("student_status_history")
@@ -645,6 +650,7 @@ export async function GET(request: NextRequest) {
     if (publicationResult.error) throw publicationResult.error;
     const attendanceByStudent = new Map((attendanceResult.data ?? []).map((row) => [row.student_id, row]));
     const subjectByStudent = new Map((subjectResult.data ?? []).map((row) => [row.student_id, row]));
+    const supplementTaskVersionBySourceId = new Map((supplementTaskResult.data ?? []).map((row) => [row.source_subject_record_id, row.version]));
     const publicationStatusByStudent = new Map((publicationResult.data ?? []).map((row) => [row.student_id, row.status]));
     const statusByStudent = new Map<string, { next_status: string; effective_date: string; expected_return_date: string | null }>();
     for (const row of statusHistoryResult.data ?? []) {
@@ -663,6 +669,10 @@ export async function GET(request: NextRequest) {
           operation_group: operationGroupByStudent.get(student.id) ?? null,
           attendance: attendanceByStudent.get(student.id) ?? null,
           subjectRecord: subjectByStudent.get(student.id) ?? null,
+          supplement_task_version: (() => {
+            const subjectRecordId = subjectByStudent.get(student.id)?.id;
+            return subjectRecordId ? supplementTaskVersionBySourceId.get(subjectRecordId) ?? 0 : 0;
+          })(),
           publication_status: publicationStatusByStudent.get(student.id) ?? null,
         })),
       },
@@ -775,7 +785,7 @@ export async function POST(request: NextRequest) {
 
     const { data: existingSubjectRows, error: existingSubjectRowsError } = await admin
       .from("daily_subject_records")
-      .select("id, student_id, record_form_snapshot, metric_values, supplement_items, test_definitions, public_note, version")
+      .select("id, student_id, record_form_snapshot, metric_values, supplement_items, test_definitions, homework_supplement_content, public_note, version")
       .eq("academy_id", academyId)
       .eq("block_id", blockId)
       .eq("record_date", recordDate)
@@ -879,13 +889,20 @@ export async function POST(request: NextRequest) {
         test_supplement_date: parseSupplementDate(student.testSupplementDate, recordDate, "테스트 보충 예정일", isTestSupplementary),
         is_homework_supplementary: isHomeworkSupplementary,
         homework_supplement_date: parseSupplementDate(student.homeworkSupplementDate, recordDate, "숙제 보충 예정일", isHomeworkSupplementary),
-        homework_supplement_content: parseOptionalText(student.homeworkSupplementContent, "과제보충 내용", 5000),
-        public_note: absent || (!recordFormSnapshot.studentMemoEnabled && !hasExistingRecord) ? null : parseOptionalText(student.publicNote, "수업 메모", 2000),
+        // The input was removed from the teacher UI. Preserve the stored legacy
+        // value for existing records, and never trust a hidden client value.
+        homework_supplement_content: typeof existingSubject?.homework_supplement_content === "string" ? existingSubject.homework_supplement_content : null,
+        public_note: absent
+          ? null
+          : !recordFormSnapshot.studentMemoEnabled
+            ? (typeof existingSubject?.public_note === "string" ? existingSubject.public_note : null)
+            : parseOptionalText(student.publicNote, "수업 메모", 2000),
         test_definitions: testDefinitions,
         test_results: absent ? [] : testResults,
         record_form_snapshot: recordFormSnapshot,
         metric_values: metricValues,
         supplement_items: supplementItems ?? (existingSubject?.supplement_items ?? []),
+        supplement_task_version: parseRecordVersion(student.supplementTaskVersion),
         save_state: saveMode,
         version: parseRecordVersion(student.subjectVersion) + 1,
         expected_version: parseRecordVersion(student.subjectVersion),
@@ -899,7 +916,7 @@ export async function POST(request: NextRequest) {
       test_items: row.is_test_supplementary ? makeSupplementTestItems(row.test_definitions, row.test_results) : [],
       is_homework_supplementary: row.is_homework_supplementary,
       homework_supplement_date: row.homework_supplement_date,
-      homework_content: row.homework_supplement_content,
+      task_version: row.supplement_task_version,
       supplement_items: row.supplement_items,
     }));
 

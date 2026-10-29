@@ -284,39 +284,65 @@ export async function GET(request: NextRequest) {
     // A direct blockId request must continue to support an existing historical block.
     // The normal list view uses canonical blocks so duplicate active snapshots do not render twice.
     const selectedGroups = blockId
-      ? canonicalGroups.filter((group) => group.members.some((block) => block.id === blockId) && (!teacherId || group.preferred.teacher_id === teacherId))
+      ? canonicalGroups.filter((group) => group.members.some((block) => block.id === blockId && (!teacherId || block.teacher_id === teacherId)))
       : canonicalGroups.filter((group) => !teacherId || group.preferred.teacher_id === teacherId);
     if (blockId && !selectedGroups.length) throw new HttpError(422, "invalid_block", "선택한 수업묶음이 조회 조건과 일치하지 않습니다.");
-    const selectedBlockIds = [...new Set(selectedGroups.flatMap((group) => group.members.map((block) => block.id)))];
+    const selectedBlockIds = blockId
+      ? [blockId]
+      : [...new Set(selectedGroups.flatMap((group) => group.members.map((block) => block.id)))];
     const rosterResult = selectedBlockIds.length
       ? await admin.from("class_schedule_block_students").select("block_id, student_id, operation_group, start_date, end_date").eq("academy_id", academyId).in("block_id", selectedBlockIds)
       : { data: [], error: null };
     if (rosterResult.error) throw rosterResult.error;
     const rosterRows = (rosterResult.data ?? []) as RosterRow[];
     const validRosterRows = rosterRows.filter((row) => activeOnDate(row, recordDate));
-    const groupsWithRoster = selectedGroups.filter((group) => {
-      const memberIds = new Set(group.members.map((member) => member.id));
+    const rosteredGroups = selectedGroups.filter((group) => {
+      const memberIds = new Set(blockId ? [blockId] : group.members.map((member) => member.id));
       return validRosterRows.some((row) => memberIds.has(row.block_id));
     });
-    const blockIds = [...new Set(groupsWithRoster.flatMap((group) => group.members.map((block) => block.id)))];
-    const classIds = [...new Set(groupsWithRoster.flatMap((group) => group.members.map((block) => block.class_id)))];
+    const queryGroups = blockId ? selectedGroups : rosteredGroups;
+    const displayBlock = (group: BlockGroup) => blockId
+      ? group.members.find((member) => member.id === blockId) ?? group.preferred
+      : group.preferred;
+    const blockIds = blockId
+      ? [blockId]
+      : [...new Set(queryGroups.flatMap((group) => group.members.map((block) => block.id)))];
+    const classIds = [...new Set(queryGroups.flatMap((group) => group.members.map((block) => block.class_id)))];
     const [subjectResult, attendanceResult, homeworkResult] = await Promise.all([
       blockIds.length ? admin.from("daily_subject_records").select("id, block_id, student_id, record_date, subject_id, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, public_note, test_definitions, test_results, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, save_state, record_form_snapshot, metric_values, version, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("block_id", blockIds) : Promise.resolve({ data: [], error: null }),
       blockIds.length ? admin.from("daily_attendance_records").select("block_id, student_id, record_date, attendance_status, absence_note, save_state, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("block_id", blockIds) : Promise.resolve({ data: [], error: null }),
       classIds.length ? admin.from("daily_common_homework").select("id, class_id, subject_id, operation_group, lesson_content, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("class_id", classIds) : Promise.resolve({ data: [], error: null }),
     ]);
     if (subjectResult.error || attendanceResult.error || homeworkResult.error) throw subjectResult.error ?? attendanceResult.error ?? homeworkResult.error;
-    const subjectRows = (subjectResult.data ?? []) as SubjectRecordRow[];
+    const blockById = new Map(allBlocks.map((block) => [block.id, block]));
+    const subjectRows = (subjectResult.data ?? [])
+      .filter((row) => blockById.get(row.block_id)?.subject_id === row.subject_id) as SubjectRecordRow[];
     const attendanceRows = (attendanceResult.data ?? []) as AttendanceRow[];
     const homeworkRows = (homeworkResult.data ?? []) as HomeworkRow[];
     const sourceRecordIds = subjectRows.map((row) => row.id);
-    const studentIds = [...new Set(validRosterRows.filter((row) => blockIds.includes(row.block_id)).map((row) => row.student_id))];
+    const directRecordStudentIds = blockId
+      ? [...subjectRows, ...attendanceRows]
+        .filter((row) => blockIds.includes(row.block_id))
+        .map((row) => row.student_id)
+      : [];
+    const studentIds = [...new Set([
+      ...validRosterRows.filter((row) => blockIds.includes(row.block_id)).map((row) => row.student_id),
+      ...directRecordStudentIds,
+    ])];
+    const groupsWithRoster = blockId
+      ? queryGroups.filter(() => {
+        const memberIds = new Set([blockId]);
+        return validRosterRows.some((row) => memberIds.has(row.block_id))
+          || subjectRows.some((row) => memberIds.has(row.block_id))
+          || attendanceRows.some((row) => memberIds.has(row.block_id));
+      })
+      : rosteredGroups;
     const [studentsResult, statusHistoryResult, publicationResult, taskResult, reviewResult] = await Promise.all([
       studentIds.length ? admin.from("students").select("id, student_no, name, current_status").eq("academy_id", academyId).in("id", studentIds) : Promise.resolve({ data: [], error: null }),
       studentIds.length ? admin.from("student_status_history").select("student_id, next_status, effective_date, created_at").eq("academy_id", academyId).in("student_id", studentIds).lte("effective_date", recordDate).order("effective_date", { ascending: false }).order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null }),
       studentIds.length ? admin.from("daily_record_publications").select("student_id, status").eq("academy_id", academyId).eq("record_date", recordDate).in("student_id", studentIds) : Promise.resolve({ data: [], error: null }),
       sourceRecordIds.length ? admin.from("student_supplement_tasks").select("source_subject_record_id, is_active, cancelled_at, test_supplement_date, is_test_supplementary, test_completed, homework_supplement_date, is_homework_supplementary, homework_content, homework_completed, version").eq("academy_id", academyId).in("source_subject_record_id", sourceRecordIds) : Promise.resolve({ data: [], error: null }),
-      groupsWithRoster.length ? admin.from("daily_teacher_record_admin_reviews").select("teacher_id, record_date, is_checked, checked_by_profile_id, checked_at, version").eq("academy_id", academyId).eq("record_date", recordDate).in("teacher_id", [...new Set(groupsWithRoster.map((group) => group.preferred.teacher_id))]) : Promise.resolve({ data: [], error: null }),
+      groupsWithRoster.length ? admin.from("daily_teacher_record_admin_reviews").select("teacher_id, record_date, is_checked, checked_by_profile_id, checked_at, version").eq("academy_id", academyId).eq("record_date", recordDate).in("teacher_id", [...new Set(groupsWithRoster.map((group) => displayBlock(group).teacher_id))]) : Promise.resolve({ data: [], error: null }),
     ]);
     if (studentsResult.error || statusHistoryResult.error || publicationResult.error || taskResult.error || reviewResult.error) throw studentsResult.error ?? statusHistoryResult.error ?? publicationResult.error ?? taskResult.error ?? reviewResult.error;
     const studentById = new Map((studentsResult.data ?? []).map((student) => [student.id, student]));
@@ -331,11 +357,18 @@ export async function GET(request: NextRequest) {
     const reviewByTeacherId = new Map((reviewResult.data ?? []).map((row) => [row.teacher_id, row as TeacherReviewRow]));
     const groupByTeacher = new Map<string, TeacherGroupData>();
     for (const blockGroup of groupsWithRoster) {
-      const block = blockGroup.preferred;
-      const memberBlockIds = new Set(blockGroup.members.map((member) => member.id));
-      const preferredBlockIds = [block.id, ...blockGroup.members.map((member) => member.id).filter((id) => id !== block.id)];
+      const block = displayBlock(blockGroup);
+      const memberBlockIds = new Set(blockId ? [block.id] : blockGroup.members.map((member) => member.id));
+      const preferredBlockIds = blockId
+        ? [block.id]
+        : [block.id, ...blockGroup.members.map((member) => member.id).filter((id) => id !== block.id)];
       const blockRoster = validRosterRows.filter((row) => memberBlockIds.has(row.block_id));
-      const studentKeySet = new Set(blockRoster.map((row) => row.student_id));
+      const directGroupRecordStudentIds = blockId
+        ? [...subjectRows, ...attendanceRows]
+          .filter((row) => memberBlockIds.has(row.block_id))
+          .map((row) => row.student_id)
+        : [];
+      const studentKeySet = new Set([...blockRoster.map((row) => row.student_id), ...directGroupRecordStudentIds]);
       const orderedStudentIds = [...studentKeySet].sort((left, right) => {
         const leftStudent = studentById.get(left);
         const rightStudent = studentById.get(right);
@@ -427,7 +460,7 @@ export async function GET(request: NextRequest) {
         lastSavedAt: latestTimestamp(...blocks.map((block) => block.lastSavedAt as string | null)),
       };
     });
-    const canonicalBlocks = groupsWithRoster.map((group) => group.preferred);
+    const canonicalBlocks = groupsWithRoster.map((group) => displayBlock(group));
     const teacherOptions = [...new Map(canonicalBlocks.map((block) => [block.teacher_id, { id: block.teacher_id, name: block.teacher_name_snapshot }])).values()];
     const statistics = {
       scheduledTeacherCount: groups.length,

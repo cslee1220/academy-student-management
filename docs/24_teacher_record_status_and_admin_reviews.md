@@ -34,7 +34,16 @@
 
 ## 적용·검증 범위
 
-- 관리자 종합현황은 기존 `daily_teacher_record_admin_reviews`와 기록·공개 원자료를 재사용하며 이번 화면 구현에 새 DB migration은 필요하지 않다. 로컬 Supabase의 기존 migration 이력만 확인하고 원격 Supabase에는 적용하지 않는다.
+- 관리자 종합현황은 기존 `daily_teacher_record_admin_reviews`와 기록·공개 원자료를 재사용한다. 이번 데이터 보존·권한 보강에는 `20261029120701_harden_record_data_integrity.sql` migration이 필요하며 로컬에서만 적용·검증한다.
 - 원격 Supabase migration, 운영 DB, EC2 배포에는 적용하지 않는다.
 - 긴 학생별 메모와 표는 줄바꿈·내부 가로 스크롤로 확인한다.
 - `360/390/768/1366px` 화면에서 관리자·교사 표를 확인하며 실제 휴대전화 검증은 제외한다.
+-
+## 운영 전 데이터 보존·권한 보강
+
+- 일반 교사 저장은 제거된 과제보충 내용 필드를 보내지 않는다. 보충 task transaction은 기존 `homework_content`를 갱신하지 않고 task `version`을 잠금·검증하며, 불일치하면 과목기록 변경까지 함께 rollback한다. 신규 보충은 내용 없이 저장할 수 있고 기존 `homework_supplement_content` 및 `student_supplement_tasks.homework_content`는 보존한다.
+- 학원별 기록 설정은 `save_academy_lesson_record_settings_transaction`에서 설정 행, `academy_setting_history`, `audit_logs`를 같은 transaction으로 저장한다. 설정·이력·감사로그 중 하나라도 실패하면 전체 변경을 rollback한다. 활성 지표 4개·활성 보충 유형 3개만 제한하고 비활성 과거 항목은 유지한다.
+- 보호자 숙제 API는 `no_homework=true`인 공개 자료에서 `value_json.content`를 `null`로 반환한다. 내부 조회와 기존 DB 원문 및 공개 snapshot은 변경하지 않는다.
+- 명시적 `blockId` 관리자 조회는 원본 블록이 비활성·기간 만료여도 학원·블록·학생·과목·기록일이 모두 일치하는 보존 기록을 조회한다. `blockId`가 없는 일반 날짜 조회는 기존 유효 블록 규칙을 따른다.
+- `daily_teacher_record_admin_reviews`의 SELECT/INSERT/UPDATE RLS는 관리자 권한과 함께 `teacher_id`의 동일 학원 활성 교사 소속을 검증하며 `academy_id`·`teacher_id` 변경은 trigger로 차단한다. 관리자 확인은 공개 승인과 분리된다.
+- 이 보강은 `web/supabase/migrations/20261029120701_harden_record_data_integrity.sql`에 기록했으며 로컬 migration만 적용·검증한다. 원격 DB와 기존 기록·공개 snapshot에는 적용하지 않는다.

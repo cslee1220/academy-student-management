@@ -16,6 +16,7 @@
     "test:daily-integration": "node scripts/daily-integration.mjs",
     "test:admin-teacher-records": "node scripts/admin-teacher-records-integration.mjs",
     "test:admin-teacher-records-browser": "node scripts/admin-teacher-records-browser-e2e.mjs",
+    "test:record-integrity": "node scripts/record-integrity-static-check.mjs",
     "test:browser-save-fault": "node scripts/browser-save-fault.mjs",
     "test:browser-roles": "node scripts/browser-role-e2e.mjs",
     "generate:vapid": "node scripts/generate-vapid-keys.mjs",

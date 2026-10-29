@@ -72,7 +72,7 @@ type StudentRow = {
   testSupplementDate: string;
   isHomeworkSupplementary: boolean;
   homeworkSupplementDate: string;
-  homeworkSupplementContent: string;
+  supplementTaskVersion: number;
   subjectVersion: number;
   publicNote: string;
   testResults: Array<{ testDefinitionId: string; score: string; nonAttemptReason: string }>;
@@ -254,7 +254,7 @@ function normalizeSupplementItems(value: unknown, form: LessonRecordFormSnapshot
   });
 }
 
-function blankRow(student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; publication_status?: "draft" | "published" | null }, existing: Record<string, unknown> | null | undefined, attendance: Record<string, unknown> | null | undefined, recordDate: string, settings: LessonRecordSettings): StudentRow {
+function blankRow(student: { id: string; student_no: string; name: string; student_status?: string; status_effective_date?: string | null; expected_return_date?: string | null; operation_group?: "A" | "B" | null; supplement_task_version?: number; publication_status?: "draft" | "published" | null }, existing: Record<string, unknown> | null | undefined, attendance: Record<string, unknown> | null | undefined, recordDate: string, settings: LessonRecordSettings): StudentRow {
   const results = Array.isArray(existing?.test_results) ? existing?.test_results : [];
   const recordFormSnapshot = existing?.record_form_snapshot && typeof existing.record_form_snapshot === "object" && !Array.isArray(existing.record_form_snapshot)
     ? normalizeLessonRecordForm(existing.record_form_snapshot)
@@ -294,7 +294,7 @@ function blankRow(student: { id: string; student_no: string; name: string; stude
     homeworkSupplementDate: typeof existing?.homework_supplement_date === "string"
       ? existing.homework_supplement_date
       : existing?.is_homework_supplementary === true ? recordDate : "",
-    homeworkSupplementContent: typeof existing?.homework_supplement_content === "string" ? existing.homework_supplement_content : "",
+    supplementTaskVersion: typeof student.supplement_task_version === "number" && student.supplement_task_version >= 0 ? student.supplement_task_version : 0,
     subjectVersion: typeof existing?.version === "number" && existing.version >= 0 ? existing.version : 0,
     publicNote: typeof existing?.public_note === "string" ? existing.public_note : "",
     testResults: results.map((item) => {
@@ -772,7 +772,7 @@ export default function DailyRecordsPage() {
             testSupplementDate: student.testSupplementDate,
             isHomeworkSupplementary: student.isHomeworkSupplementary,
             homeworkSupplementDate: student.homeworkSupplementDate,
-            homeworkSupplementContent: student.homeworkSupplementContent,
+            supplementTaskVersion: student.supplementTaskVersion,
             subjectVersion: student.subjectVersion,
             publicNote: student.publicNote,
             testResults: student.testResults,

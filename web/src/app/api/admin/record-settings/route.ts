@@ -134,20 +134,26 @@ export async function POST(request: NextRequest) {
       supplementTypes: form.supplementTypes.filter((item) => !removeSupplementIds.includes(item.id)),
     };
     const nextVersion = current.version + 1;
-    const { data: updated, error: updateError } = await admin
-      .from("academy_lesson_record_settings")
-      .update(toLessonRecordRow(nextForm, academyId, profileId, nextVersion))
-      .eq("academy_id", academyId)
-      .eq("version", current.version)
-      .select("*")
-      .maybeSingle();
-    if (updateError) throw updateError;
-    if (!updated) throw new HttpError(409, "resource_changed", "다른 관리자가 먼저 설정을 변경했습니다. 최신 설정을 다시 확인해 주세요.");
     const historyValue = { ...nextForm, version: nextVersion };
-    const { error: historyError } = await admin.from("academy_setting_history").insert({ academy_id: academyId, setting_key: "lesson_record.form", value_json: historyValue, changed_by_profile_id: profileId });
-    if (historyError) throw historyError;
-    const { error: auditError } = await admin.from("audit_logs").insert({ academy_id: academyId, target_table: "academy_lesson_record_settings", target_id: academyId, field_key: "form", old_value_json: current, new_value_json: historyValue, reason: "학원별 수업기록 설정 변경", actor_profile_id: profileId });
-    if (auditError) throw auditError;
+    const { data: updated, error: transactionError } = await admin.rpc("save_academy_lesson_record_settings_transaction", {
+      p_academy_id: academyId,
+      p_expected_version: current.version,
+      p_tests_enabled: nextForm.testsEnabled,
+      p_student_memo_enabled: nextForm.studentMemoEnabled,
+      p_common_record_enabled: nextForm.commonRecordEnabled,
+      p_metrics: nextForm.metrics,
+      p_supplement_types: nextForm.supplementTypes,
+      p_actor_profile_id: profileId,
+      p_old_value_json: current,
+      p_new_value_json: historyValue,
+      p_reason: "academy lesson record settings changed",
+    });
+    if (transactionError) {
+      if (transactionError.code === "40001") throw new HttpError(409, "resource_changed", "Another administrator changed the settings. Reload and try again.");
+      if (transactionError.code === "42501") throw new HttpError(403, "forbidden", "You do not have permission to save these settings.");
+      throw transactionError;
+    }
+    if (!updated) throw new HttpError(409, "resource_changed", "다른 관리자가 먼저 설정을 변경했습니다. 최신 설정을 다시 확인해 주세요.");
     return NextResponse.json({ data: normalizeLessonRecordSettings(updated, academyId) });
   } catch (error) {
     return errorResponse(error);
