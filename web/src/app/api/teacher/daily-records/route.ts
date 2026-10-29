@@ -104,6 +104,15 @@ function parseOptionalText(value: unknown, fieldName: string, maxLength: number)
   return value;
 }
 
+function parseRecordVersion(value: unknown) {
+  if (value === undefined || value === null || value === "") return 0;
+  const version = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(version) || version < 0) {
+    throw new HttpError(422, "invalid_record_version", "학생 수업기록 버전이 올바르지 않습니다.");
+  }
+  return version;
+}
+
 function parseJsonArray(value: unknown, fieldName: string, maxItems: number) {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > maxItems || JSON.stringify(value).length > 20000) {
@@ -754,13 +763,13 @@ export async function POST(request: NextRequest) {
         test_supplement_date: parseSupplementDate(student.testSupplementDate, recordDate, "테스트 보충 예정일", isTestSupplementary),
         is_homework_supplementary: isHomeworkSupplementary,
         homework_supplement_date: parseSupplementDate(student.homeworkSupplementDate, recordDate, "숙제 보충 예정일", isHomeworkSupplementary),
-        homework_supplement_content: isHomeworkSupplementary ? parseOptionalText(student.homeworkSupplementContent, "과제보충 내용", 5000) : null,
+        homework_supplement_content: parseOptionalText(student.homeworkSupplementContent, "과제보충 내용", 5000),
         public_note: absent ? null : parseOptionalText(student.publicNote, "수업 메모", 2000),
         test_definitions: testDefinitions,
         test_results: absent ? [] : testResults,
         save_state: saveMode,
-        version: 1,
-        expected_version: 0,
+        version: parseRecordVersion(student.subjectVersion) + 1,
+        expected_version: parseRecordVersion(student.subjectVersion),
       };
     });
     const supplementRows = subjectRows.map((row) => ({
@@ -774,19 +783,16 @@ export async function POST(request: NextRequest) {
       homework_content: row.homework_supplement_content,
     }));
 
-    const [oldAttendanceResult, oldSubjectResult] = await Promise.all([
-      supabase.from("daily_attendance_records").select("student_id, version").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
-      supabase.from("daily_subject_records").select("student_id, version").eq("academy_id", academyId).eq("block_id", blockId).eq("record_date", recordDate),
-    ]);
-    if (oldAttendanceResult.error || oldSubjectResult.error) throw new Error("daily record version query failed");
+    const oldAttendanceResult = await supabase
+      .from("daily_attendance_records")
+      .select("student_id, version")
+      .eq("academy_id", academyId)
+      .eq("block_id", blockId)
+      .eq("record_date", recordDate);
+    if (oldAttendanceResult.error) throw new Error("daily record version query failed");
     const attendanceVersion = new Map((oldAttendanceResult.data ?? []).map((row) => [row.student_id, row.version]));
-    const subjectVersion = new Map((oldSubjectResult.data ?? []).map((row) => [row.student_id, row.version]));
     for (const row of attendanceRows) {
       row.expected_version = attendanceVersion.get(row.student_id) ?? 0;
-      row.version = row.expected_version + 1;
-    }
-    for (const row of subjectRows) {
-      row.expected_version = subjectVersion.get(row.student_id) ?? 0;
       row.version = row.expected_version + 1;
     }
 

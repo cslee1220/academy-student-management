@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import ConsultationRecordDialog from "@/components/teacher/consultation-record-dialog";
 import TeacherStudentHistoryPanel from "@/components/teacher-student-history-panel";
 import TeacherRecordsOverview from "@/components/teacher-records-overview";
+import TeacherSupplementsPanel from "@/components/teacher-supplements-panel";
 
 type AttendanceStatus = "present" | "absent" | "unexcused_absent";
 type DailyBlock = {
@@ -68,6 +69,7 @@ type StudentRow = {
   isHomeworkSupplementary: boolean;
   homeworkSupplementDate: string;
   homeworkSupplementContent: string;
+  subjectVersion: number;
   publicNote: string;
   testResults: Array<{ testDefinitionId: string; score: string; nonAttemptReason: string }>;
 };
@@ -261,6 +263,7 @@ function blankRow(student: { id: string; student_no: string; name: string; stude
       ? existing.homework_supplement_date
       : existing?.is_homework_supplementary === true ? recordDate : "",
     homeworkSupplementContent: typeof existing?.homework_supplement_content === "string" ? existing.homework_supplement_content : "",
+    subjectVersion: typeof existing?.version === "number" && existing.version >= 0 ? existing.version : 0,
     publicNote: typeof existing?.public_note === "string" ? existing.public_note : "",
     testResults: results.map((item) => {
       const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
@@ -703,6 +706,7 @@ export default function DailyRecordsPage() {
             isHomeworkSupplementary: student.isHomeworkSupplementary,
             homeworkSupplementDate: student.homeworkSupplementDate,
             homeworkSupplementContent: student.homeworkSupplementContent,
+            subjectVersion: student.subjectVersion,
             publicNote: student.publicNote,
             testResults: student.testResults,
           })),
@@ -814,6 +818,7 @@ export default function DailyRecordsPage() {
               const testSummary = groupTestDefinitions.length
                 ? groupTestDefinitions.map((definition, index) => `${formatTestDefinitionLabel(definition, index)} · ${definition.maxScore || "-"}점`).join(" / ")
                 : "테스트 사용 안 함";
+              const memoHelpId = `student-note-help-${group.key}`;
               return <div key={group.key} className="overflow-hidden rounded-xl border border-slate-200">
                 <div className={`flex items-center justify-between px-4 py-3 ${group.key === "A" ? "bg-indigo-50 text-indigo-900" : group.key === "B" ? "bg-amber-50 text-amber-900" : "bg-slate-50 text-slate-700"}`}>
                   <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold">{group.label}</h3><span className="text-xs font-semibold opacity-80">{group.rows.length}명</span></div><div className="mt-2 flex flex-wrap items-center gap-2"><span className="max-w-full truncate text-xs font-semibold" title={testSummary}>테스트 · {testSummary}</span><button type="button" onClick={() => setExpandedTestSettings((current) => ({ ...current, [group.key]: !current[group.key] }))} className="rounded-lg border border-white/80 bg-white/80 px-2 py-1 text-xs font-bold text-indigo-700 shadow-sm hover:bg-white">{expandedTestSettings[group.key] ? "설정 닫기" : "설정"}</button>{group.rows.map((student) => <button type="button" key={`consultation-${group.key}-${student.id}`} onClick={() => setConsultationStudent({ id: student.id, name: student.name, studentNo: student.student_no })} className="rounded-lg border border-white/80 bg-white/80 px-2 py-1 text-xs font-bold text-indigo-700 shadow-sm hover:bg-white">{student.name} · 상담</button>)}</div></div>
@@ -827,7 +832,7 @@ export default function DailyRecordsPage() {
                  <div role="region" aria-label={`${group.label} 학생 기록 표`} tabIndex={0} className="overflow-x-auto rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
                    <table className={`w-full table-fixed border-collapse text-center text-sm [&_th]:text-center [&_th]:text-sm [&_th]:font-bold [&_th_div]:text-sm [&_th_div]:font-bold [&_th_span]:text-sm [&_th_span]:font-bold ${groupTableMinWidthClass}`}>
                      <colgroup><col className="w-[140px]" /><col className="w-[112px]" />{groupTestDefinitions.length ? <col className={groupTestColumnClass} /> : null}<col className="w-[205px]" /><col className="w-[190px]" /><col className="w-[360px]" /></colgroup>
-                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="min-w-[250px] px-2 py-3 font-semibold">학생별 수업메모</th></tr></thead>
+                     <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500"><tr><th className="sticky left-0 z-20 bg-slate-50 px-2 py-3 font-semibold">학생</th><th className="px-2 py-3 font-semibold">출결</th>{groupTestDefinitions.length ? <th className="px-2 py-3 font-semibold text-center">{groupTestDefinitions.length === 1 ? <span className="block truncate" title={formatTestDefinitionLabel(groupTestDefinitions[0], 0)}>{formatTestDefinitionLabel(groupTestDefinitions[0], 0)}</span> : <><div>테스트 점수</div><div className="mt-2 grid gap-1 text-center text-[10px] font-semibold" style={{ gridTemplateColumns: `repeat(${groupTestDefinitions.length}, minmax(0, 1fr))` }}>{groupTestDefinitions.map((definition, index) => <span key={definition.id} className="min-w-0 truncate" title={formatTestDefinitionLabel(definition, index)}>{formatTestDefinitionLabel(definition, index)}</span>)}</div></>}</th> : null}<th className="px-2 py-3 font-semibold"><div>수업 지표</div><div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">숙제</span><span className="whitespace-nowrap">이해도</span><span className="whitespace-nowrap">참여도</span></div></th><th className="px-2 py-3 font-semibold"><div>보충 일정</div><div className="mt-2 grid grid-cols-2 gap-1 text-center text-xs font-semibold"><span className="whitespace-nowrap">테스트</span><span className="whitespace-nowrap">숙제</span></div></th><th className="min-w-[250px] px-2 py-3 font-semibold"><div>학생별 수업메모</div><p id={memoHelpId} className="mt-2 text-left text-[10px] font-normal leading-4 text-slate-500">미이행 과제, 칭찬사항, 부족사항, 보충 관련, 학부모 전달사항 등을 입력하세요.</p></th></tr></thead>
                      <tbody>
                        {group.rows.map((student) => {
                          const absent = student.attendanceStatus !== "present";
@@ -878,9 +883,8 @@ export default function DailyRecordsPage() {
                                    {student.isHomeworkSupplementary ? <button type="button" onClick={() => openSupplementPopup(student.id, "homework")} disabled={paused} className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-1 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`${student.name} 숙제 보충 예정일 수정`}>{formatShortDate(student.homeworkSupplementDate)}</button> : null}
                                  </div>
                                </div>
-                               <textarea aria-label={`${student.name} 과제보충 내용`} value={student.homeworkSupplementContent} onChange={(event) => updateStudent(student.id, "homeworkSupplementContent", event.target.value)} disabled={absent || paused || !student.isHomeworkSupplementary} placeholder="과제보충 내용" rows={2} className="mt-2 h-12 w-full min-w-0 resize-y overflow-y-auto rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" />
                              </td>
-                             <td className="px-2 py-2"><textarea aria-label={`${student.name} 학생별 수업메모`} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent || paused} placeholder="학생별 수업메모" rows={2} className="h-14 w-full min-w-[220px] resize-y overflow-y-auto rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" /><p className="mt-1 max-w-[280px] text-left text-[10px] leading-4 text-slate-500">미이행 과제, 칭찬사항, 부족사항, 보충 관련, 학부모 전달사항 등을 입력하세요.</p><p className="mt-1 text-left text-[10px] font-semibold text-indigo-700">학부모 공개 항목</p></td>
+                             <td className="px-2 py-2"><textarea aria-label={`${student.name} 학생별 수업메모`} aria-describedby={memoHelpId} value={student.publicNote} onChange={(event) => updateStudent(student.id, "publicNote", event.target.value)} disabled={absent || paused} placeholder="학생별 수업메모" rows={2} className="h-14 w-full min-w-[220px] resize-y overflow-y-auto rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold outline-none focus:border-indigo-500 disabled:bg-slate-100" /></td>
                            </tr>
                          );
                        })}
@@ -891,7 +895,7 @@ export default function DailyRecordsPage() {
                    <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center"><div><p className="text-xs font-bold text-indigo-600">공통 기록</p><h4 className="mt-1 text-base font-bold text-slate-900">{group.label} · {selectedGroup?.subject_name_snapshot} 수업 내용·숙제</h4></div><span className="text-xs text-slate-500">반·날짜·과목별로 따로 저장됩니다.</span></div>
                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
                      <label className="block text-sm font-semibold text-slate-700">수업 내용<textarea value={homeworkByGroup[group.key].lessonContent} onChange={(event) => updateHomework(group.key, "lessonContent", event.target.value)} placeholder="오늘 다룬 수업 내용" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500" /></label>
-                     <div><label className="block text-sm font-semibold text-slate-700">숙제<textarea value={homeworkByGroup[group.key].content} onChange={(event) => updateHomework(group.key, "content", event.target.value)} disabled={homeworkByGroup[group.key].noHomework} placeholder="예: 교재 32쪽 1~5번" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500 disabled:bg-slate-100" /></label><label className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={homeworkByGroup[group.key].noHomework} onChange={(event) => updateHomework(group.key, "noHomework", event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label></div>
+                     <div><div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold text-slate-700"><span>숙제</span><label className="flex items-center gap-2"><input type="checkbox" checked={homeworkByGroup[group.key].noHomework} onChange={(event) => updateHomework(group.key, "noHomework", event.target.checked)} className="h-4 w-4 accent-indigo-600" /> 숙제 없음</label></div><textarea value={homeworkByGroup[group.key].content} onChange={(event) => updateHomework(group.key, "content", event.target.value)} disabled={homeworkByGroup[group.key].noHomework} placeholder="예: 교재 32쪽 1~5번" rows={3} className="mt-2 min-h-24 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-normal outline-none focus:border-indigo-500 disabled:bg-slate-100" /></div>
                    </div>
                  </div>
               </div>;
@@ -900,6 +904,7 @@ export default function DailyRecordsPage() {
           {students.length === 0 ? <p className="mt-5 rounded-xl bg-slate-50 px-4 py-5 text-center text-sm text-slate-500">이 날짜에 배정된 학생이 없습니다.</p> : null}
        </section>
       </>}
+      {selectedGroup && dateIsValidForBlock ? <TeacherSupplementsPanel key={`record-supplements-${recordDate}`} embedded initialStartDate={recordDate} initialEndDate={recordDate} /> : null}
       {supplementPopup ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 px-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) cancelSupplementPopup(); }}><div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="supplement-date-title"><p className="text-xs font-bold text-indigo-600">보충 일정 변경</p><h2 id="supplement-date-title" className="mt-1 text-lg font-bold text-slate-950">{supplementPopupStudent?.name ?? "학생"} · {supplementPopup.kind === "test" ? "테스트" : "숙제"} 보충</h2><p className="mt-2 text-sm leading-6 text-slate-600">기본 보충일은 수업 당일입니다. 필요한 경우에만 특정 날짜로 변경하세요.</p><label className="mt-4 block text-sm font-semibold text-slate-700">변경할 보충 예정일<input autoFocus type="date" min={recordDate} value={supplementPopup.date} onChange={(event) => setSupplementPopup((current) => current ? { ...current, date: event.target.value } : current)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 outline-none focus:border-indigo-500" /></label><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={cancelSupplementPopup} className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50">취소</button><button type="button" onClick={applySupplementPopup} className="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-indigo-700">적용</button></div></div></div> : null}
       <ConsultationRecordDialog
         key={consultationStudent?.id ?? "empty"}

@@ -101,14 +101,29 @@ export async function GET(request: NextRequest) {
     const { data: tasks, error: taskError } = await taskQuery;
     if (taskError) throw taskError;
     const studentIds = [...new Set((tasks ?? []).map((task) => task.student_id))];
-    const { data: students, error: studentError } = studentIds.length
-      ? await admin.from("students").select("id, student_no, name").eq("academy_id", academyId).in("id", studentIds)
-      : { data: [], error: null };
-    if (studentError) throw studentError;
+    const sourceRecordIds = [...new Set((tasks ?? []).map((task) => task.source_subject_record_id).filter((id): id is string => typeof id === "string" && Boolean(id)))];
+    const [{ data: students, error: studentError }, { data: sourceRecords, error: sourceRecordError }] = await Promise.all([
+      studentIds.length
+        ? admin.from("students").select("id, student_no, name").eq("academy_id", academyId).in("id", studentIds)
+        : Promise.resolve({ data: [], error: null }),
+      sourceRecordIds.length
+        ? admin.from("daily_subject_records").select("id, student_id, block_id, subject_id, record_date, public_note").eq("academy_id", academyId).in("id", sourceRecordIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (studentError || sourceRecordError) throw studentError ?? sourceRecordError;
     const studentById = new Map((students ?? []).map((student) => [student.id, student]));
+    const sourceRecordById = new Map((sourceRecords ?? []).map((record) => [record.id, record]));
     const rows = (tasks ?? []).map((task) => {
+      const sourceRecord = task.source_subject_record_id ? sourceRecordById.get(task.source_subject_record_id) : null;
+      const sourceMatchesTask = sourceRecord
+        ? sourceRecord.student_id === task.student_id
+          && sourceRecord.block_id === task.block_id
+          && sourceRecord.subject_id === task.subject_id
+          && sourceRecord.record_date === task.record_date
+        : false;
       const normalized = {
         ...task,
+        student_note: sourceMatchesTask && typeof sourceRecord?.public_note === "string" ? sourceRecord.public_note : null,
         has_test_supplementary: (task.is_test_supplementary || task.legacy_supplementary) && scheduledWithin(task as Record<string, unknown>, "test", startDate, endDate),
         has_homework_supplementary: task.is_homework_supplementary && scheduledWithin(task as Record<string, unknown>, "homework", startDate, endDate),
         test_items: normalizeTestItems(task.test_items),

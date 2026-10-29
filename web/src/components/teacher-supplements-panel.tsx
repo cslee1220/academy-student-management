@@ -2,23 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import TeacherSupplementTable, { type SupplementRow } from "@/components/teacher-supplement-table";
 
-type TestItem = { name: string; score: number | string | null; maxScore?: number | string | null; nonAttemptReason?: string | null };
-type SupplementRow = {
-  id: string;
-  class_name_snapshot: string;
-  subject_name_snapshot: string;
-  classroom_name_snapshot: string | null;
-  student: { id: string; student_no: string; name: string } | null;
-  has_test_supplementary: boolean;
-  has_homework_supplementary: boolean;
-  test_items: TestItem[];
-  homework_content: string | null;
-  test_completed: boolean;
-  homework_completed: boolean;
-  completed: boolean;
-  version: number;
-};
 type Summary = { classroomName: string; className: string; subjectName: string; targetCount: number; completedCount: number; incompleteCount: number };
 type RowSort = "default" | "incomplete" | "complete";
 
@@ -117,7 +102,7 @@ export default function TeacherSupplementsPanel({ embedded = false, initialStart
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-sm font-bold text-indigo-600">상세 현황</p><h3 className="mt-1 text-xl font-bold text-slate-900">학생별 보충 작업</h3></div><div className="flex flex-wrap items-end gap-3"><label className="text-sm font-semibold text-slate-700">표시<select aria-label="보충 상세 정렬" value={rowSort} onChange={(event) => setRowSort(event.target.value as RowSort)} className={`mt-1 block h-10 rounded-lg border border-slate-300 bg-white px-3 font-normal ${inputFocusClass}`}><option value="default">기본 순서</option><option value="incomplete">미완료</option><option value="complete">완료</option></select></label><span className="text-sm text-slate-500">현재 필터 {rowSort === "default" ? "기본 순서" : rowSort === "incomplete" ? "미완료" : "완료"} · {filteredRows.length}건</span></div></div>
-        {isLoading ? <p role="status" className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">보충 현황을 불러오는 중입니다.</p> : filteredRows.length ? <><p className="mt-4 text-xs text-slate-500 sm:hidden">표는 좌우로 밀어 전체 항목을 확인할 수 있습니다.</p><div role="region" aria-label="학생별 보충 작업 표" tabIndex={0} className="mt-2 overflow-x-auto rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"><table className="min-w-[1080px] text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">강의실</th><th className="px-3 py-3">학생</th><th className="px-3 py-3">과목</th><th className="min-w-[220px] px-3 py-3">테스트 보충·점수</th><th className="min-w-[260px] px-3 py-3">과제보충·내용</th><th className="px-3 py-3">완료</th></tr></thead><tbody>{filteredRows.map((row) => <tr key={row.id} className="border-b border-slate-100 align-top last:border-0"><td className="px-3 py-4"><p className="font-semibold text-slate-900">{row.classroom_name_snapshot ?? "강의실 미지정"}</p><p className="mt-1 text-xs text-slate-500">{row.class_name_snapshot}</p></td><td className="whitespace-nowrap px-3 py-4"><p className="font-semibold text-slate-900">{row.student?.name ?? "학생 정보 없음"}</p><p className="mt-1 text-xs text-slate-500">{row.student?.student_no ?? "-"}</p></td><td className="px-3 py-4 font-semibold text-slate-700">{row.subject_name_snapshot}</td><td className="px-3 py-4">{row.has_test_supplementary ? <><div className="space-y-1">{row.test_items.length ? row.test_items.map((item, index) => <p key={`${row.id}-test-${index}`} className="text-slate-700">{item.name}: <b>{item.score ?? item.nonAttemptReason ?? "미입력"}</b>{item.maxScore ? ` / ${item.maxScore}` : ""}</p>) : <p className="text-slate-500">기존 보충 또는 테스트 점수 미입력</p>}</div><label className="mt-3 flex items-center gap-2 text-xs font-bold text-indigo-700"><input type="checkbox" checked={row.test_completed} disabled={pendingKey === `${row.id}:test`} onChange={(event) => void toggle(row, "test", event.target.checked)} className={`h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed ${focusRingClass}`} /> {pendingKey === `${row.id}:test` ? "저장 중…" : "테스트 보충 완료"}</label></> : <span className="text-slate-400">-</span>}</td><td className="px-3 py-4">{row.has_homework_supplementary ? <><p className="whitespace-pre-wrap text-slate-700">{row.homework_content || "내용 미입력"}</p><label className="mt-3 flex items-center gap-2 text-xs font-bold text-indigo-700"><input type="checkbox" checked={row.homework_completed} disabled={pendingKey === `${row.id}:homework`} onChange={(event) => void toggle(row, "homework", event.target.checked)} className={`h-4 w-4 accent-indigo-600 disabled:cursor-not-allowed ${focusRingClass}`} /> {pendingKey === `${row.id}:homework` ? "저장 중…" : "과제보충 완료"}</label></> : <span className="text-slate-400">-</span>}</td><td className="px-3 py-4">{row.completed ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">완료</span> : <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-slate-700">미완료</span>}</td></tr>)}</tbody></table></div></> : <p className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">{rowSort === "default" ? "해당 기간의 보충 대상 학생이 없습니다." : `${rowSort === "incomplete" ? "미완료" : "완료"} 상태의 보충 대상 학생이 없습니다.`}</p>}
+        {isLoading ? <p role="status" className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">보충 현황을 불러오는 중입니다.</p> : filteredRows.length ? <TeacherSupplementTable rows={filteredRows} pendingKey={pendingKey} onToggle={(row, kind, completed) => void toggle(row, kind, completed)} /> : <p className="mt-5 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">{rowSort === "default" ? "해당 기간의 보충 대상 학생이 없습니다." : `${rowSort === "incomplete" ? "미완료" : "완료"} 상태의 보충 대상 학생이 없습니다.`}</p>}
       </section>
     </>
   );
