@@ -98,6 +98,7 @@ select is(
     select count(*)::int
     from public.daily_record_publications
     where academy_id = '21000000-0000-4000-8000-000000000001'::uuid
+      and student_id = '51000000-0000-4000-8000-000000000001'::uuid
       and record_date = '2026-10-13'::date
   ),
   0,
