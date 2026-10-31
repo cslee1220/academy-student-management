@@ -1,0 +1,3 @@
+-- Compatibility placeholder kept for local migration history.
+-- The assessment tables are created by 20261030150000_internal_assessment_records.sql.
+-- The name-option extension runs after that schema in 20261030160000_assessment_name_options.sql.
