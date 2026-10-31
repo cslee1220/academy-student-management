@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import AdminLogoutButton from "@/components/admin/admin-logout-button";
@@ -84,12 +84,6 @@ type OperationType = {
   display_order: number;
 };
 
-type PublicationVisibilitySettings = {
-  homeworkScore: boolean;
-  understandingScore: boolean;
-  participationScore: boolean;
-};
-
 type OperationTeacher = { id: string; display_name: string };
 type ClassTeacherAssignment = { id: string; class_id: string; subject_id: string; teacher_id: string; effective_start: string; effective_end: string | null; is_active: boolean };
 type ClassSubjectClassroomAssignment = { id: string; class_id: string; subject_id: string; classroom_id: string; effective_start: string; effective_end: string | null; is_active: boolean };
@@ -132,7 +126,6 @@ type AcademicData = {
   operationTeachers: OperationTeacher[];
   classTeacherAssignments: ClassTeacherAssignment[];
   classSubjectClassroomAssignments: ClassSubjectClassroomAssignment[];
-  publicationSettings: PublicationVisibilitySettings;
   gradePromotion: GradePromotionDashboard;
   gradePromotionUnavailableReason?: string | null;
 };
@@ -163,7 +156,6 @@ const settingItems: Array<{ key: SettingKey; title: string; description: string 
   { key: "schools", title: "학교", description: "학생 등록에서 선택할 학교를 관리합니다." },
   { key: "academy_levels", title: "레벨", description: "학생 등록에서 선택할 레벨과 표시순서를 관리합니다." },
   { key: "teachers", title: "교사 계정", description: "교사 계정 등록, 활성화 코드 발급과 계정 상태를 관리합니다." },
-  { key: "publication_settings", title: "보호자 공개 설정", description: "과목별 점수·이해도·참여도의 보호자 공개 여부를 설정합니다." },
   { key: "record_settings", title: "수업기록 설정", description: "학원별 테스트·수업지표·보충 유형과 메모·공통기록 사용 여부를 관리합니다." },
 ];
 
@@ -237,7 +229,6 @@ const academicMenuGroups: AcademicMenuGroup[] = [
       settingMenuCard("classes"),
       settingMenuCard("class_operations"),
       settingMenuCard("exam_classes"),
-      settingMenuCard("publication_settings"),
       settingMenuCard("record_settings"),
     ],
   },
@@ -259,7 +250,7 @@ type ApiResult = {
   data?: AcademicData;
 };
 
-const emptyData: AcademicData = { schoolYears: [], terms: [], classes: [], classrooms: [], vehicles: [], subjects: [], schools: [], levels: [], operationTypes: [], operationSettings: null, operationSchedules: [], operationTeachers: [], classTeacherAssignments: [], classSubjectClassroomAssignments: [], publicationSettings: { homeworkScore: true, understandingScore: true, participationScore: true }, gradePromotion: { settings: { academy_id: "", automatic_enabled: false, effective_month: 1, effective_day: 1, enabled_from_date: null, updated_at: "" }, targetYear: new Date().getFullYear() + 1, batch: null, history: [], items: [], summary: { total: 0, willPromote: 0, schoolLevelManual: 0, graduationManual: 0, skipped: 0, applied: 0, conflicts: 0 } } };
+const emptyData: AcademicData = { schoolYears: [], terms: [], classes: [], classrooms: [], vehicles: [], subjects: [], schools: [], levels: [], operationTypes: [], operationSettings: null, operationSchedules: [], operationTeachers: [], classTeacherAssignments: [], classSubjectClassroomAssignments: [], gradePromotion: { settings: { academy_id: "", automatic_enabled: false, effective_month: 1, effective_day: 1, enabled_from_date: null, updated_at: "" }, targetYear: new Date().getFullYear() + 1, batch: null, history: [], items: [], summary: { total: 0, willPromote: 0, schoolLevelManual: 0, graduationManual: 0, skipped: 0, applied: 0, conflicts: 0 } } };
 
 function operationScheduleGroup(weekdays: string[]) {
   const isMondayWednesdayFriday = weekdays.length === 3 && ["mon", "wed", "fri"].every((weekday) => weekdays.includes(weekday));
@@ -299,10 +290,23 @@ function redirectIfUnauthorized(response: Response) {
   return redirectAdminOnAuthFailure(response);
 }
 
+function recordSettingsFingerprint(settings: LessonRecordSettings) {
+  return JSON.stringify({
+    testsEnabled: settings.testsEnabled,
+    studentMemoEnabled: settings.studentMemoEnabled,
+    commonRecordEnabled: settings.commonRecordEnabled,
+    metrics: settings.metrics,
+    supplementTypes: settings.supplementTypes,
+    publicationPolicy: settings.publicationPolicy,
+  });
+}
+
 function AcademicSettingsPageContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSection = searchParams.get("section");
-  const selectedSection = settingItems.some((item) => item.key === requestedSection) ? requestedSection : null;
+  const normalizedSection = requestedSection === "publication_settings" ? "record_settings" : requestedSection;
+  const selectedSection = settingItems.some((item) => item.key === normalizedSection) ? normalizedSection : null;
   const selectedSetting = settingItems.find((item) => item.key === selectedSection);
 
   const [data, setData] = useState<AcademicData>(emptyData);
@@ -310,6 +314,12 @@ function AcademicSettingsPageContent() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (requestedSection === "publication_settings") {
+      router.replace("/admin/academic?section=record_settings");
+    }
+  }, [requestedSection, router]);
 
   // Kept only for the unreachable legacy markup below; new UI uses separate school-year and term forms.
   const [periodSchoolYearId, setPeriodSchoolYearId] = useState<string | null>(null);
@@ -371,8 +381,8 @@ function AcademicSettingsPageContent() {
   const [operationTypeName, setOperationTypeName] = useState("");
   const [operationTypeDisplayOrder, setOperationTypeDisplayOrder] = useState("0");
   const [operationTypeIsActive, setOperationTypeIsActive] = useState(true);
-  const [publicationSettings, setPublicationSettings] = useState(emptyData.publicationSettings);
   const [recordSettings, setRecordSettings] = useState<LessonRecordSettings | null>(null);
+  const [recordSettingsSavedFingerprint, setRecordSettingsSavedFingerprint] = useState("");
   const [removedRecordMetricIds, setRemovedRecordMetricIds] = useState<string[]>([]);
   const [removedRecordSupplementIds, setRemovedRecordSupplementIds] = useState<string[]>([]);
   const [operationScheduleDrafts, setOperationScheduleDrafts] = useState<OperationScheduleDraft[]>([{ weekdays: [], startTime: "", endTime: "" }]);
@@ -423,6 +433,7 @@ function AcademicSettingsPageContent() {
   );
   const gradePromotionTargetEffectiveDate = data.gradePromotion.batch?.effective_date
     ?? `${data.gradePromotion.targetYear}-${String(data.gradePromotion.settings.effective_month).padStart(2, "0")}-${String(data.gradePromotion.settings.effective_day).padStart(2, "0")}`;
+  const isRecordSettingsDirty = Boolean(recordSettings && recordSettingsSavedFingerprint && recordSettingsFingerprint(recordSettings) !== recordSettingsSavedFingerprint);
 
   const loadAcademic = useCallback(async (clearMessage = true): Promise<boolean> => {
     setError("");
@@ -451,8 +462,9 @@ function AcademicSettingsPageContent() {
       setCurrentTermId(loadedCurrentTerm?.id ?? "");
       setTermSchoolYearId(loadedCurrentTerm?.school_year_id ?? loadedSchoolYears[0]?.id ?? "");
       setSelectedAcademicYearId(loadedCurrentTerm?.school_year_id ?? loadedSchoolYears[0]?.id ?? "");
-      setPublicationSettings(result.data.publicationSettings ?? emptyData.publicationSettings);
-      setRecordSettings(recordSettingsResult.data as unknown as LessonRecordSettings);
+      const loadedRecordSettings = recordSettingsResult.data as unknown as LessonRecordSettings;
+      setRecordSettings(loadedRecordSettings);
+      setRecordSettingsSavedFingerprint(recordSettingsFingerprint(loadedRecordSettings));
       setRemovedRecordMetricIds([]);
       setRemovedRecordSupplementIds([]);
       setGradePromotionAutomaticEnabled(result.data.gradePromotion?.settings.automatic_enabled ?? false);
@@ -757,14 +769,25 @@ function AcademicSettingsPageContent() {
     }
   }
 
-  async function submitPublicationSettings(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await saveResource("publication_settings", { settings: publicationSettings }, null);
-  }
-
   function updateRecordSettings(update: (current: LessonRecordSettings) => LessonRecordSettings) {
     setRecordSettings((current) => current ? update(current) : current);
     setMessage("");
+  }
+
+  function setRecordPublicationKey(key: string, enabled: boolean) {
+    updateRecordSettings((current) => ({
+      ...current,
+      publicationPolicy: {
+        ...current.publicationPolicy,
+        publicKeys: [...new Set(enabled
+          ? [...current.publicationPolicy.publicKeys, key]
+          : current.publicationPolicy.publicKeys.filter((item) => item !== key))].sort((left, right) => left.localeCompare(right)),
+      },
+    }));
+  }
+
+  function publicationKeyEnabled(settings: LessonRecordSettings, key: string) {
+    return settings.publicationPolicy.publicKeys.includes(key);
   }
 
   function moveRecordItem(kind: "metrics" | "supplementTypes", index: number, direction: -1 | 1) {
@@ -823,6 +846,7 @@ function AcademicSettingsPageContent() {
             commonRecordEnabled: recordSettings.commonRecordEnabled,
             metrics: recordSettings.metrics,
             supplementTypes: recordSettings.supplementTypes,
+            publicationPolicy: recordSettings.publicationPolicy,
           },
           removeMetricIds: removedRecordMetricIds,
           removeSupplementTypeIds: removedRecordSupplementIds,
@@ -834,7 +858,9 @@ function AcademicSettingsPageContent() {
         setError(result?.error?.message ?? "수업기록 설정을 저장하지 못했습니다.");
         return;
       }
-      setRecordSettings(result.data as unknown as LessonRecordSettings);
+      const savedRecordSettings = result.data as unknown as LessonRecordSettings;
+      setRecordSettings(savedRecordSettings);
+      setRecordSettingsSavedFingerprint(recordSettingsFingerprint(savedRecordSettings));
       setRemovedRecordMetricIds([]);
       setRemovedRecordSupplementIds([]);
       setMessage("수업기록 설정을 저장했습니다. 변경 사항은 새 수업기록부터 적용됩니다.");
@@ -1537,68 +1563,80 @@ function AcademicSettingsPageContent() {
         <div className="mt-6 rounded-xl border border-slate-200 p-4"><h3 className="font-bold text-slate-900">변경 이력</h3>{data.gradePromotion.history.length ? <div className="mt-3 overflow-x-auto"><table className="min-w-[720px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학년도</th><th className="px-3 py-3">적용 기준일</th><th className="px-3 py-3">상태</th><th className="px-3 py-3">적용 시각</th></tr></thead><tbody>{data.gradePromotion.history.map((batch) => <tr key={batch.id} className="border-b border-slate-100"><td className="px-3 py-3 font-semibold">{batch.promotion_year}학년도</td><td className="px-3 py-3">{batch.effective_date}</td><td className="px-3 py-3">{gradePromotionStatusLabel(batch.status)}</td><td className="px-3 py-3">{batch.applied_at ? new Date(batch.applied_at).toLocaleString("ko-KR") : "-"}</td></tr>)}</tbody></table></div> : <p className="mt-3 text-sm text-slate-500">아직 학년 승급 변경 이력이 없습니다.</p>}</div>
       </section>
 
-      <section className={selectedSection === "record_settings" ? "mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8" : "hidden"}>
+
+      <section id="record-settings" className={selectedSection === "record_settings" ? "mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8" : "hidden"}>
         <div>
           <h2 className="text-xl font-bold">수업기록 설정</h2>
           <p className="mt-1 text-sm leading-6 text-slate-500">학원 전체가 하나의 양식을 사용합니다. 변경한 양식은 새 수업기록부터 적용하고, 기존 기록은 저장 당시 snapshot을 유지합니다.</p>
         </div>
         {recordSettings ? <form onSubmit={submitRecordSettings} className="mt-6 space-y-6">
+          <nav aria-label="수업기록 설정 바로가기" className="sticky top-2 z-20 flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white/95 p-2 shadow-sm backdrop-blur">
+            {[['record-settings', '사용 여부'], ['record-metrics', '수업 지표'], ['record-supplements', '보충 유형'], ['record-publication', '학부모 공개']].map(([href, label]) => <a key={href} href={`#${href}`} className={`rounded-lg px-3 py-2 text-xs font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 ${focusRingClass}`}>{label}</a>)}
+            <span className="ml-auto self-center px-2 text-xs font-semibold text-slate-500">공개 항목 {recordSettings.publicationPolicy.publicKeys.length}개</span>
+          </nav>
+          {isRecordSettingsDirty ? <p role="status" aria-live="polite" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">저장하지 않은 변경사항이 있습니다. 저장 전까지 기존 정책과 데이터는 변경되지 않습니다.</p> : null}
           <div className="grid gap-3 md:grid-cols-3">
-            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm font-semibold text-slate-700"><input type="checkbox" checked={recordSettings.testsEnabled} onChange={(event) => updateRecordSettings((current) => ({ ...current, testsEnabled: event.target.checked }))} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="block">테스트 사용</span><span className="mt-1 block text-xs font-normal text-slate-500">교사가 과목·회차별 테스트를 설정합니다. 활성 테스트는 최대 2개입니다.</span></span></label>
-            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm font-semibold text-slate-700"><input type="checkbox" checked={recordSettings.studentMemoEnabled} onChange={(event) => updateRecordSettings((current) => ({ ...current, studentMemoEnabled: event.target.checked }))} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="block">학생별 수업메모 사용</span><span className="mt-1 block text-xs font-normal text-slate-500">기존 메모와 보충현황 연결은 보존됩니다.</span></span></label>
-            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm font-semibold text-slate-700"><input type="checkbox" checked={recordSettings.commonRecordEnabled} onChange={(event) => updateRecordSettings((current) => ({ ...current, commonRecordEnabled: event.target.checked }))} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="block">공통기록 사용</span><span className="mt-1 block text-xs font-normal text-slate-500">수업 내용·숙제의 기존 구분과 저장 방식은 유지됩니다.</span></span></label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm font-semibold text-slate-700"><input type="checkbox" checked={recordSettings.testsEnabled} onChange={(event) => updateRecordSettings((current) => ({ ...current, testsEnabled: event.target.checked, publicationPolicy: { ...current.publicationPolicy, publicKeys: event.target.checked ? current.publicationPolicy.publicKeys : current.publicationPolicy.publicKeys.filter((key) => !key.startsWith("test:")) } }))} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="block">테스트 사용</span><span className="mt-1 block text-xs font-normal text-slate-500">교사가 과목·회차별 테스트를 설정합니다. 활성 테스트는 최대 2개입니다.</span></span></label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm font-semibold text-slate-700"><input type="checkbox" checked={recordSettings.studentMemoEnabled} onChange={(event) => updateRecordSettings((current) => ({ ...current, studentMemoEnabled: event.target.checked, publicationPolicy: { ...current.publicationPolicy, publicKeys: event.target.checked ? current.publicationPolicy.publicKeys : current.publicationPolicy.publicKeys.filter((key) => key !== "student_memo") } }))} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="block">학생별 수업메모 사용</span><span className="mt-1 block text-xs font-normal text-slate-500">기존 메모와 보충현황 연결은 보존됩니다.</span></span></label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4 text-sm font-semibold text-slate-700"><input type="checkbox" checked={recordSettings.commonRecordEnabled} onChange={(event) => updateRecordSettings((current) => ({ ...current, commonRecordEnabled: event.target.checked, publicationPolicy: { ...current.publicationPolicy, publicKeys: event.target.checked ? current.publicationPolicy.publicKeys : current.publicationPolicy.publicKeys.filter((key) => key !== "common_lesson_content" && key !== "common_homework") } }))} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="block">공통기록 사용</span><span className="mt-1 block text-xs font-normal text-slate-500">수업 내용·숙제의 기존 구분과 저장 방식은 유지됩니다.</span></span></label>
           </div>
 
-          <section className="rounded-xl border border-slate-200 p-4">
+          <section id="record-metrics" className="rounded-xl border border-slate-200 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">수업지표</h3><p className="mt-1 text-xs text-slate-500">활성 {recordSettings.metrics.filter((item) => item.isActive).length} / 최대 {LESSON_RECORD_LIMITS.metrics}개 · 현재 등록 {recordSettings.metrics.length}개 · 모든 지표는 기존 5점 척도를 사용합니다.</p>{recordSettings.limitExceeded.metrics ? <p className="mt-1 text-xs font-semibold text-amber-700">기존 기록에 한도를 초과한 활성 지표가 있어 새 기록에는 최대 {LESSON_RECORD_LIMITS.metrics}개만 적용됩니다. 기존 기록은 보존됩니다.</p> : null}</div><button type="button" onClick={addRecordMetric} disabled={recordSettings.metrics.filter((item) => item.isActive).length >= LESSON_RECORD_LIMITS.metrics} className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">지표 추가</button></div>
-            {recordSettings.metrics.length ? <div className="mt-4 space-y-2">{recordSettings.metrics.map((metric, index) => {
+            {recordSettings.metrics.length ? <div className="mt-4 space-y-2">{recordSettings.metrics.slice(0, LESSON_RECORD_LIMITS.metrics).map((metric, index) => {
               const activeCount = recordSettings.metrics.filter((item) => item.isActive).length;
               return <div key={metric.id} className="grid gap-2 rounded-lg bg-slate-50 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
                 <input value={metric.name} onChange={(event) => updateRecordSettings((current) => ({ ...current, metrics: current.metrics.map((item) => item.id === metric.id ? { ...item, name: event.target.value } : item) }))} aria-label={`${metric.name} 지표명`} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm" />
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={metric.isActive} disabled={!metric.isActive && activeCount >= LESSON_RECORD_LIMITS.metrics} onChange={(event) => updateRecordSettings((current) => ({ ...current, metrics: current.metrics.map((item) => item.id === metric.id ? { ...item, isActive: event.target.checked } : item) }))} className="h-4 w-4 accent-indigo-600" />사용</label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={metric.isActive} disabled={!metric.isActive && activeCount >= LESSON_RECORD_LIMITS.metrics} onChange={(event) => updateRecordSettings((current) => ({ ...current, metrics: current.metrics.map((item) => item.id === metric.id ? { ...item, isActive: event.target.checked } : item), publicationPolicy: { ...current.publicationPolicy, publicKeys: event.target.checked ? current.publicationPolicy.publicKeys : current.publicationPolicy.publicKeys.filter((key) => key !== `metric:${metric.id}`) } }))} className="h-4 w-4 accent-indigo-600" />사용</label>
                 <div className="flex gap-1"><button type="button" onClick={() => moveRecordItem("metrics", index, -1)} disabled={index === 0} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">위</button><button type="button" onClick={() => moveRecordItem("metrics", index, 1)} disabled={index === recordSettings.metrics.length - 1} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">아래</button></div>
                 <button type="button" onClick={() => removeRecordItem("metrics", metric.id)} disabled={metric.isActive} className="rounded border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-40">삭제</button>
               </div>;
             })}</div> : <p className="mt-4 rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">등록된 지표가 없습니다.</p>}
           </section>
 
-          <section className="rounded-xl border border-slate-200 p-4">
+          <section id="record-supplements" className="rounded-xl border border-slate-200 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold">보충 유형</h3><p className="mt-1 text-xs text-slate-500">활성 {recordSettings.supplementTypes.filter((item) => item.isActive).length} / 최대 {LESSON_RECORD_LIMITS.supplements}개 · 현재 등록 {recordSettings.supplementTypes.length}개 · 체크·예정일·완료·동시 수정 방지는 유지됩니다.</p>{recordSettings.limitExceeded.supplements ? <p className="mt-1 text-xs font-semibold text-amber-700">기존 기록에 한도를 초과한 활성 보충 유형이 있어 새 기록에는 최대 {LESSON_RECORD_LIMITS.supplements}개만 적용됩니다. 기존 기록은 보존됩니다.</p> : null}</div><button type="button" onClick={addRecordSupplementType} disabled={recordSettings.supplementTypes.filter((item) => item.isActive).length >= LESSON_RECORD_LIMITS.supplements} className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">보충 유형 추가</button></div>
-            {recordSettings.supplementTypes.length ? <div className="mt-4 space-y-2">{recordSettings.supplementTypes.map((type, index) => {
+            {recordSettings.supplementTypes.length ? <div className="mt-4 space-y-2">{recordSettings.supplementTypes.slice(0, LESSON_RECORD_LIMITS.supplements).map((type, index) => {
               const activeCount = recordSettings.supplementTypes.filter((item) => item.isActive).length;
               return <div key={type.id} className="grid gap-2 rounded-lg bg-slate-50 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
                 <input value={type.name} onChange={(event) => updateRecordSettings((current) => ({ ...current, supplementTypes: current.supplementTypes.map((item) => item.id === type.id ? { ...item, name: event.target.value } : item) }))} aria-label={`${type.name} 보충 유형명`} className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm" />
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={type.isActive} disabled={!type.isActive && activeCount >= LESSON_RECORD_LIMITS.supplements} onChange={(event) => updateRecordSettings((current) => ({ ...current, supplementTypes: current.supplementTypes.map((item) => item.id === type.id ? { ...item, isActive: event.target.checked } : item) }))} className="h-4 w-4 accent-indigo-600" />사용</label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={type.isActive} disabled={!type.isActive && activeCount >= LESSON_RECORD_LIMITS.supplements} onChange={(event) => updateRecordSettings((current) => ({ ...current, supplementTypes: current.supplementTypes.map((item) => item.id === type.id ? { ...item, isActive: event.target.checked } : item), publicationPolicy: { ...current.publicationPolicy, publicKeys: event.target.checked ? current.publicationPolicy.publicKeys : current.publicationPolicy.publicKeys.filter((key) => key !== `supplement:${type.id}`) } }))} className="h-4 w-4 accent-indigo-600" />사용</label>
                 <div className="flex gap-1"><button type="button" onClick={() => moveRecordItem("supplementTypes", index, -1)} disabled={index === 0} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">위</button><button type="button" onClick={() => moveRecordItem("supplementTypes", index, 1)} disabled={index === recordSettings.supplementTypes.length - 1} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">아래</button></div>
                 <button type="button" onClick={() => removeRecordItem("supplementTypes", type.id)} disabled={type.isActive} className="rounded border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-40">삭제</button>
               </div>;
             })}</div> : <p className="mt-4 rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">등록된 보충 유형이 없습니다.</p>}
           </section>
 
+          <section id="record-publication" data-testid="guardian-publication-policy" className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+            <div><h3 className="font-bold text-slate-900">학부모 공개항목 설정</h3><p className="mt-1 text-xs leading-5 text-slate-600">운영자가 공개 여부를 결정합니다. 교사 기록 입력의 사용 여부와 분리되어 있으며, 새 항목은 기본 비공개입니다. 기존 기록·공개 snapshot은 이 설정 변경으로 다시 작성하지 않습니다.</p></div>
+            <div className="mt-4 rounded-lg border border-slate-200 bg-white px-3 py-3 text-xs leading-5 text-slate-600">
+              <p><strong className="text-slate-900">사용 여부</strong>는 교사 기록 입력·저장에 적용되고, <strong className="text-slate-900">학부모 공개 여부</strong>는 공개 완료 자료의 서버 응답에 적용됩니다.</p>
+              <p className="mt-1">비활성 항목은 공개할 수 없으며, 새 항목은 기본 비공개입니다. 기존 기록과 공개 snapshot은 정책 변경으로 다시 작성되지 않습니다.</p>
+            </div>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-lg border border-slate-200 bg-white p-3"><h4 className="text-sm font-bold">공통 기록</h4><div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {[["common_lesson_content", "수업내용"], ["common_homework", "공통 숙제"]].map(([key, label]) => <label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={publicationKeyEnabled(recordSettings, key)} disabled={!recordSettings.commonRecordEnabled} onChange={(event) => setRecordPublicationKey(key, event.target.checked)} className="h-4 w-4 accent-indigo-600" />{label}<span className="text-xs text-slate-400">{recordSettings.commonRecordEnabled ? "" : "사용 안 함"}</span></label>)}
+              </div></div>
+              <div className="rounded-lg border border-slate-200 bg-white p-3"><h4 className="text-sm font-bold">학생별 기록</h4><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={publicationKeyEnabled(recordSettings, "student_memo")} disabled={!recordSettings.studentMemoEnabled} onChange={(event) => setRecordPublicationKey("student_memo", event.target.checked)} className="h-4 w-4 accent-indigo-600" />학생별 수업메모<span className="text-xs text-slate-400">{recordSettings.studentMemoEnabled ? "" : "사용 안 함"}</span></label></div>
+              <div className="rounded-lg border border-slate-200 bg-white p-3"><h4 className="text-sm font-bold">테스트</h4>{recordSettings.testDefinitions.length ? <div className="mt-2 space-y-2">{recordSettings.testDefinitions.slice(0, LESSON_RECORD_LIMITS.tests).map((test) => <label key={test.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={publicationKeyEnabled(recordSettings, `test:${test.id}`)} disabled={!recordSettings.testsEnabled || !test.isActive} onChange={(event) => setRecordPublicationKey(`test:${test.id}`, event.target.checked)} className="h-4 w-4 accent-indigo-600" />{test.name}<span className="text-xs text-slate-400">({test.maxScore}점){!recordSettings.testsEnabled || !test.isActive ? " · 사용 안 함" : ""}</span></label>)}</div> : <p className="mt-2 text-xs text-slate-500">저장된 테스트 설정이 없습니다. 새 테스트는 저장 후 기본 비공개로 표시됩니다.</p>}</div>
+              <div className="rounded-lg border border-slate-200 bg-white p-3"><h4 className="text-sm font-bold">수업 지표</h4><div className="mt-2 space-y-2">{recordSettings.metrics.slice(0, LESSON_RECORD_LIMITS.metrics).map((metric) => <label key={metric.id} className={`flex items-center gap-2 text-sm ${metric.isActive ? "" : "text-slate-400"}`}><input type="checkbox" checked={metric.isActive && publicationKeyEnabled(recordSettings, `metric:${metric.id}`)} disabled={!metric.isActive} onChange={(event) => setRecordPublicationKey(`metric:${metric.id}`, event.target.checked)} className="h-4 w-4 accent-indigo-600" />{metric.name}<span className="text-xs text-slate-400">{metric.isActive ? "" : " · 사용 안 함"}</span></label>)}</div></div>
+              <div className="rounded-lg border border-slate-200 bg-white p-3 lg:col-span-2"><h4 className="text-sm font-bold">보충 유형</h4><div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{recordSettings.supplementTypes.slice(0, LESSON_RECORD_LIMITS.supplements).map((type) => <label key={type.id} className={`flex items-center gap-2 text-sm ${type.isActive ? "" : "text-slate-400"}`}><input type="checkbox" checked={type.isActive && publicationKeyEnabled(recordSettings, `supplement:${type.id}`)} disabled={!type.isActive} onChange={(event) => setRecordPublicationKey(`supplement:${type.id}`, event.target.checked)} className="h-4 w-4 accent-indigo-600" />{type.name}<span className="text-xs text-slate-400">{type.isActive ? "" : " · 사용 안 함"}</span></label>)}</div></div>
+            </div>
+            <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-3 text-xs leading-5 text-emerald-900" aria-label="학부모 공개 화면 미리보기">
+              <p className="font-bold">학부모 화면 미리보기</p>
+              <p className="mt-1">현재 선택된 {recordSettings.publicationPolicy.publicKeys.length}개 항목만 공개 자료에 표시됩니다.</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {recordSettings.publicationPolicy.publicKeys.slice(0, 8).map((key) => <span key={key} className="rounded-full bg-white px-2 py-1 font-semibold">{key}</span>)}
+                {recordSettings.publicationPolicy.publicKeys.length > 8 ? <span className="rounded-full bg-white px-2 py-1 font-semibold">외 {recordSettings.publicationPolicy.publicKeys.length - 8}개</span> : null}
+              </div>
+            </div>
+          </section>
+
           <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-xs leading-5 text-indigo-900"><p className="font-bold">저장 전 변경 내용 확인</p><p className="mt-1">테스트 {recordSettings.testsEnabled ? "사용" : "미사용"} · 학생별 수업메모 {recordSettings.studentMemoEnabled ? "사용" : "미사용"} · 공통기록 {recordSettings.commonRecordEnabled ? "사용" : "미사용"}</p><p className="mt-1">활성 지표: {recordSettings.metrics.filter((item) => item.isActive).map((item) => item.name.trim() || "이름 없음").join(", ") || "없음"} · 활성 보충 유형: {recordSettings.supplementTypes.filter((item) => item.isActive).map((item) => item.name.trim() || "이름 없음").join(", ") || "없음"}</p><p className="mt-1">사용 이력이 있는 항목은 물리 삭제하지 않고 사용 중지로 보존합니다. 기존 3개 초과 테스트·기존 공개 snapshot·기존 보충은 새 한도에 맞춰 잘라내지 않습니다.</p></div>
-          <div className="flex flex-wrap items-center gap-3"><button type="submit" disabled={isSaving} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300">{isSaving ? "저장 중..." : "수업기록 설정 저장"}</button><span className="text-xs text-slate-500">설정 버전 {recordSettings.version} · 저장 전 변경 내용을 확인한 뒤 저장하세요.</span></div>
+          <div className="sticky bottom-2 z-20 flex flex-wrap items-center gap-3 rounded-xl border border-indigo-200 bg-white/95 p-3 shadow-lg backdrop-blur"><button type="submit" disabled={isSaving} className={`rounded-xl px-4 py-3 text-sm font-bold text-white disabled:bg-slate-300 ${isRecordSettingsDirty ? "bg-indigo-600 hover:bg-indigo-700" : "bg-slate-400"}`}>{isSaving ? "저장 중..." : "수업기록 설정 저장"}</button><span role="status" aria-live="polite" className="text-xs font-semibold text-slate-600">{isSaving ? "저장 중입니다." : isRecordSettingsDirty ? "저장하지 않은 변경사항" : `저장 완료 · ${recordSettings.updatedAt ? new Date(recordSettings.updatedAt).toLocaleString("ko-KR") : "시각 없음"}`}</span><span className="text-xs text-slate-500">설정 버전 {recordSettings.version}</span></div>
         </form> : <p className="mt-6 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">수업기록 설정을 불러오는 중입니다.</p>}
       </section>
 
-      <section className={selectedSection === "publication_settings" ? "mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8" : "hidden"}>
-        <div>
-          <h2 className="text-xl font-bold">보호자 공개 설정</h2>
-          <p className="mt-1 text-sm leading-6 text-slate-500">공개 승인된 자료에서 과목별 점수·이해도·참여도를 보호자에게 표시할지 설정합니다.</p>
-        </div>
-        <form onSubmit={submitPublicationSettings} className="mt-6 space-y-3">
-          {([
-            ["homeworkScore", "숙제 점수"],
-            ["understandingScore", "이해도"],
-            ["participationScore", "참여도"],
-          ] as const).map(([key, label]) => (
-            <label key={key} className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700">
-              <input type="checkbox" checked={publicationSettings[key]} onChange={(event) => setPublicationSettings((current) => ({ ...current, [key]: event.target.checked }))} className="h-4 w-4 accent-indigo-600" />
-              {label} 보호자 공개
-            </label>
-          ))}
-          <button type="submit" disabled={isLoading} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:bg-slate-300">공개 설정 저장</button>
-        </form>
-      </section>
       {selectedSection === "class_operations" ? <div className="mt-8"><ClassOperationsPanel /></div> : null}
     </div>
   );

@@ -4,6 +4,20 @@ export const LESSON_RECORD_LIMITS = {
   supplements: 3,
 } as const;
 
+export const LESSON_RECORD_PUBLICATION_POLICY_VERSION = 1;
+
+export type LessonRecordPublicationPolicy = {
+  version: number;
+  publicKeys: string[];
+};
+
+export type LessonRecordTestDefinition = {
+  id: string;
+  name: string;
+  maxScore: number;
+  isActive: boolean;
+};
+
 export type LessonRecordMetric = {
   id: string;
   code: string | null;
@@ -33,12 +47,41 @@ export type LessonRecordSettings = LessonRecordFormSnapshot & {
   academyId: string;
   version: number;
   updatedAt: string | null;
+  publicationPolicy: LessonRecordPublicationPolicy;
+  testDefinitions: LessonRecordTestDefinition[];
   limitExceeded: {
     tests: boolean;
     metrics: boolean;
     supplements: boolean;
   };
 };
+
+export function defaultLessonRecordPublicationPolicy(): LessonRecordPublicationPolicy {
+  return {
+    version: LESSON_RECORD_PUBLICATION_POLICY_VERSION,
+    publicKeys: [
+      "common_lesson_content",
+      "common_homework",
+      "student_memo",
+      `metric:${LEGACY_METRIC_IDS.homework}`,
+      `metric:${LEGACY_METRIC_IDS.understanding}`,
+      `metric:${LEGACY_METRIC_IDS.participation}`,
+      `supplement:${LEGACY_SUPPLEMENT_IDS.test}`,
+      `supplement:${LEGACY_SUPPLEMENT_IDS.homework}`,
+    ],
+  };
+}
+
+export function normalizeLessonRecordPublicationPolicy(value: unknown): LessonRecordPublicationPolicy {
+  const row = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const publicKeys = Array.isArray(row.publicKeys)
+    ? row.publicKeys.filter((key): key is string => typeof key === "string" && key.trim().length > 0)
+    : defaultLessonRecordPublicationPolicy().publicKeys;
+  return {
+    version: typeof row.version === "number" && row.version > 0 ? row.version : LESSON_RECORD_PUBLICATION_POLICY_VERSION,
+    publicKeys: [...new Set(publicKeys)].sort((left, right) => left.localeCompare(right)),
+  };
+}
 
 export const LEGACY_METRIC_IDS = {
   homework: "00000000-0000-4000-8000-000000000001",
@@ -123,12 +166,32 @@ export function normalizeLessonRecordForm(value: unknown): LessonRecordFormSnaps
 
 export function normalizeLessonRecordSettings(value: unknown, academyId: string): LessonRecordSettings {
   const row = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  const form = normalizeLessonRecordForm(row);
+  const form = normalizeLessonRecordForm({
+    ...row,
+    testsEnabled: typeof row.testsEnabled === "boolean" ? row.testsEnabled : row.tests_enabled,
+    studentMemoEnabled: typeof row.studentMemoEnabled === "boolean" ? row.studentMemoEnabled : row.student_memo_enabled,
+    commonRecordEnabled: typeof row.commonRecordEnabled === "boolean" ? row.commonRecordEnabled : row.common_record_enabled,
+    supplementTypes: Array.isArray(row.supplementTypes) ? row.supplementTypes : row.supplement_types,
+  });
   const activeCount = (items: Array<{ isActive: boolean }>) => items.filter((item) => item.isActive).length;
+  const rawTestDefinitions: unknown[] = Array.isArray(row.testDefinitions)
+    ? row.testDefinitions
+    : Array.isArray(row.test_definitions) ? row.test_definitions : [];
+  const testDefinitions = rawTestDefinitions
+      .map((item: unknown): LessonRecordTestDefinition | null => {
+        const test = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
+        const id = typeof test.id === "string" && test.id.trim() ? test.id.trim() : "";
+        const name = typeof test.name === "string" && test.name.trim() ? test.name.trim() : "테스트";
+        const maxScore = typeof test.maxScore === "number" && test.maxScore > 0 ? test.maxScore : 25;
+        return id ? { id, name, maxScore, isActive: test.isActive !== false } : null;
+      })
+      .filter((item): item is LessonRecordTestDefinition => Boolean(item));
   return {
     academyId,
     version: typeof row.version === "number" && row.version > 0 ? row.version : 1,
     updatedAt: typeof row.updated_at === "string" ? row.updated_at : null,
+    publicationPolicy: normalizeLessonRecordPublicationPolicy(row.publicationPolicy ?? row.publication_policy),
+    testDefinitions,
     ...form,
     limitExceeded: {
       tests: false,
@@ -138,7 +201,13 @@ export function normalizeLessonRecordSettings(value: unknown, academyId: string)
   };
 }
 
-export function toLessonRecordRow(form: LessonRecordFormSnapshot, academyId: string, profileId: string | null, version: number) {
+export function toLessonRecordRow(
+  form: LessonRecordFormSnapshot,
+  academyId: string,
+  profileId: string | null,
+  version: number,
+  publicationPolicy: LessonRecordPublicationPolicy = defaultLessonRecordPublicationPolicy(),
+) {
   return {
     academy_id: academyId,
     tests_enabled: form.testsEnabled,
@@ -146,6 +215,7 @@ export function toLessonRecordRow(form: LessonRecordFormSnapshot, academyId: str
     common_record_enabled: form.commonRecordEnabled,
     metrics: form.metrics,
     supplement_types: form.supplementTypes,
+    publication_policy: normalizeLessonRecordPublicationPolicy(publicationPolicy),
     version,
     updated_by_profile_id: profileId,
   };

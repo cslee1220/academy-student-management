@@ -4,9 +4,12 @@ import { AuthorizationError, requireAcademyAdminFromContext } from "@/lib/auth/a
 import {
   LESSON_RECORD_LIMITS,
   normalizeLessonRecordForm,
+  normalizeLessonRecordPublicationPolicy,
   normalizeLessonRecordSettings,
   toLessonRecordRow,
   type LessonRecordFormSnapshot,
+  type LessonRecordPublicationPolicy,
+  type LessonRecordTestDefinition,
 } from "@/lib/lesson-record-settings";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -85,6 +88,70 @@ async function ensureSettings(academyId: string) {
   return { admin, row: retried.data };
 }
 
+function testDefinitionFromValue(value: unknown): LessonRecordTestDefinition | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const id = typeof row.id === "string" && row.id.trim() ? row.id.trim() : "";
+  const name = typeof row.name === "string" && row.name.trim() ? row.name.trim() : "테스트";
+  const maxScoreValue = row.maxScore ?? row.max_score;
+  const maxScore = typeof maxScoreValue === "number" && maxScoreValue > 0 ? maxScoreValue : Number(maxScoreValue);
+  return id ? { id, name, maxScore: Number.isFinite(maxScore) && maxScore > 0 ? maxScore : 25, isActive: true } : null;
+}
+
+async function loadTestDefinitions(admin: ReturnType<typeof createSupabaseAdminClient>, academyId: string) {
+  const [definitionsResult, subjectRecordsResult] = await Promise.all([
+    admin.from("test_definitions").select("id, name, max_score").eq("academy_id", academyId),
+    admin.from("daily_subject_records").select("test_definitions").eq("academy_id", academyId),
+  ]);
+  if (definitionsResult.error || subjectRecordsResult.error) throw definitionsResult.error ?? subjectRecordsResult.error;
+  const definitions = new Map<string, LessonRecordTestDefinition>();
+  for (const row of definitionsResult.data ?? []) {
+    const definition = testDefinitionFromValue({ id: row.id, name: row.name, max_score: row.max_score });
+    if (definition) definitions.set(definition.id, definition);
+  }
+  for (const row of subjectRecordsResult.data ?? []) {
+    for (const item of Array.isArray(row.test_definitions) ? row.test_definitions : []) {
+      const definition = testDefinitionFromValue(item);
+      if (definition && !definitions.has(definition.id)) definitions.set(definition.id, definition);
+    }
+  }
+  return [...definitions.values()].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+}
+
+async function settingsResponse(admin: ReturnType<typeof createSupabaseAdminClient>, row: Record<string, unknown>, academyId: string) {
+  const testDefinitions = await loadTestDefinitions(admin, academyId);
+  const normalized = normalizeLessonRecordSettings(row, academyId);
+  return {
+    ...normalized,
+    publicationPolicy: parsePublicationPolicy(normalized.publicationPolicy, normalized.publicationPolicy, normalized, testDefinitions),
+    testDefinitions,
+  };
+}
+
+function parsePublicationPolicy(
+  value: unknown,
+  fallback: LessonRecordPublicationPolicy,
+  form: LessonRecordFormSnapshot,
+  testDefinitions: LessonRecordTestDefinition[],
+): LessonRecordPublicationPolicy {
+  if (value === undefined || value === null) return normalizeLessonRecordPublicationPolicy(fallback);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "invalid_publication_policy", "학부모 공개항목 설정 형식이 올바르지 않습니다.");
+  const row = value as Record<string, unknown>;
+  if (!Array.isArray(row.publicKeys) || row.publicKeys.some((key) => typeof key !== "string")) {
+    throw new HttpError(400, "invalid_publication_policy", "학부모 공개항목 key 형식이 올바르지 않습니다.");
+  }
+  const allowed = new Set<string>();
+  if (form.commonRecordEnabled) allowed.add("common_lesson_content").add("common_homework");
+  if (form.studentMemoEnabled) allowed.add("student_memo");
+  for (const metric of form.metrics) if (metric.isActive) allowed.add(`metric:${metric.id}`);
+  for (const type of form.supplementTypes) if (type.isActive) allowed.add(`supplement:${type.id}`);
+  if (form.testsEnabled) for (const definition of testDefinitions) if (definition.isActive) allowed.add(`test:${definition.id}`);
+  return {
+    version: 1,
+    publicKeys: [...new Set((row.publicKeys as string[]).map((key) => key.trim()).filter((key) => allowed.has(key)))].sort((left, right) => left.localeCompare(right)),
+  };
+}
+
 async function hasItemReferences(admin: ReturnType<typeof createSupabaseAdminClient>, academyId: string, ids: string[], field: "metrics" | "supplementTypes") {
   if (!ids.length) return false;
   const [{ data: records, error: recordsError }, { data: tasks, error: tasksError }] = await Promise.all([
@@ -105,8 +172,8 @@ export async function GET(request: NextRequest) {
   try {
     const requestedAcademyId = request.nextUrl.searchParams.get("academyId") ?? undefined;
     const { academyId } = await requireAcademyAdminFromContext(requestedAcademyId);
-    const { row } = await ensureSettings(academyId);
-    return NextResponse.json({ data: normalizeLessonRecordSettings(row, academyId) });
+    const { admin, row } = await ensureSettings(academyId);
+    return NextResponse.json({ data: await settingsResponse(admin, row, academyId) });
   } catch (error) {
     return errorResponse(error);
   }
@@ -123,6 +190,8 @@ export async function POST(request: NextRequest) {
     const expectedVersion = parseVersion(input.expectedVersion);
     if (expectedVersion !== undefined && expectedVersion !== current.version) throw new HttpError(409, "resource_changed", "다른 관리자가 먼저 설정을 변경했습니다. 최신 설정을 다시 확인해 주세요.");
     const form = parseForm(input.settings);
+    const rawSettings = input.settings as Record<string, unknown>;
+    const testDefinitions = await loadTestDefinitions(admin, academyId);
     const removeMetricIds = stringIds(input.removeMetricIds, "removeMetricIds");
     const removeSupplementIds = stringIds(input.removeSupplementTypeIds, "removeSupplementTypeIds");
     if (removeMetricIds.some((id) => form.metrics.some((item) => item.id === id)) || removeSupplementIds.some((id) => form.supplementTypes.some((item) => item.id === id))) throw new HttpError(400, "invalid_remove", "삭제할 항목은 새 설정에 포함할 수 없습니다.");
@@ -133,8 +202,21 @@ export async function POST(request: NextRequest) {
       metrics: form.metrics.filter((item) => !removeMetricIds.includes(item.id)),
       supplementTypes: form.supplementTypes.filter((item) => !removeSupplementIds.includes(item.id)),
     };
+    const currentSettings = normalizeLessonRecordSettings(current, academyId);
+    const currentPublicationPolicy = parsePublicationPolicy(
+      currentSettings.publicationPolicy,
+      currentSettings.publicationPolicy,
+      currentSettings,
+      testDefinitions,
+    );
+    const publicationPolicy = parsePublicationPolicy(
+      rawSettings.publicationPolicy ?? input.publicationPolicy,
+      currentPublicationPolicy,
+      nextForm,
+      testDefinitions,
+    );
     const nextVersion = current.version + 1;
-    const historyValue = { ...nextForm, version: nextVersion };
+    const historyValue = { ...nextForm, publicationPolicy, version: nextVersion };
     const { data: updated, error: transactionError } = await admin.rpc("save_academy_lesson_record_settings_transaction", {
       p_academy_id: academyId,
       p_expected_version: current.version,
@@ -143,6 +225,7 @@ export async function POST(request: NextRequest) {
       p_common_record_enabled: nextForm.commonRecordEnabled,
       p_metrics: nextForm.metrics,
       p_supplement_types: nextForm.supplementTypes,
+      p_publication_policy: publicationPolicy,
       p_actor_profile_id: profileId,
       p_old_value_json: current,
       p_new_value_json: historyValue,
@@ -154,7 +237,7 @@ export async function POST(request: NextRequest) {
       throw transactionError;
     }
     if (!updated) throw new HttpError(409, "resource_changed", "다른 관리자가 먼저 설정을 변경했습니다. 최신 설정을 다시 확인해 주세요.");
-    return NextResponse.json({ data: normalizeLessonRecordSettings(updated, academyId) });
+    return NextResponse.json({ data: await settingsResponse(admin, updated, academyId) });
   } catch (error) {
     return errorResponse(error);
   }

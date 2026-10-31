@@ -357,6 +357,7 @@ export default function ParentPage() {
         ) : null}
       </div>
 
+      {!isLoading && !error ? <p className="mt-5 rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-3 text-sm leading-6 text-indigo-900">이 화면에는 운영자가 공개한 자녀의 학습자료만 표시됩니다. 공개되지 않은 항목과 원본 식별자는 표시하지 않습니다.</p> : null}
       {isLoading ? <p className="mt-10 rounded-2xl bg-white p-8 text-center text-slate-500">학습 자료를 불러오는 중...</p> : null}
       {error ? (
         <section role="alert" aria-live="assertive" className="mt-10 rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm leading-7 text-amber-900 sm:p-6">
@@ -380,11 +381,15 @@ export default function ParentPage() {
               </div>
 
               {child.publications.length ? child.publications.map((publication) => (
-                <article key={publication.id} className="mt-6 min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
-                  <p className="break-words text-sm font-semibold text-slate-500">자료 기준일 · {publication.session_date ?? publication.session_id}</p>
-                  <p className="mt-1 text-xs text-slate-400">공개 완료 자료</p>
-                  <PublicationSummary snapshots={publication.snapshots} />
-                </article>
+                <details key={publication.id} open className="mt-6 min-w-0 rounded-xl border border-slate-200 bg-slate-50">
+                  <summary className="cursor-pointer list-none p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset sm:p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0"><p className="break-words text-sm font-semibold text-slate-500">자료 기준일 · {publication.session_date ?? "공개 기록"}</p><p className="mt-1 text-xs text-slate-400">공개 완료 자료 · 상세 내용 펼치기</p></div>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-600">{publication.snapshots.length}개 항목</span>
+                    </div>
+                  </summary>
+                  <div className="border-t border-slate-200 p-4 sm:p-5"><PublicationSummary snapshots={publication.snapshots} /></div>
+                </details>
               )) : <p className="mt-6 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">현재 공개된 학습자료가 없습니다.</p>}
             </section>
           )) : <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">연결된 자녀 정보가 없습니다.</section>}

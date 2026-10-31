@@ -10,6 +10,19 @@ function commonHomeworkLabel(subjectName: string | null) {
   return "공통숙제";
 }
 
+function policyKeySet(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  return new Set(value.filter((key): key is string => typeof key === "string"));
+}
+
+function policyAllows(keys: Set<string> | null, key: string) {
+  return keys === null || keys.has(key);
+}
+
+function jsonRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
 export async function GET() {
   try {
     const supabase = await createSupabaseServerClient();
@@ -141,7 +154,7 @@ export async function GET() {
     const [dailyPublicationAccessResult, dailySubjectsResult, dailyAttendanceResult, dailyHomeworkSnapshotsResult, dailyBlocksResult, dailyBlockStudentsResult] = await Promise.all([
       supabase
         .from("daily_record_publications")
-        .select("student_id, record_date")
+        .select("student_id, record_date, publication_policy_version, publication_policy_keys")
         .eq("academy_id", guardian.academy_id)
         .in("student_id", studentIds)
         .eq("status", "published"),
@@ -181,7 +194,7 @@ export async function GET() {
     }
 
     type DailySnapshot = { id: string; item_key: string; label_snapshot: string; value_json: Record<string, unknown> };
-    type DailyPublication = { id: string; student_id: string; session_id: string; session_date: string; status: "saved"; approved_at: null; snapshots: DailySnapshot[] };
+    type DailyPublication = { id: string; student_id: string; session_id: string; session_date: string; status: "saved"; approved_at: null; publicationPolicyKeys: Set<string> | null; publicationPolicyVersion: number | null; snapshots: DailySnapshot[] };
     const publishedDailyKeys = new Set(
       (dailyPublicationAccessResult.data ?? []).map((publication) => `${publication.student_id}:${publication.record_date}`),
     );
@@ -197,6 +210,8 @@ export async function GET() {
         session_date: recordDate,
         status: "saved",
         approved_at: null,
+        publicationPolicyKeys: policyKeySet((dailyPublicationAccessResult.data ?? []).find((row) => row.student_id === studentId && row.record_date === recordDate)?.publication_policy_keys),
+        publicationPolicyVersion: (dailyPublicationAccessResult.data ?? []).find((row) => row.student_id === studentId && row.record_date === recordDate)?.publication_policy_version ?? null,
         snapshots: [],
       };
       dailyPublicationMap.set(key, created);
@@ -227,6 +242,32 @@ export async function GET() {
     for (const row of dailySubjectsResult.data ?? []) {
       if (row.save_state !== "final" || !publishedDailyKeys.has(`${row.student_id}:${row.record_date}`)) continue;
       const publication = getDailyPublication(row.student_id, row.record_date);
+      const policyKeys = publication.publicationPolicyKeys;
+      const formSnapshot = jsonRecord(row.record_form_snapshot);
+      const rawMetricDefinitions = Array.isArray(formSnapshot.metrics) ? formSnapshot.metrics : [];
+      const metricDefinitions = rawMetricDefinitions.filter((item) => {
+        const definition = jsonRecord(item);
+        const id = typeof definition.id === "string" ? definition.id : "";
+        return id && policyAllows(policyKeys, `metric:${id}`);
+      });
+      const metricIdsByCode = new Map(rawMetricDefinitions.map((item) => {
+        const definition = jsonRecord(item);
+        return [typeof definition.code === "string" ? definition.code : "", typeof definition.id === "string" ? definition.id : ""];
+      }));
+      const metricAllowed = (code: string, fallbackId: string) => policyAllows(policyKeys, `metric:${metricIdsByCode.get(code) || fallbackId}`);
+      const metricValues = Object.fromEntries(Object.entries(jsonRecord(row.metric_values)).filter(([id]) => policyAllows(policyKeys, `metric:${id}`)));
+      const rawSupplementDefinitions = Array.isArray(formSnapshot.supplementTypes) ? formSnapshot.supplementTypes : [];
+      const supplementIdsByCode = new Map(rawSupplementDefinitions.map((item) => {
+        const definition = jsonRecord(item);
+        return [typeof definition.code === "string" ? definition.code : "", typeof definition.id === "string" ? definition.id : ""];
+      }));
+      const supplementAllowed = (code: string, fallbackId: string) => policyAllows(policyKeys, `supplement:${supplementIdsByCode.get(code) || fallbackId}`);
+      const supplementItems = (Array.isArray(row.supplement_items) ? row.supplement_items : []).filter((item) => {
+        const supplement = jsonRecord(item);
+        return typeof supplement.typeId === "string" && policyAllows(policyKeys, `supplement:${supplement.typeId}`);
+      });
+      const visibleTestSupplement = Boolean(row.is_test_supplementary) && supplementAllowed("test", "00000000-0000-4000-8000-000000000011");
+      const visibleHomeworkSupplement = Boolean(row.is_homework_supplementary) && supplementAllowed("homework", "00000000-0000-4000-8000-000000000012");
       publication.snapshots.push({
         id: `daily-subject-${row.id}`,
         item_key: `subject:${row.block_id}`,
@@ -234,19 +275,19 @@ export async function GET() {
         value_json: {
           subjectName: row.subject_name_snapshot,
           teacherName: row.teacher_name_snapshot,
-          homeworkScore: row.homework_score,
-          understandingScore: row.understanding_score,
-          participationScore: row.participation_score,
-          metricValues: row.metric_values ?? {},
-          metricDefinitions: row.record_form_snapshot?.metrics ?? [],
-          supplementItems: row.supplement_items ?? [],
-          isSupplementary: row.is_supplementary,
-           isTestSupplementary: row.is_test_supplementary,
-           testSupplementDate: row.test_supplement_date,
-           isHomeworkSupplementary: row.is_homework_supplementary,
-           homeworkSupplementDate: row.homework_supplement_date,
-           homeworkSupplementContent: row.homework_supplement_content,
-          publicNote: row.public_note,
+          homeworkScore: metricAllowed("homework", "00000000-0000-4000-8000-000000000001") ? row.homework_score : null,
+          understandingScore: metricAllowed("understanding", "00000000-0000-4000-8000-000000000002") ? row.understanding_score : null,
+          participationScore: metricAllowed("participation", "00000000-0000-4000-8000-000000000003") ? row.participation_score : null,
+          metricValues,
+          metricDefinitions,
+          supplementItems,
+          isSupplementary: supplementItems.some((item) => jsonRecord(item).enabled === true) || visibleTestSupplement || visibleHomeworkSupplement,
+          isTestSupplementary: visibleTestSupplement,
+          testSupplementDate: visibleTestSupplement ? row.test_supplement_date : null,
+          isHomeworkSupplementary: visibleHomeworkSupplement,
+          homeworkSupplementDate: visibleHomeworkSupplement ? row.homework_supplement_date : null,
+          homeworkSupplementContent: visibleHomeworkSupplement ? row.homework_supplement_content : null,
+          publicNote: policyAllows(policyKeys, "student_memo") ? row.public_note : null,
         },
       });
       const definitions = Array.isArray(row.test_definitions) ? row.test_definitions : [];
@@ -263,6 +304,8 @@ export async function GET() {
       for (const definition of definitions) {
         if (!definition || typeof definition !== "object") continue;
         const item = definition as Record<string, unknown>;
+        const definitionId = String(item.id ?? item.sequenceNo ?? publication.snapshots.length);
+        if (!policyAllows(policyKeys, `test:${definitionId}`)) continue;
         const savedName = typeof item.name === "string" && item.name.trim() ? item.name.trim() : "";
         const isLegacyWordTest = savedName === "단어테스트" && typeof item.id === "string" && item.id.startsWith("test-");
         const testName = isLegacyWordTest && operationGroup === "A"
@@ -275,7 +318,7 @@ export async function GET() {
         const result = results.find((candidate) => candidate && typeof candidate === "object" && (candidate as Record<string, unknown>).testDefinitionId === item.id) as Record<string, unknown> | undefined;
         publication.snapshots.push({
           id: `daily-test-${row.id}-${String(item.id ?? item.sequenceNo ?? publication.snapshots.length)}`,
-          item_key: `test:${row.block_id}:${String(item.id ?? item.sequenceNo ?? publication.snapshots.length)}`,
+          item_key: `test:${row.block_id}:${definitionId}`,
           label_snapshot: testName,
           value_json: { name: testName, maxScore: item.maxScore, score: result?.score ?? null, nonAttemptReason: result?.nonAttemptReason ?? null },
         });
@@ -296,14 +339,18 @@ export async function GET() {
     for (const homework of dailyHomeworkSnapshotsResult.data ?? []) {
       if (!publishedDailyKeys.has(`${homework.student_id}:${homework.record_date}`)) continue;
       const publication = getDailyPublication(homework.student_id, homework.record_date);
+      const policyKeys = publication.publicationPolicyKeys;
+      const showLessonContent = policyAllows(policyKeys, "common_lesson_content");
+      const showHomework = policyAllows(policyKeys, "common_homework");
+      if (!showLessonContent && !showHomework) continue;
       publication.snapshots.push({
         id: `daily-homework-${homework.daily_common_homework_id}-${homework.student_id}`,
         item_key: `common_homework:${homework.subject_name_snapshot ?? "common"}:${homework.daily_common_homework_id}`,
         label_snapshot: commonHomeworkLabel(homework.subject_name_snapshot),
         value_json: {
-          content: homework.no_homework ? null : homework.homework_content,
-          lessonContent: homework.lesson_content,
-          noHomework: homework.no_homework,
+          content: showHomework && !homework.no_homework ? homework.homework_content : null,
+          lessonContent: showLessonContent ? homework.lesson_content : null,
+          noHomework: showHomework ? homework.no_homework : null,
           subjectName: homework.subject_name_snapshot,
         },
       });
@@ -330,7 +377,14 @@ export async function GET() {
           session_date: bundleSessionDateMap.get(bundle.session_id) ?? null,
           snapshots: snapshotsByBundle.get(bundle.id) ?? [],
         })),
-        ...[...dailyPublicationMap.values()].filter((publication) => publication.student_id === studentId),
+        ...[...dailyPublicationMap.values()]
+          .filter((publication) => publication.student_id === studentId)
+          .map((publication) => {
+            const { publicationPolicyKeys, publicationPolicyVersion, ...output } = publication;
+            void publicationPolicyKeys;
+            void publicationPolicyVersion;
+            return output;
+          }),
       ].sort((left, right) => (right.session_date ?? right.session_id).localeCompare(left.session_date ?? left.session_id)),
     })).filter((row) => row.student !== null);
 
