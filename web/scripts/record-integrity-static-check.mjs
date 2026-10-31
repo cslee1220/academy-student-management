@@ -3,12 +3,19 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8");
+const guardianHomeRoute = read("src/app/api/guardian/home/route.ts");
 const checks = [
   ["teacher payload omits removed homework supplement content", !read("src/app/api/teacher/daily-records/route.ts").includes("homework_content: row.homework_supplement_content")],
   ["teacher payload carries supplement task version", read("src/app/api/teacher/daily-records/route.ts").includes("task_version: row.supplement_task_version")],
   ["settings API uses atomic settings RPC", read("src/app/api/admin/record-settings/route.ts").includes("save_academy_lesson_record_settings_transaction")],
   ["settings API does not separately insert history", !read("src/app/api/admin/record-settings/route.ts").includes('from("academy_setting_history").insert')],
-  ["guardian no-homework content is redacted", read("src/app/api/guardian/home/route.ts").includes("content: homework.no_homework ? null : homework.homework_content")],
+  ["guardian no-homework content is redacted", [
+    guardianHomeRoute.includes('const showHomework = policyAllows(policyKeys, "common_homework");'),
+    guardianHomeRoute.includes("if (!showLessonContent && !showHomework) continue;"),
+    guardianHomeRoute.includes("content: showHomework && !homework.no_homework ? homework.homework_content : null"),
+    guardianHomeRoute.includes("noHomework: showHomework ? homework.no_homework : null"),
+    !guardianHomeRoute.includes("content: homework.homework_content"),
+  ].every(Boolean)],
   ["admin block filter validates subject identity", read("src/app/api/admin/teacher-records/route.ts").includes("blockById.get(row.block_id)?.subject_id === row.subject_id")],
   ["active metric limit is used by settings UI", read("src/app/admin/academic/page.tsx").includes("current.metrics.filter((item) => item.isActive).length >= LESSON_RECORD_LIMITS.metrics")],
   ["supplement task migration checks task version", read("supabase/migrations/20261029120701_harden_record_data_integrity.sql").includes("supplement task version conflict")],
