@@ -587,13 +587,28 @@ async function main() {
   let unauthorizedTeacher;
   let tempStudentId;
   let tempGuardianId;
+  let createdLevelId;
   try {
     fixture = await chooseRecordFixture();
-    const [school] = await rows("schools", (query) => query.eq("academy_id", config.academyId).eq("is_active", true).limit(1));
-    const [level] = await rows("academy_levels", (query) => query.eq("academy_id", config.academyId).eq("is_active", true).order("display_order", { ascending: true }).limit(1));
+    const schools = await rows("schools", (query) => query.eq("academy_id", config.academyId).eq("is_active", true));
+    const levels = await rows("academy_levels", (query) => query.eq("academy_id", config.academyId).eq("is_active", true).order("display_order", { ascending: true }));
+    const school = schools.find((candidate) => levels.some((candidateLevel) => candidateLevel.school_level === candidate.school_level)) ?? schools[0];
+    let level = levels.find((candidate) => candidate.school_level === school?.school_level) ?? levels[0];
     const [term] = await rows("terms", (query) => query.eq("academy_id", config.academyId).eq("is_current", true).limit(1));
     const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date());
-    assert(school && level && term, "관리자 브라우저 fixture에 필요한 학교·레벨·학기가 없습니다.");
+    assert(school && term, "관리자 브라우저 fixture에 필요한 학교·학기가 없습니다.");
+    if (!level || level.school_level !== school.school_level) {
+      createdLevelId = randomUUID();
+      level = {
+        id: createdLevelId,
+        academy_id: config.academyId,
+        name: `__BROWSER_E2E_LEVEL__${Date.now()}`,
+        school_level: school.school_level,
+        is_active: true,
+        display_order: 999,
+      };
+      await insertRows("academy_levels", [level]);
+    }
 
     supportTeacher = await createTemporaryTeacher("__BROWSER_E2E_SUPPORT_TEACHER__");
     unauthorizedTeacher = await createTemporaryTeacher("__BROWSER_E2E_UNAUTHORIZED_TEACHER__");
@@ -623,7 +638,7 @@ async function main() {
         currentStatus: "enrolled",
       },
     });
-    assert(createStudent.status === 200 && createStudent.payload?.data?.id, `관리자 학생 등록 실패: ${createStudent.status}`);
+    assert(createStudent.status === 200 && createStudent.payload?.data?.id, `관리자 학생 등록 실패: ${createStudent.status} ${createStudent.payload?.error?.code ?? "unknown"} ${createStudent.payload?.error?.message ?? ""}`);
     tempStudentId = createStudent.payload.data.id;
     const renamed = `__BROWSER_E2E_STUDENT_RENAMED__${suffix}`;
     const renameStudent = await browserFetch(adminBrowser.cdp, "/api/admin/students", {
@@ -811,6 +826,7 @@ async function main() {
       await cleanupGuardian(tempGuardianId).catch((error) => console.error(`[CLEANUP] guardian: ${error.message}`));
       await cleanupStudent(tempStudentId).catch((error) => console.error(`[CLEANUP] student: ${error.message}`));
       await cleanupAssignmentFixture(assignmentFixture).catch((error) => console.error(`[CLEANUP] assignment fixture: ${error.message}`));
+      if (createdLevelId) await removeRows("academy_levels", (query) => query.eq("academy_id", config.academyId).eq("id", createdLevelId)).catch((error) => console.error(`[CLEANUP] level fixture: ${error.message}`));
       await removeTemporaryTeacher(unauthorizedTeacher).catch((error) => console.error(`[CLEANUP] unauthorized teacher: ${error.message}`));
       await removeTemporaryTeacher(supportTeacher).catch((error) => console.error(`[CLEANUP] support teacher: ${error.message}`));
       await cleanupSessionFixture(fixture).catch((error) => console.error(`[CLEANUP] session: ${error.message}`));

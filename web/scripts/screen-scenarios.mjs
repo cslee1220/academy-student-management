@@ -106,7 +106,7 @@ const academicPageSource = fs.readFileSync(path.join(webDirectory, "src", "app",
 const academicRouteSource = fs.readFileSync(path.join(webDirectory, "src", "app", "api", "admin", "academic", "route.ts"), "utf8");
 assert(academicPeriodPage.status === 200 && academicPageSource.includes("학년도·학기 설정") && academicPageSource.includes("학년도 등록") && academicPageSource.includes("학기 등록") && academicPageSource.includes("학기 이름") && academicPageSource.includes("현재 운영기간으로 저장") && academicPageSource.includes("현재·예정") && academicPageSource.includes("보관 이력") && academicPageSource.includes("학년도 선택") && !academicPageSource.includes("학년도·학기 검색") && !academicPageSource.includes("연대") && !academicPageSource.includes("이 학년도에 학기 추가") && academicRouteSource.includes("manual_academic_periods") && !academicPageSource.includes("deleteSchoolYear") && !academicPageSource.includes("학년도 강제 삭제"), "학년도·학기 수동 설정 화면이 준비되지 않았습니다.");
 console.log("[PASS] 학년도·학기 수동 설정 및 장기 이력 필터 화면");
-const academicMenuKeys = ["academic_periods", "operation_types", "operation_settings", "schools", "subjects", "academy_levels", "teachers", "classrooms", "vehicles", "classes", "class_operations", "exam_classes", "publication_settings", "grade_promotions"];
+const academicMenuKeys = ["academic_periods", "operation_types", "operation_settings", "schools", "subjects", "academy_levels", "teachers", "classrooms", "vehicles", "classes", "class_operations", "exam_classes", "record_settings", "grade_promotions"];
 assert(academicPageSource.includes("academicMenuGroups") && academicPageSource.includes("학사 기본 운영 기준") && academicPageSource.includes("기초 정보 등록") && academicPageSource.includes("반 및 수업 구성") && academicPageSource.includes("학년도 전환 및 학생 배정") && academicPageSource.includes("운영구분") && academicPageSource.includes("공통수업 운영") && academicPageSource.includes("/admin/students?section=class_batch") && academicPageSource.includes("/admin/students?section=exam_batch") && academicMenuKeys.every((key) => academicPageSource.includes(`settingMenuCard("${key}")`)), "학사 설정 메인 메뉴가 4단계 순서로 구성되지 않았거나 메뉴가 누락되었습니다.");
 console.log("[PASS] 학사 설정 메인 메뉴 16개 및 4단계 그룹 누락 점검");
 const operationSettingsPage = await request("/admin/academic?section=operation_settings", adminJar);
@@ -157,11 +157,11 @@ assert(studentHistory.status === 200 && studentHistoryPayload?.data?.student?.id
 console.log("[PASS] 운영자 학생 학습이력 조회");
 const studentOverview = await request("/api/admin/student-overview?asOfDate=2026-10-06&status=all", adminJar);
 const studentOverviewPayload = await studentOverview.json().catch(() => null);
-const classroomSection = studentOverviewPayload?.data?.sections?.find((section) => section.key === "classrooms");
-const classroomGroups = classroomSection?.groups ?? [];
-const classroomStudentIds = classroomGroups.flatMap((group) => group.students ?? []).map((student) => student.id);
-assert(studentOverview.status === 200 && classroomSection?.distinctStudentCount === new Set(classroomStudentIds).size, "강의실별 학생 현황의 총 인원이 과목별 중복을 제외하지 않았습니다.");
-console.log("[PASS] 강의실별 학생 현황 과목 중복 제거");
+const classSection = studentOverviewPayload?.data?.sections?.find((section) => section.key === "classes");
+const classGroups = classSection?.groups ?? [];
+const classStudentIds = classGroups.flatMap((group) => group.students ?? []).map((student) => student.id);
+assert(studentOverview.status === 200 && classSection?.distinctStudentCount === new Set(classStudentIds).size, "반별 학생 현황의 총 인원이 과목별 중복을 제외하지 않았습니다.");
+console.log("[PASS] 반별 학생 현황 과목 중복 제거");
 
 const teacherJar = new Map();
 const teacherLogin = await post("/api/auth/teacher-login", { loginId: "T-900001", password: teacherPassword }, teacherJar);

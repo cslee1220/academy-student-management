@@ -19,6 +19,10 @@ select ok(
   'authenticated cannot execute the settings transaction directly'
 );
 
+select private.ensure_academy_lesson_record_settings(
+  '21000000-0000-4000-8000-000000000001'::uuid
+);
+
 create temporary table settings_before on commit drop as
 select *
 from public.academy_lesson_record_settings

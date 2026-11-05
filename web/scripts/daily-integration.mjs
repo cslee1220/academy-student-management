@@ -397,6 +397,20 @@ async function main() {
       .eq("block_id", blockId)
       .eq("student_id", selected.student.id)
       .eq("record_date", selected.recordDate));
+    const currentSupplementTaskRows = currentSubjectRows[0]?.id
+      ? await rows("student_supplement_tasks", (query) => query
+        .eq("academy_id", config.academyId)
+        .eq("source_subject_record_id", currentSubjectRows[0].id))
+      : [];
+    const currentBlock = selected.blocks.find((block) => block.id === blockId);
+    const currentHomeworkRows = currentBlock?.subject_id
+      ? await rows("daily_common_homework", (query) => query
+        .eq("academy_id", config.academyId)
+        .eq("class_id", dailyFixture.classId)
+        .eq("subject_id", currentBlock.subject_id)
+        .eq("operation_group", "A")
+        .eq("record_date", selected.recordDate))
+      : [];
     return request("/api/teacher/daily-records", {
       jar: teacherJar,
       method: "POST",
@@ -415,6 +429,7 @@ async function main() {
           isTestSupplementary: true,
           testSupplementDate: selected.recordDate,
           subjectVersion: currentSubjectRows[0]?.version ?? 0,
+          supplementTaskVersion: currentSupplementTaskRows[0]?.version ?? 0,
           publicNote,
           testResults: [],
         }],
@@ -423,7 +438,7 @@ async function main() {
             lessonContent: "일별 통합 테스트 수업 내용",
             content: "일별 통합 테스트 숙제",
             noHomework: false,
-            version: null,
+            version: currentHomeworkRows[0]?.version ?? null,
           },
         },
       },

@@ -80,12 +80,19 @@ async function waitFor(check, label, timeout = 15000) {
 }
 
 async function createFixture() {
-  const [termResult, operationTypeResult] = await Promise.all([
+  const [termResult, operationTypeResult, subjectsResult, teacherResult, classroomResult] = await Promise.all([
     admin.from("terms").select("id, start_date, end_date").eq("academy_id", config.academyId).eq("is_current", true).maybeSingle(),
     admin.from("academy_operation_types").select("id").eq("academy_id", config.academyId).eq("code", "regular").eq("is_active", true).maybeSingle(),
+    admin.from("subjects").select("id, name").eq("academy_id", config.academyId).eq("is_active", true).limit(10),
+    admin.from("profiles").select("id, display_name").eq("id", "31000000-0000-4000-8000-000000000002").maybeSingle(),
+    admin.from("classrooms").select("id, name").eq("academy_id", config.academyId).eq("is_active", true).limit(1),
   ]);
   if (termResult.error || !termResult.data) throw new Error(`current term lookup failed: ${termResult.error?.message ?? "missing term"}`);
   if (operationTypeResult.error || !operationTypeResult.data) throw new Error(`operation type lookup failed: ${operationTypeResult.error?.message ?? "missing operation type"}`);
+  if (subjectsResult.error || !subjectsResult.data?.length) throw new Error(`active subject lookup failed: ${subjectsResult.error?.message ?? "missing subject"}`);
+  if (teacherResult.error || !teacherResult.data) throw new Error(`teacher profile lookup failed: ${teacherResult.error?.message ?? "missing teacher"}`);
+  const subject = subjectsResult.data.find((row) => row.id === "45000000-0000-4000-8000-000000000001") ?? subjectsResult.data[0];
+  const classroom = classroomResult.data?.[0] ?? null;
 
   const suffix = Date.now().toString();
   const fixture = {
@@ -147,7 +154,7 @@ async function createFixture() {
     id: fixture.teacherAssignmentId,
     academy_id: config.academyId,
     class_id: fixture.classId,
-    subject_id: "45000000-0000-4000-8000-000000000001",
+    subject_id: subject.id,
     teacher_id: "31000000-0000-4000-8000-000000000002",
     effective_start: termResult.data.start_date,
     effective_end: termResult.data.end_date,
@@ -157,13 +164,13 @@ async function createFixture() {
     id: fixture.blockId,
     academy_id: config.academyId,
     class_id: fixture.classId,
-    subject_id: "45000000-0000-4000-8000-000000000001",
+    subject_id: subject.id,
     teacher_id: "31000000-0000-4000-8000-000000000002",
-    classroom_id: null,
-    classroom_name_snapshot: null,
+    classroom_id: classroom?.id ?? null,
+    classroom_name_snapshot: classroom?.name ?? null,
     class_name_snapshot: fixture.className,
-    subject_name_snapshot: "영어",
-    teacher_name_snapshot: "데모 교사",
+    subject_name_snapshot: subject.name,
+    teacher_name_snapshot: teacherResult.data.display_name,
     weekday: "mon",
     start_time: "18:00",
     end_time: "19:00",
@@ -312,9 +319,17 @@ async function main() {
 
     await cdp.send("Page.navigate", { url: `${config.baseUrl}/teacher/records` });
     await waitFor(async () => evaluate(cdp, `document.body.innerText.includes('날짜별 수업 기록') && [...document.querySelectorAll('select')].some((element) => [...element.options].some((option) => option.value))`), "교사 기록 화면");
+    const optionsDiagnostic = await evaluate(cdp, `fetch('/api/teacher/daily-record-options?recordDate=${encodeURIComponent(config.recordDate)}&includeEmpty=true').then(async (response) => ({ status: response.status, body: await response.json().catch(() => null) }))`);
     await evaluate(cdp, `(() => {
-      const select = [...document.querySelectorAll('select')].find((element) => [...element.options].some((option) => option.value));
-      const value = [...select.options].find((option) => option.value)?.value;
+      const target = ${JSON.stringify(fixture.className)};
+      const selects = [...document.querySelectorAll('select')];
+      const select = selects.find((element) => [...element.options].some((candidate) => candidate.value && candidate.textContent.includes(target)));
+      const option = select && [...select.options].find((candidate) => candidate.value && candidate.textContent.includes(target));
+      if (!select || !option) {
+        const options = selects.flatMap((element, index) => [...element.options].map((candidate) => 'select#' + index + ': ' + candidate.textContent.trim()));
+        throw new Error('장애 재시도 fixture 수업묶음을 찾지 못했습니다. apiStatus=' + ${JSON.stringify(optionsDiagnostic.status)} + ' apiBlockCount=' + ${JSON.stringify(optionsDiagnostic.body?.data?.blocks?.length ?? -1)} + ' options=' + options.join(' | '));
+      }
+      const value = option.value;
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
       setter.call(select, value);
       select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -342,13 +357,20 @@ async function main() {
       homework.dispatchEvent(new Event('input', { bubbles: true }));
       return homework.value;
     })()`);
-    await evaluate(cdp, `([...document.querySelectorAll('button')].find((button) => button.textContent.includes('임시저장'))).click()`);
-    await waitFor(async () => evaluate(cdp, `document.body.innerText.includes('기록을 저장하지 못했습니다.') || document.body.innerText.includes('Failed to fetch')`), "첫 저장 오류 상태");
-    const afterFailure = await evaluate(cdp, `({ homework: document.querySelector('textarea')?.value ?? '', error: document.body.innerText.includes('기록을 저장하지 못했습니다.') || document.body.innerText.includes('Failed to fetch') })`);
+    await sleep(250);
+    await evaluate(cdp, `([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '임시저장')).click()`);
+    await waitFor(async () => failedSaveRequests === 1, "첫 저장 요청", 5000);
+    try {
+      await waitFor(async () => evaluate(cdp, `Boolean(document.querySelector('[role="alert"]')?.textContent?.trim())`), "첫 저장 오류 상태");
+    } catch (error) {
+      const snapshot = await evaluate(cdp, `document.body.innerText.slice(-1800)`).catch(() => "unavailable");
+      throw new Error(`${error instanceof Error ? error.message : String(error)} snapshot=${snapshot}`);
+    }
+    const afterFailure = await evaluate(cdp, `({ homework: document.querySelector('textarea')?.value ?? '', error: Boolean(document.querySelector('[role="alert"]')?.textContent?.trim()) })`);
     afterFailure.homework = await evaluate(cdp, `([...document.querySelectorAll('textarea')].find((candidate) => candidate.placeholder.includes('교재') || candidate.placeholder.includes('32')) ?? [...document.querySelectorAll('textarea')].at(-1))?.value ?? ''`);
     assert(afterFailure.error && afterFailure.homework === "네트워크 장애 후 재시도 숙제", "첫 저장 실패 후 입력값이 유지되지 않았습니다.");
 
-    await evaluate(cdp, `([...document.querySelectorAll('button')].find((button) => button.textContent.includes('임시저장'))).click()`);
+    await evaluate(cdp, `([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '임시저장')).click()`);
     await waitFor(async () => evaluate(cdp, `document.body.innerText.includes('임시저장했습니다.')`), "재시도 성공 상태");
     assert(failedSaveRequests === 1 && continuedSaveRequests === 1, `저장 실패·재시도 횟수가 예상과 다릅니다: ${failedSaveRequests}/${continuedSaveRequests}`);
     const saved = await admin.from("daily_common_homework").select("content").eq("academy_id", config.academyId).eq("class_id", fixture.classId).eq("record_date", config.recordDate).maybeSingle();
