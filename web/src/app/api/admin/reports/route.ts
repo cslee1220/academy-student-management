@@ -106,6 +106,8 @@ type ClassAssignmentRow = {
   assignment_role: AssignmentRole;
 };
 
+type ReportClassOption = { id: string; name: string; category: string | null };
+
 type StatusHistoryRow = {
   id: string;
   student_id: string;
@@ -206,6 +208,8 @@ type ReportDetailRow = {
   subjectName?: string | null;
   classroomName?: string | null;
   classDisplay?: string | null;
+  classIds?: string[];
+  previousClassId?: string | null;
   previousClassDisplay?: string | null;
   expectedReturnDate?: string | null;
   daysUntilReturn?: number;
@@ -397,6 +401,7 @@ function makeSupplementDetailRows(tasks: SupplementTaskRow[], students: StudentR
         name: student.name,
         statusLabel: statusLabel(student.current_status),
         date: task.record_date,
+        classIds: [task.class_id],
         className: task.class_name_snapshot ?? null,
         subjectName: task.subject_name_snapshot ?? null,
         classroomName: task.classroom_name_snapshot ?? null,
@@ -1171,9 +1176,12 @@ export async function GET(request: NextRequest) {
       if (riskUpsertError) databaseError(riskUpsertError, "위험군 결과를 저장하지 못했습니다.");
     }
 
-    let detail: { section: ReportDetailSection; item: ReportDetailItem; rows: ReportDetailRow[]; groups?: SupplementGroup[]; withdrawalHistory?: WithdrawalConcernHistoryRow[] } | undefined;
+    let detail: { section: ReportDetailSection; item: ReportDetailItem; rows: ReportDetailRow[]; groups?: SupplementGroup[]; withdrawalHistory?: WithdrawalConcernHistoryRow[]; classOptions?: ReportClassOption[] } | undefined;
     if (detailSection && detailItem) {
       const studentById = new Map(studentRows.map((student) => [student.id, student]));
+      const { data: reportClassRows, error: reportClassError } = await admin.from("classes").select("id, name, category").eq("academy_id", academyId).order("name", { ascending: true });
+      if (reportClassError) databaseError(reportClassError, "반 목록을 불러오지 못했습니다.");
+      const reportClassOptions = (reportClassRows ?? []) as ReportClassOption[];
       const toStudentDetail = (student: StudentRow, statusOverride?: string): ReportDetailRow => ({
         studentId: student.id,
         studentNo: student.student_no,
@@ -1183,6 +1191,7 @@ export async function GET(request: NextRequest) {
       const toStudentDetailWithSchedule = (student: StudentRow, date: string, statusOverride?: string) => ({
         ...toStudentDetail(student, statusOverride),
         classDisplay: scheduleDisplayForStudentDate(student.id, date, scheduleBlockRows, classAssignmentRows) || null,
+        classIds: classAssignmentRows.filter((assignment) => assignment.student_id === student.id && assignment.start_date <= date && (!assignment.end_date || assignment.end_date >= date)).map((assignment) => assignment.class_id),
       });
       const monthlyFlowDetailRows = (flowItem: MonthlyFlowItem): ReportDetailRow[] => monthlyStudentFlow.rows[flowItem].flatMap((movement) => {
         const student = studentById.get(movement.studentId);
@@ -1257,6 +1266,7 @@ export async function GET(request: NextRequest) {
             attendanceStatus: summary.status,
             attendanceBySubject: summary.attendanceBySubject,
             classDisplay: scheduleDisplayForBlocks(scheduleBlockRows, summary.blockIds) || null,
+            classIds: [...new Set(scheduleBlockRows.filter((block) => summary.blockIds.has(block.id)).map((block) => block.class_id))],
           }];
         });
       const supplementDetails = detailItem === "supplement_target" || detailItem === "supplement_completed" || detailItem === "supplement_cancelled" || detailItem === "supplement_incomplete"
@@ -1277,6 +1287,7 @@ export async function GET(request: NextRequest) {
           ...toStudentDetail(student),
           date: [...missingDetail.dates].sort().join("\n"),
           classDisplay: scheduleDisplayForBlocks(scheduleBlockRows, missingDetail.blockIds) || null,
+          classIds: [...new Set(scheduleBlockRows.filter((block) => missingDetail.blockIds.has(block.id)).map((block) => block.class_id))],
         }];
       });
       const publicationDetailRows = publicationRows
@@ -1326,14 +1337,14 @@ export async function GET(request: NextRequest) {
         throw new HttpError(400, "invalid_detail", "상세 현황 구분과 항목이 일치하지 않습니다.");
       }
       if (detailSection === "student_status") {
-        detail = { section: detailSection, item: detailItem, rows: statusStudentRows[detailItem] ?? [] };
+        detail = { section: detailSection, item: detailItem, rows: statusStudentRows[detailItem] ?? [], classOptions: reportClassOptions };
       } else if (detailSection === "daily_attendance") {
         const rows = detailItem === "expected"
           ? detailSessionRows(null)
           : detailItem === "missing"
             ? detailSessionRows("미입력")
             : detailSessionRows(detailItem);
-        detail = { section: detailSection, item: detailItem, rows };
+        detail = { section: detailSection, item: detailItem, rows, classOptions: reportClassOptions };
       } else if (detailSection === "publication") {
         detail = { section: detailSection, item: detailItem, rows: publicationDetailRows };
       } else {
@@ -1364,6 +1375,8 @@ export async function GET(request: NextRequest) {
               ...toStudentDetail(student),
               date: assignment.start_date,
               classDisplay: scheduleDisplayForStudentDate(student.id, assignment.start_date, scheduleBlockRows, classAssignmentRows) || null,
+              classIds: [assignment.class_id],
+              previousClassId: previous.class_id,
               previousClassDisplay: scheduleDisplayForStudentDate(student.id, previous.end_date ?? subtractDays(assignment.start_date, 1), scheduleBlockRows, classAssignmentRows) || null,
             }];
           }),
@@ -1376,6 +1389,7 @@ export async function GET(request: NextRequest) {
           section: detailSection,
           item: detailItem,
           rows: operationRows[detailItem] ?? [],
+          classOptions: reportClassOptions,
           ...(detailItem === "withdrawal_concern" ? { withdrawalHistory: withdrawalConcernHistory } : {}),
           ...(detailItem === "supplement_target" || detailItem === "supplement_completed" || detailItem === "supplement_cancelled" || detailItem === "supplement_incomplete" ? { groups: makeSupplementGroups(supplementRows) } : {}),
         };

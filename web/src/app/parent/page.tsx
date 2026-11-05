@@ -145,7 +145,7 @@ function subjectMetricCells(subjects: Snapshot[]) {
       grouped.set(definition.id, current);
     }
   }
-  return [...grouped.values()].map((item) => ({ label: item.label, value: item.values.join(" / ") || "-" }));
+  return [...grouped.values()].map((item) => ({ label: item.label, value: item.values.join("\n") || "-" }));
 }
 
 function subjectSupplementLabels(snapshot: Snapshot) {
@@ -165,7 +165,7 @@ function subjectSupplementLabels(snapshot: Snapshot) {
 
 function supplementSummary(subjects: Snapshot[]) {
   const values = subjects.flatMap((snapshot) => subjectSupplementLabels(snapshot));
-  return values.length ? values.join(" / ") : "없음";
+  return values.length ? values.join("\n") : "없음";
 }
 
 function testName(snapshot: Snapshot) {
@@ -183,7 +183,7 @@ function testValues(tests: Snapshot[]) {
       ? name + ": 미응시" + (value.nonAttemptReason ? " (" + textValue(value.nonAttemptReason) + ")" : "")
       : name + ": " + scoreValue(value.score) + " / " + scoreValue(value.maxScore);
   });
-  return values.length ? values.join(" / ") : "-";
+  return values.length ? values.join("\n") : "-";
 }
 
 function attendanceLabel(value: unknown) {
@@ -196,6 +196,13 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
   const tests = snapshots.filter((snapshot) => snapshot.item_key.startsWith("test:"));
   const subjects = snapshots.filter((snapshot) => snapshot.item_key.startsWith("subject:"));
   const commonHomeworks = snapshots.filter((snapshot) => snapshot.item_key === "common_homework" || snapshot.item_key.startsWith("common_homework:"));
+  const uniqueCommonHomeworks = [...new Map(commonHomeworks.map((snapshot) => {
+    const value = snapshot.value_json ?? {};
+    const subject = typeof value.subjectName === "string" && value.subjectName.trim() ? value.subjectName.trim() : commonHomeworkLabel(snapshot);
+    const lesson = typeof value.lessonContent === "string" ? value.lessonContent.trim() : "";
+    const homework = typeof value.content === "string" ? value.content.trim() : "";
+    return [JSON.stringify([subject, lesson, homework, value.noHomework === true]), snapshot];
+  })).values()];
   const metricCells = subjectMetricCells(subjects);
   const subjectNotes = subjects
     .map((snapshot) => {
@@ -224,7 +231,7 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
         const subject = valueSubject || snapshotSubject;
         const status = attendanceLabel(snapshot.value_json.status);
         return subject ? `${subject}: ${status}` : status;
-      }))].join(" / ")
+      }))].join("\n")
     : attendanceValue;
   const cells = [
     { label: "출석", value: subjectAttendanceValue },
@@ -242,7 +249,7 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
             {cells.map((cell, index) => <div key={`${cell.label}-${index}`} className="border-r border-slate-200 px-3 py-3 last:border-r-0">{cell.label}</div>)}
           </div>
           <div className="grid text-center text-sm text-slate-700" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(150px, 1fr))` }}>
-            {cells.map((cell, index) => <div key={`${cell.label}-${index}`} className="min-h-16 border-r border-slate-200 px-3 py-4 last:border-r-0">{cell.value}</div>)}
+            {cells.map((cell, index) => <div key={`${cell.label}-${index}`} className="min-h-16 whitespace-pre-line border-r border-slate-200 px-3 py-4 last:border-r-0">{cell.value}</div>)}
           </div>
         </div>
       </div>
@@ -251,7 +258,7 @@ function PublicationSummary({ snapshots }: { snapshots: Snapshot[] }) {
         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-sm font-bold text-slate-800">과목별 수업 내용·숙제</p>
           <div className="mt-2 space-y-3">
-            {commonHomeworks.map((snapshot) => {
+            {uniqueCommonHomeworks.map((snapshot) => {
               const value = snapshot.value_json ?? {};
               const lessonContent = typeof value.lessonContent === "string" ? value.lessonContent.trim() : "";
               const homeworkContent = typeof value.content === "string" ? value.content.trim() : "";
@@ -380,8 +387,8 @@ export default function ParentPage() {
                 <span className="w-fit rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">공개 자료 {child.publications.length}건</span>
               </div>
 
-              {child.publications.length ? child.publications.map((publication) => (
-                <details key={publication.id} open className="mt-6 min-w-0 rounded-xl border border-slate-200 bg-slate-50">
+              {child.publications.length ? child.publications.map((publication, publicationIndex) => (
+                <details key={publication.id} open={publicationIndex === 0} className="mt-6 min-w-0 rounded-xl border border-slate-200 bg-slate-50">
                   <summary className="cursor-pointer list-none p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset sm:p-5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0"><p className="break-words text-sm font-semibold text-slate-500">자료 기준일 · {publication.session_date ?? "공개 기록"}</p><p className="mt-1 text-xs text-slate-400">공개 완료 자료 · 상세 내용 펼치기</p></div>

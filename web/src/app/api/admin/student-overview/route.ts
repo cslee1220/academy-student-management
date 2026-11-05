@@ -5,6 +5,9 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const STATUS_FILTERS = ["enrolled", "paused", "withdrawn", "all"] as const;
+const STUDENT_CLASSIFICATION_ORDER: Record<string, number> = { 초등: 0, 중등: 1, 고등: 2, 미지정: 3 };
+const QUERY_CHUNK_SIZE = 40;
+const MAX_CONCURRENT_QUERIES = 4;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 type StudentRow = {
@@ -81,6 +84,47 @@ class HttpError extends Error {
     super(message);
     this.name = "HttpError";
   }
+}
+
+type QueryResult<T> = { data: T[] | null; error: unknown | null };
+
+function createQueryScheduler(limit: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  function pump() {
+    while (active < limit && queue.length) queue.shift()?.();
+  }
+
+  return function schedule<T>(task: () => Promise<T>) {
+    return new Promise<T>((resolve, reject) => {
+      queue.push(() => {
+        active += 1;
+        void task()
+          .then(resolve, reject)
+          .finally(() => {
+            active -= 1;
+            pump();
+          });
+      });
+      pump();
+    });
+  };
+}
+
+async function queryInChunks<T>(
+  ids: string[],
+  schedule: <T>(task: () => Promise<T>) => Promise<T>,
+  query: (chunk: string[]) => PromiseLike<QueryResult<T>>,
+  errorMessage: string,
+) {
+  const uniqueIds = [...new Set(ids)].filter(Boolean);
+  const chunks = Array.from({ length: Math.ceil(uniqueIds.length / QUERY_CHUNK_SIZE) }, (_, index) =>
+    uniqueIds.slice(index * QUERY_CHUNK_SIZE, (index + 1) * QUERY_CHUNK_SIZE),
+  );
+  const results = await Promise.all(chunks.map((chunk) => schedule(() => Promise.resolve(query(chunk)))));
+  if (results.some((result) => result.error)) throw new HttpError(500, "database_error", errorMessage);
+  return results.flatMap((result) => result.data ?? []);
 }
 
 function today() {
@@ -193,13 +237,12 @@ function sortStudents(left: OverviewStudent, right: OverviewStudent) {
 }
 
 function sortGroups(left: OverviewGroup, right: OverviewGroup) {
-  const categoryOrder: Record<string, number> = { 초등: 0, 중등: 1, 고등: 2, 미지정: 3 };
   const columnCount = Math.max(left.columns.length, right.columns.length);
   for (let index = 0; index < columnCount; index += 1) {
     const leftValue = left.columns[index] ?? "미지정";
     const rightValue = right.columns[index] ?? "미지정";
-    if (index === 0 && (leftValue in categoryOrder || rightValue in categoryOrder)) {
-      const categoryCompare = (categoryOrder[leftValue] ?? 3) - (categoryOrder[rightValue] ?? 3);
+    if (index === 0) {
+      const categoryCompare = (STUDENT_CLASSIFICATION_ORDER[leftValue] ?? 3) - (STUDENT_CLASSIFICATION_ORDER[rightValue] ?? 3);
       if (categoryCompare !== 0) return categoryCompare;
     }
     const valueCompare = leftValue.localeCompare(rightValue, "ko", { numeric: true });
@@ -294,36 +337,16 @@ export async function GET(request: NextRequest) {
 
     const classIds = [...classById.keys()];
     const operationScheduleIds = [...new Set((classesResult.data ?? []).map((row) => row.operation_schedule_id).filter((id): id is string => Boolean(id)))];
-    const [blocksResult, blockStudentsResult, classAssignmentsResult, classroomAssignmentsResult, schedulesResult, teacherAssignmentsResult] = await Promise.all([
-      classIds.length
-        ? admin.from("class_schedule_blocks").select("id, class_id, subject_id, teacher_id, classroom_id, subject_name_snapshot, weekday, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", classIds).eq("is_active", true).lte("effective_start", asOfDate).gte("effective_end", asOfDate)
-        : Promise.resolve({ data: [], error: null }),
-      classIds.length
-        ? admin.from("class_schedule_block_students").select("block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).lte("start_date", asOfDate)
-        : Promise.resolve({ data: [], error: null }),
-      classIds.length
-        ? admin.from("student_class_assignments").select("class_id, student_id, start_date, end_date, status").eq("academy_id", academyId).in("class_id", classIds).lte("start_date", asOfDate)
-        : Promise.resolve({ data: [], error: null }),
-      classIds.length
-        ? admin.from("class_subject_classroom_assignments").select("class_id, subject_id, classroom_id, effective_start, effective_end, is_active, updated_at").eq("academy_id", academyId).in("class_id", classIds).eq("is_active", true).lte("effective_start", asOfDate)
-        : Promise.resolve({ data: [], error: null }),
-      operationScheduleIds.length
-        ? admin.from("academy_operation_schedules").select("id, weekdays, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("id", operationScheduleIds).eq("is_active", true)
-        : Promise.resolve({ data: [], error: null }),
-      classIds.length
-        ? admin.from("class_subject_teacher_assignments").select("class_id, subject_id, teacher_id, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", classIds).eq("is_active", true).lte("effective_start", asOfDate)
-        : Promise.resolve({ data: [], error: null }),
+    const scheduleQuery = createQueryScheduler(MAX_CONCURRENT_QUERIES);
+    const [blocks, classAssignments, classroomAssignments, schedules, teacherAssignments] = await Promise.all([
+      queryInChunks<ScheduleBlockRow>(classIds, scheduleQuery, (chunk) => admin.from("class_schedule_blocks").select("id, class_id, subject_id, teacher_id, classroom_id, subject_name_snapshot, weekday, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate).gte("effective_end", asOfDate), "현재 수업묶음 현황을 불러오지 못했습니다."),
+      queryInChunks<ClassAssignmentRow>(classIds, scheduleQuery, (chunk) => admin.from("student_class_assignments").select("class_id, student_id, start_date, end_date, status").eq("academy_id", academyId).in("class_id", chunk).lte("start_date", asOfDate), "현재 학생 반 배정 현황을 불러오지 못했습니다."),
+      queryInChunks<ClassroomAssignmentRow>(classIds, scheduleQuery, (chunk) => admin.from("class_subject_classroom_assignments").select("class_id, subject_id, classroom_id, effective_start, effective_end, is_active, updated_at").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate), "현재 강의실 배정 현황을 불러오지 못했습니다."),
+      queryInChunks<OperationScheduleRow>(operationScheduleIds, scheduleQuery, (chunk) => admin.from("academy_operation_schedules").select("id, weekdays, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("id", chunk).eq("is_active", true), "운영 시간표를 불러오지 못했습니다."),
+      queryInChunks<TeacherAssignmentRow>(classIds, scheduleQuery, (chunk) => admin.from("class_subject_teacher_assignments").select("class_id, subject_id, teacher_id, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate), "현재 담당 교사 배정 현황을 불러오지 못했습니다."),
     ]);
-    if (blocksResult.error || blockStudentsResult.error || classAssignmentsResult.error || classroomAssignmentsResult.error || schedulesResult.error || teacherAssignmentsResult.error) {
-      throw new HttpError(500, "database_error", "현재 반·수업묶음 배정 현황을 불러오지 못했습니다.");
-    }
-
-    const blocks = (blocksResult.data ?? []) as ScheduleBlockRow[];
-    const blockStudents = (blockStudentsResult.data ?? []) as BlockStudentRow[];
-    const classAssignments = (classAssignmentsResult.data ?? []) as ClassAssignmentRow[];
-    const classroomAssignments = (classroomAssignmentsResult.data ?? []) as ClassroomAssignmentRow[];
-    const schedules = (schedulesResult.data ?? []) as OperationScheduleRow[];
-    const teacherAssignments = (teacherAssignmentsResult.data ?? []) as TeacherAssignmentRow[];
+    const blockIds = blocks.map((block) => block.id);
+    const blockStudents = await queryInChunks<BlockStudentRow>(blockIds, scheduleQuery, (chunk) => admin.from("class_schedule_block_students").select("block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).in("block_id", chunk).lte("start_date", asOfDate), "현재 수업 학생 배정 현황을 불러오지 못했습니다.");
     const scheduleById = new Map(schedules.map((schedule) => [schedule.id, schedule]));
     const currentClassStudentKeys = new Set(
       classAssignments
@@ -343,7 +366,7 @@ export async function GET(request: NextRequest) {
       blockStudentsByBlock.set(assignment.block_id, [...(blockStudentsByBlock.get(assignment.block_id) ?? []), assignment]);
     }
     const currentClassByStudent = new Map<string, ClassAssignmentRow>();
-    for (const assignment of classAssignments) {
+    for (const assignment of [...classAssignments].sort((left, right) => right.start_date.localeCompare(left.start_date))) {
       if (!isValidOnDate(assignment.start_date, assignment.end_date, asOfDate) || !visibleStudentIds.has(assignment.student_id)) continue;
       if (!currentClassByStudent.has(assignment.student_id)) currentClassByStudent.set(assignment.student_id, assignment);
     }
@@ -370,7 +393,7 @@ export async function GET(request: NextRequest) {
     const validBlockIdsByClass = new Map<string, Set<string>>();
     const linkedBlockIdsByClassStudent = new Map<string, Set<string>>();
     const scheduleGroups = new Map<string, GroupBucket>();
-    const classroomGroups = new Map<string, GroupBucket>();
+    const classGroups = new Map<string, GroupBucket>();
     const vehicleScheduleGroups = new Map<string, GroupBucket>();
     for (const block of canonicalBlocks) {
       const classRow = classById.get(block.class_id);
@@ -378,15 +401,19 @@ export async function GET(request: NextRequest) {
       const schedule = classRow.operation_schedule_id ? scheduleById.get(classRow.operation_schedule_id) : undefined;
       if (classRow.operation_schedule_id && !scheduleMatchesBlock(schedule, block, asOfDate)) continue;
       validBlockIdsByClass.set(block.class_id, new Set([...(validBlockIdsByClass.get(block.class_id) ?? []), block.id]));
-      const scheduleKey = schedule?.id ?? `block:${block.class_id}:${block.weekday}:${block.start_time}:${block.end_time}`;
       const scheduleLabel = schedule ? formatScheduleLabel(schedule) : `${WEEKDAY_LABELS[block.weekday] ?? "요일 미지정"} ${formatTime(block.start_time)}-${formatTime(block.end_time)}`;
+      const scheduleDays = schedule && Array.isArray(schedule.weekdays)
+        ? schedule.weekdays
+            .filter((day): day is string => typeof day === "string" && day in WEEKDAY_LABELS)
+            .sort((left, right) => WEEKDAY_ORDER.indexOf(left) - WEEKDAY_ORDER.indexOf(right))
+            .join(",")
+        : block.weekday;
+      const scheduleKey = `${scheduleDays}:${block.start_time}:${block.end_time}`;
       const subjectName = subjectById.get(block.subject_id)?.name ?? block.subject_name_snapshot ?? "과목 미지정";
       const classroomAssignment = currentClassroomBySubject.get(`${block.class_id}:${block.subject_id}`);
       const classroomId = classroomAssignment?.classroom_id ?? block.classroom_id;
       const classroomName = classroomId ? classroomById.get(classroomId)?.name ?? null : null;
       const scheduleGroup = scheduleGroups.get(scheduleKey) ?? { label: scheduleLabel, columns: [scheduleLabel], students: new Map<string, OverviewStudent>() };
-      const classroomKey = classroomId ?? "__unassigned__";
-      const classroomGroup = classroomGroups.get(classroomKey) ?? { label: classroomName ?? "미지정", columns: [classroomName], students: new Map<string, OverviewStudent>() };
       for (const blockStudent of blockStudentsByBlock.get(block.id) ?? []) {
         const linkedKey = `${block.class_id}:${blockStudent.student_id}`;
         linkedBlockIdsByClassStudent.set(linkedKey, new Set([...(linkedBlockIdsByClassStudent.get(linkedKey) ?? []), block.id]));
@@ -395,7 +422,6 @@ export async function GET(request: NextRequest) {
         if (!student) continue;
         const contextStudent = { ...student, className: classRow.name, subjectName, classroomName, scheduleName: scheduleLabel };
         scheduleGroup.students.set(student.id, contextStudent);
-        classroomGroup.students.set(student.id, contextStudent);
         if (student.vehicleName) {
           const vehicleKey = `${student.vehicleName}:${scheduleKey}`;
           const vehicleGroup = vehicleScheduleGroups.get(vehicleKey) ?? {
@@ -408,7 +434,30 @@ export async function GET(request: NextRequest) {
         }
       }
       if (scheduleGroup.students.size) scheduleGroups.set(scheduleKey, scheduleGroup);
-      if (classroomGroup.students.size) classroomGroups.set(classroomKey, classroomGroup);
+    }
+    for (const [studentId, assignment] of currentClassByStudent) {
+      const student = studentById.get(studentId);
+      const classRow = classById.get(assignment.class_id);
+      if (!student || !classRow) continue;
+      const className = classRow.name.trim().replace(/\s+/g, " ");
+      const classGroupKey = className || "__unassigned_class_name__";
+      const groupLabel = className || "반 이름 미등록";
+      const group = classGroups.get(classGroupKey) ?? {
+        label: groupLabel,
+        columns: [groupLabel],
+        students: new Map<string, OverviewStudent>(),
+      };
+      group.students.set(student.id, { ...student, className: groupLabel });
+      classGroups.set(classGroupKey, group);
+    }
+    const scheduledStudentIds = new Set([...scheduleGroups.values()].flatMap((group) => [...group.students.keys()]));
+    const unassignedScheduleStudents = baseStudents.filter((student) => !scheduledStudentIds.has(student.id));
+    if (unassignedScheduleStudents.length) {
+      scheduleGroups.set("__unassigned__", {
+        label: "수업묶음 미배정",
+        columns: ["수업묶음 미배정"],
+        students: new Map(unassignedScheduleStudents.map((student) => [student.id, student])),
+      });
     }
     const missingOperationBundleStudents = baseStudents.filter((student) => {
       const assignment = currentClassByStudent.get(student.id);
@@ -419,19 +468,19 @@ export async function GET(request: NextRequest) {
       return !linkedBlockIds || [...validBlockIds].some((blockId) => !linkedBlockIds.has(blockId));
     });
     const scheduleGroupsForSection = makeContextGroups(scheduleGroups);
-    const classroomGroupsForSection = makeContextGroups(classroomGroups);
+    const classGroupsForSection = makeContextGroups(classGroups);
     const vehicleScheduleGroupsForSection = makeContextGroups(vehicleScheduleGroups).sort(sortVehicleScheduleGroups);
     const scheduleDistinctStudentCount = countDistinctStudents(scheduleGroupsForSection);
-    const classroomDistinctStudentCount = countDistinctStudents(classroomGroupsForSection);
+    const classDistinctStudentCount = countDistinctStudents(classGroupsForSection);
     const vehicleScheduleDistinctStudentCount = countDistinctStudents(vehicleScheduleGroupsForSection);
     const sectionGroups = {
       categories: makeColumnGroups(baseStudents, (student) => [student.categoryName]),
       schools: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.schoolName]),
       grades: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.gradeLabel]),
-      schoolGrades: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.schoolName, student.gradeLabel]),
+      schoolGrades: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.gradeLabel, student.schoolName]),
       schedules: scheduleGroupsForSection,
-      classrooms: classroomGroupsForSection,
-      levels: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.level]),
+      classes: classGroupsForSection,
+      levels: makeColumnGroups(baseStudents, (student) => [student.categoryName, student.gradeLabel, student.level]),
       vehicles: makeColumnGroups(baseStudents, (student) => [student.vehicleName], false),
       vehicleSchedules: vehicleScheduleGroupsForSection,
       missingOperationBundles: [{
@@ -450,12 +499,12 @@ export async function GET(request: NextRequest) {
         totals: { allStudentCount: studentRows.length, visibleStudentCount: baseStudents.length },
         sections: [
           { key: "categories", title: "분류별 학생현황", groups: sectionGroups.categories },
-          { key: "schools", title: "학교별 학생현황", groups: sectionGroups.schools },
           { key: "grades", title: "학년별 학생현황", groups: sectionGroups.grades },
+          { key: "schools", title: "학교별 학생현황", groups: sectionGroups.schools },
           { key: "schoolGrades", title: "학년별 학교별 학생현황", groups: sectionGroups.schoolGrades },
-          { key: "schedules", title: "반별 학생현황", distinctStudentCount: scheduleDistinctStudentCount, groups: sectionGroups.schedules },
-          { key: "classrooms", title: "강의실별 학생현황", distinctStudentCount: classroomDistinctStudentCount, groups: sectionGroups.classrooms },
           { key: "levels", title: "레벨별 학생현황", groups: sectionGroups.levels },
+          { key: "schedules", title: "수업시간대별 학생현황", distinctStudentCount: scheduleDistinctStudentCount, groups: sectionGroups.schedules },
+          { key: "classes", title: "반별 학생현황", distinctStudentCount: classDistinctStudentCount, groups: sectionGroups.classes },
           { key: "vehicles", title: "차량별 학생현황", groups: sectionGroups.vehicles },
           { key: "vehicleSchedules", title: "차량별 반별 학생현황", distinctStudentCount: vehicleScheduleDistinctStudentCount, groups: sectionGroups.vehicleSchedules },
           { key: "missingOperationBundles", title: "수업묶음 연결 누락 학생현황", groups: sectionGroups.missingOperationBundles },

@@ -31,6 +31,7 @@ export default function TeacherSupplementsPanel({ embedded = false, initialStart
   const [pendingKey, setPendingKey] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [embeddedCollapsed, setEmbeddedCollapsed] = useState(embedded);
 
   const load = useCallback(async (rangeStart = startDate, rangeEnd = endDate) => {
     setIsLoading(true);
@@ -60,6 +61,7 @@ export default function TeacherSupplementsPanel({ embedded = false, initialStart
     const completed = rowSort === "complete";
     return rows.filter((row) => row.completed === completed);
   }, [rowSort, rows]);
+  const incompleteCount = useMemo(() => rows.filter((row) => !row.completed).length, [rows]);
 
   async function toggle(row: SupplementRow, kind: "test" | "homework" | "custom", completed: boolean, supplementTypeId?: string) {
     const key = kind === "custom" ? `${row.id}:custom:${supplementTypeId}` : `${row.id}:${kind}`;
@@ -108,7 +110,7 @@ export default function TeacherSupplementsPanel({ embedded = false, initialStart
   );
 
   if (embedded) {
-    return <section aria-busy={isLoading || Boolean(pendingKey)} className="mt-6 rounded-2xl border border-indigo-100 bg-indigo-50/30 p-5 sm:p-6" aria-labelledby="teacher-records-supplements-title"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-sm font-bold text-indigo-600">보충 현황</p><h2 id="teacher-records-supplements-title" className="mt-1 text-xl font-bold text-slate-950">보충현황 조회 및 완료 체크</h2><p className="mt-2 text-sm leading-6 text-slate-600">수업기록 화면에서 담당 보충의 테스트·과제 완료 여부를 바로 저장할 수 있습니다.</p></div><Link href="/teacher/supplements" className={`rounded-xl border border-indigo-300 bg-white px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50 ${focusRingClass}`}>전체 화면으로 보기</Link></div>{content}</section>;
+    return <section aria-busy={isLoading || Boolean(pendingKey)} className="mt-6 rounded-2xl border border-indigo-100 bg-indigo-50/30 p-5 sm:p-6" aria-labelledby="teacher-records-supplements-title"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-sm font-bold text-indigo-600">보충 현황</p><h2 id="teacher-records-supplements-title" className="mt-1 text-xl font-bold text-slate-950">보충현황 조회 및 완료 체크</h2><p className="mt-2 text-sm leading-6 text-slate-600">수업기록 화면에서 담당 보충의 테스트·과제 완료 여부를 바로 저장할 수 있습니다.</p></div><button type="button" aria-expanded={!embeddedCollapsed} aria-controls="teacher-records-supplements-content" onClick={() => setEmbeddedCollapsed((current) => !current)} className="rounded-xl border border-indigo-300 bg-white px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50"><span>{embeddedCollapsed ? "펼치기" : "접기"}</span><span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs" aria-label={`미완료 ${incompleteCount}건`}>미완료 {incompleteCount}건</span></button><Link href="/teacher/supplements" className={`rounded-xl border border-indigo-300 bg-white px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50 ${focusRingClass}`}>전체 화면으로 보기</Link></div><div id="teacher-records-supplements-content">{embeddedCollapsed ? null : content}</div></section>;
   }
 
   return <main aria-busy={isLoading || Boolean(pendingKey)} className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-bold text-indigo-600">SUPPLEMENT MANAGEMENT</p><h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">보충 현황</h1><p className="mt-2 text-sm leading-6 text-slate-600">담당 강의실·과목의 테스트 보충과 과제보충 완료 상태를 관리합니다.</p></div><div className="flex flex-wrap gap-2"><Link href="/teacher/records" className={`rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 ${focusRingClass}`}>수업기록 입력</Link><Link href="/teacher" className={`rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 ${focusRingClass}`}>교사 화면</Link></div></div>{content}</main>;

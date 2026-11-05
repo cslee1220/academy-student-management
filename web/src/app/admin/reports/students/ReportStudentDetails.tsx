@@ -20,6 +20,8 @@ type DetailRow = {
   subjectName?: string | null;
   classroomName?: string | null;
   classDisplay?: string | null;
+  classIds?: string[];
+  previousClassId?: string | null;
   previousClassDisplay?: string | null;
   consultationAt?: string | null;
   consultationContent?: string | null;
@@ -55,10 +57,12 @@ type SupplementGroup = {
   incompleteCount: number;
   cancelledCount: number;
 };
+type ClassOption = { id: string; name: string; category: string | null };
+type ClassFilterOption = { key: string; name: string; category: "regular" | "exam_prep"; ids: string[] };
 
 type DetailResponse = {
   data?: {
-    detail?: { rows: DetailRow[]; groups?: SupplementGroup[]; withdrawalHistory?: WithdrawalHistoryRow[] };
+    detail?: { rows: DetailRow[]; groups?: SupplementGroup[]; withdrawalHistory?: WithdrawalHistoryRow[]; classOptions?: ClassOption[] };
     period?: { startDate: string; endDate: string };
   };
 };
@@ -157,6 +161,8 @@ export default function ReportStudentDetails({ section, item, startDate, endDate
   const router = useRouter();
   const [rows, setRows] = useState<DetailRow[]>([]);
   const [groups, setGroups] = useState<SupplementGroup[]>([]);
+  const [classOptions, setClassOptions] = useState<ClassOption[]>([]);
+  const [selectedClassFilterKey, setSelectedClassFilterKey] = useState("");
   const [withdrawalHistory, setWithdrawalHistory] = useState<WithdrawalHistoryRow[]>([]);
   const [selectedGroupKey, setSelectedGroupKey] = useState("");
   const [period, setPeriod] = useState({ startDate: removeTrailingBackticks(startDate), endDate: removeTrailingBackticks(endDate) });
@@ -186,6 +192,7 @@ export default function ReportStudentDetails({ section, item, startDate, endDate
         const nextWithdrawalHistory = payload?.data?.detail?.withdrawalHistory ?? [];
         setRows(nextRows);
         setGroups(nextGroups);
+        setClassOptions(payload?.data?.detail?.classOptions ?? []);
         setWithdrawalHistory(nextWithdrawalHistory);
         setSelectedGroupKey((current) => nextGroups.some((group) => group.key === current) ? current : "");
         if (payload?.data?.period) {
@@ -209,15 +216,27 @@ export default function ReportStudentDetails({ section, item, startDate, endDate
   const backParams = new URLSearchParams();
   if (safePeriodStartDate) backParams.set("startDate", safePeriodStartDate);
   if (safePeriodEndDate) backParams.set("endDate", safePeriodEndDate);
-  const backHref = `/admin/reports${backParams.toString() ? `?${backParams.toString()}` : ""}`;
+  const backHref = `/admin${backParams.toString() ? `?${backParams.toString()}` : ""}`;
   const title = itemLabels[item] ?? "학생 상세 현황";
   const showsSupplementDetails = section === "operations" && (item === "supplement_target" || item === "supplement_completed" || item === "supplement_cancelled" || item === "supplement_incomplete");
   const showsConsultationDetails = section === "operations" && item === "consultation_records";
   const showsPublicationDetails = section === "publication" && (item === "publication_all" || item === "publication_published" || item === "publication_draft");
   const showsWithdrawalConcernDetails = section === "operations" && item === "withdrawal_concern";
   const showsMonthlyFlowDetails = section === "operations" && (item === "monthly_new_students" || item === "monthly_pause_returns" || item === "monthly_withdrawal_returns" || item === "monthly_withdrawals" || item === "monthly_pauses" || item === "monthly_adjustments");
+  const hidesSupplementColumns = section === "student_status" || section === "daily_attendance" || section === "operations";
   const isEndDateStatusItem = section === "student_status" && (item === "enrolled" || item === "paused" || item === "withdrawn");
-  const visibleRows = selectedGroupKey ? rows.filter((row) => row.groupKey === selectedGroupKey) : rows;
+  const supportsClassFilter = section === "student_status" || section === "daily_attendance" || section === "operations";
+  const groupedClassOptions = classOptions.reduce((groupMap, option) => {
+    const category = option.category === "exam_prep" ? "exam_prep" : "regular";
+    const key = JSON.stringify([category, option.name]);
+    const group = groupMap.get(key);
+    if (group) group.ids.push(option.id);
+    else groupMap.set(key, { key, name: option.name, category, ids: [option.id] });
+    return groupMap;
+  }, new Map<string, ClassFilterOption>());
+  const classFilterOptions = [...groupedClassOptions.values()];
+  const selectedClassIds = classFilterOptions.find((option) => option.key === selectedClassFilterKey)?.ids ?? [];
+  const visibleRows = rows.filter((row) => (!selectedGroupKey || row.groupKey === selectedGroupKey) && (!selectedClassFilterKey || (selectedClassFilterKey === "__unassigned__" ? !row.classIds?.length : selectedClassIds.some((classId) => row.classIds?.includes(classId)))));
   const selectedGroup = groups.find((group) => group.key === selectedGroupKey);
 
   function applyPeriod(event: FormEvent<HTMLFormElement>) {
@@ -309,11 +328,22 @@ export default function ReportStudentDetails({ section, item, startDate, endDate
             <label className="text-xs font-bold text-slate-600">종료일<input type="date" value={periodDraft.endDate} onChange={(event) => setPeriodDraft((current) => ({ ...current, endDate: event.target.value }))} className="mt-1 block h-10 rounded-lg border border-slate-300 px-2 text-sm font-normal text-slate-700" /></label>
             <button type="submit" className="h-10 rounded-lg bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-700">조회</button>
           </form>
-          <Link href={backHref} className="self-end rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">통계로 돌아가기</Link>
+          <Link href={backHref} className="self-end rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">관리자 화면 돌아가기</Link>
         </div>
       </div>
 
       {error ? <p className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</p> : null}
+      {supportsClassFilter ? <div className="mt-5 flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
+        <label className="text-sm font-semibold text-slate-700">반 필터
+          <select value={selectedClassFilterKey} onChange={(event) => setSelectedClassFilterKey(event.target.value)} className="mt-1 block min-w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+            <option value="">전체</option>
+            <optgroup label="일반 반">{classFilterOptions.filter((option) => option.category === "regular").map((option) => <option key={option.key} value={option.key}>{option.name}</option>)}</optgroup>
+            <optgroup label="내신 반">{classFilterOptions.filter((option) => option.category === "exam_prep").map((option) => <option key={option.key} value={option.key}>{option.name}</option>)}</optgroup>
+            <option value="__unassigned__">미배정</option>
+          </select>
+        </label>
+        {item === "class_movement" ? <span className="pb-2 text-xs text-slate-500">반 이동은 변경된 반 기준으로 필터링합니다.</span> : null}
+      </div> : null}
       {showsSupplementDetails && groups.length ? <section className="mt-6 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-5 shadow-sm sm:p-6">
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-sm font-bold text-indigo-600">SUPPLEMENT SUMMARY</p><h2 className="mt-1 text-xl font-bold text-slate-950">반·과목·강의실별 보충 현황</h2></div><p className="text-sm text-slate-600">카드를 누르면 해당 명단만 표시됩니다.</p></div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -331,7 +361,7 @@ export default function ReportStudentDetails({ section, item, startDate, endDate
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-sm">
               <thead className="border-b border-slate-200 text-xs text-slate-500">
-                <tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">{showsConsultationDetails ? "상담 현황" : "현재 상태"}</th><th className="px-3 py-3">{showsConsultationDetails ? "상담일시" : "일자"}</th>{item === "monthly_pauses" ? <th className="px-3 py-3">복귀 예정일</th> : null}<th className="px-3 py-3">{showsConsultationDetails ? "상담 유형" : showsPublicationDetails ? "공개상태" : "출결"}</th>{section === "daily_attendance" ? <th className="min-w-[260px] px-3 py-3">과목별 출결·사유</th> : null}<th className="px-3 py-3">{showsConsultationDetails ? "상담내용" : "반·과목·강의실"}</th><th className="px-3 py-3">{showsConsultationDetails ? "상담 방식" : "보충"}</th>{showsWithdrawalConcernDetails ? <><th className="min-w-[280px] px-3 py-3">상담내용</th><th className="px-3 py-3">관리</th></> : null}{showsSupplementDetails ? <><th className="min-w-[240px] px-3 py-3">테스트 결과</th><th className="min-w-[240px] px-3 py-3">과제보충 내용</th><th className="min-w-[190px] px-3 py-3">완료 체크</th></> : null}</tr>
+                <tr><th className="px-3 py-3">학생</th><th className="px-3 py-3">{showsConsultationDetails ? "상담 현황" : "현재 상태"}</th><th className="px-3 py-3">{showsConsultationDetails ? "상담일시" : "일자"}</th>{item === "monthly_pauses" ? <th className="px-3 py-3">복귀 예정일</th> : null}<th className="px-3 py-3">{showsConsultationDetails ? "상담 유형" : showsPublicationDetails ? "공개상태" : "출결"}</th>{section === "daily_attendance" ? <th className="min-w-[260px] px-3 py-3">과목별 출결·사유</th> : null}<th className="px-3 py-3">{showsConsultationDetails ? "상담내용" : "반·과목·강의실"}</th>{!hidesSupplementColumns ? <th className="px-3 py-3">{showsConsultationDetails ? "상담 방식" : "보충"}</th> : null}{showsWithdrawalConcernDetails ? <><th className="min-w-[280px] px-3 py-3">상담내용</th><th className="px-3 py-3">관리</th></> : null}{showsSupplementDetails ? <><th className="min-w-[240px] px-3 py-3">테스트 결과</th><th className="min-w-[240px] px-3 py-3">과제보충 내용</th><th className="min-w-[190px] px-3 py-3">완료 체크</th></> : null}</tr>
               </thead>
               <tbody>
                 {visibleRows.map((row, index) => <tr key={`${row.studentId}-${row.date ?? "status"}-${row.subjectName ?? ""}-${index}`} className="border-b border-slate-100 last:border-0">
@@ -342,7 +372,7 @@ export default function ReportStudentDetails({ section, item, startDate, endDate
                   <td className="px-3 py-4 text-slate-600">{showsConsultationDetails ? consultationTypeLabels[row.consultationType ?? ""] ?? row.consultationType ?? "-" : showsPublicationDetails ? publicationStatusLabels[row.publicationStatus ?? ""] ?? "-" : row.attendanceStatus ? attendanceLabels[row.attendanceStatus] ?? row.attendanceStatus : "-"}</td>
                   {section === "daily_attendance" ? <td className="whitespace-pre-wrap px-3 py-4 text-slate-600">{row.attendanceBySubject?.length ? <div className="space-y-1">{row.attendanceBySubject.map((subject) => <p key={subject.subjectName}><span className="font-semibold text-slate-800">{subject.subjectName}</span>: {attendanceLabels[subject.status] ?? subject.status}{subject.absenceNote ? ` (${subject.absenceNote})` : ""}</p>)}</div> : "-"}</td> : null}
                   <td className="whitespace-pre-wrap px-3 py-4 text-slate-600">{showsConsultationDetails ? row.consultationContent || "-" : item === "class_movement" ? <>{row.previousClassDisplay || "-"} → {row.classDisplay || "-"}</> : row.classDisplay || [row.className, row.subjectName, row.classroomName].filter(Boolean).join(" · ") || "-"}</td>
-                  <td className="px-3 py-4">{showsConsultationDetails ? consultationMethodLabels[row.consultationMethod ?? ""] ?? row.consultationMethod ?? "-" : row.supplementType ? <><span className="text-slate-600">{row.supplementType}</span><span className={`ml-2 rounded-full px-2 py-1 text-xs font-bold ${row.supplementStatus === "completed" ? "bg-emerald-100 text-emerald-700" : row.supplementStatus === "cancelled" ? "bg-slate-200 text-slate-700" : "bg-amber-100 text-amber-700"}`}>{row.supplementStatus === "completed" ? "완료" : row.supplementStatus === "cancelled" ? "취소" : "미완료"}</span>{row.cancelReason ? <span className="ml-2 text-xs text-slate-500">{row.cancelReason}</span> : null}</> : "-"}</td>
+                  {!hidesSupplementColumns ? <td className="px-3 py-4">{showsConsultationDetails ? consultationMethodLabels[row.consultationMethod ?? ""] ?? row.consultationMethod ?? "-" : row.supplementType ? <><span className="text-slate-600">{row.supplementType}</span><span className={`ml-2 rounded-full px-2 py-1 text-xs font-bold ${row.supplementStatus === "completed" ? "bg-emerald-100 text-emerald-700" : row.supplementStatus === "cancelled" ? "bg-slate-200 text-slate-700" : "bg-amber-100 text-amber-700"}`}>{row.supplementStatus === "completed" ? "완료" : row.supplementStatus === "cancelled" ? "취소" : "미완료"}</span>{row.cancelReason ? <span className="ml-2 text-xs text-slate-500">{row.cancelReason}</span> : null}</> : "-"}</td> : null}
                   {showsWithdrawalConcernDetails ? <><td className="whitespace-pre-wrap px-3 py-4 text-slate-600">{row.consultationContent || "-"}</td><td className="px-3 py-4"><button type="button" onClick={() => void resolveWithdrawalConcern(row)} disabled={updatingKey === `withdrawal:${row.studentId}`} className="rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50">{updatingKey === `withdrawal:${row.studentId}` ? "처리 중..." : "해제"}</button></td></> : null}
                   {showsSupplementDetails ? <>
                     <td className="px-3 py-4 text-slate-600">{row.testItems?.length ? <div className="space-y-1">{row.testItems.map((test, testIndex) => <p key={`${row.studentId}-test-${testIndex}`}><span className="font-semibold text-slate-800">{test.name}</span>: {test.score ?? test.nonAttemptReason ?? "미입력"}{test.maxScore !== null && test.maxScore !== "" ? ` / ${test.maxScore}` : ""}</p>)}</div> : "-"}</td>
