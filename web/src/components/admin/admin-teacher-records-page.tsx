@@ -191,6 +191,15 @@ export default function AdminTeacherRecordsPage() {
     void load(recordDate, nextTeacherId, "");
   }
 
+  function resetFilters() {
+    const nextDate = today();
+    setRecordDate(nextDate);
+    setTeacherId("");
+    setBlockId("");
+    setSelectedStatistic(null);
+    void load(nextDate, "", "");
+  }
+
   async function toggleTeacherReview(group: TeacherGroup, checked: boolean) {
     const key = group.teacherId;
     setUpdatingKey(key);
@@ -252,6 +261,10 @@ export default function AdminTeacherRecordsPage() {
       </form>
 
       <p className="mt-3 text-xs text-slate-500">관리자 확인 표시는 기록 확인 여부만 저장하며 최종저장·공개·정정 권한이나 보호자 공개 상태와 분리됩니다.</p>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600" aria-label="현재 기록현황 필터">
+        <p>현재 조건: {recordDate} · {teacherId ? (data?.teachers.find((teacher) => teacher.id === teacherId)?.name ?? "선생님") : "전체 선생님"} · {blockId ? (availableBlocks.find((block) => block.id === blockId)?.name ?? "수업묶음") : "전체 수업묶음"}</p>
+        <button type="button" onClick={resetFilters} className={`rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-bold text-slate-700 hover:bg-slate-100 ${focusRingClass}`}>필터 초기화</button>
+      </div>
       {error ? <p role="alert" className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</p> : null}
       {message ? <p role="status" className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</p> : null}
 
@@ -281,7 +294,7 @@ export default function AdminTeacherRecordsPage() {
                   <h3 className="font-bold text-indigo-950">공통 수업내용·과제</h3>
                   {block.commonHomework.length ? <div className="mt-3 grid gap-3 md:grid-cols-2">{block.commonHomework.map((homework) => <div key={`${block.id}-${homework.operationGroup}`} className="rounded-lg border border-white bg-white p-3"><p className="text-xs font-bold text-indigo-700">{groupLabel(homework.operationGroup)}</p><p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-700"><span className="font-semibold">수업내용:</span> {homework.lessonContent || "-"}</p><p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-700"><span className="font-semibold">과제:</span> {homework.noHomework ? "숙제 없음" : homework.homework || "-"}</p><p className="mt-2 text-xs text-slate-500">{homework.saveState === "draft" ? "임시저장" : "최종저장"}</p></div>)}</div> : <p className="mt-2 text-sm text-slate-500">등록된 공통 수업내용·과제가 없습니다.</p>}
                 </section>
-                <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                <div className="mt-4 hidden overflow-x-auto rounded-xl border border-slate-200 lg:block">
                   <table className="min-w-[1750px] w-full text-left text-sm">
                     <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500"><tr><th className="sticky left-0 z-10 bg-slate-50 px-3 py-3">학생</th><th className="px-3 py-3">출결·결석 사유</th><th className="min-w-[220px] px-3 py-3">평가값</th><th className="min-w-[260px] px-3 py-3">테스트 결과</th><th className="min-w-[260px] px-3 py-3">테스트·숙제 보충</th><th className="min-w-[280px] px-3 py-3">학생별 수업메모</th><th className="px-3 py-3">저장 상태</th><th className="px-3 py-3">공개 상태</th></tr></thead>
                     <tbody>{block.students.map((row) => <tr key={`${block.id}-${row.student.id}`} className="border-b border-slate-100 align-top last:border-0">
@@ -295,6 +308,31 @@ export default function AdminTeacherRecordsPage() {
                       <td className="px-3 py-4"><span className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-bold ${statusPillClass(row.publicationStatus === "published" ? "published" : row.publicationStatus === "pending" ? "pending" : "private")}`}>{publicationLabel(row.publicationStatus)}</span></td>
                     </tr>)}</tbody>
                   </table>
+                </div>
+                <div className="mt-4 space-y-2 lg:hidden" aria-label={`${block.name} 학생별 기록 상세`}>
+                  {block.students.map((row) => (
+                    <details key={`mobile-${block.id}-${row.student.id}`} data-testid="admin-mobile-student-record" className="rounded-xl border border-slate-200 bg-white">
+                      <summary className="cursor-pointer list-none p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset">
+                        <div className="flex min-w-0 items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="break-words font-bold text-slate-900">{row.student.name}</p>
+                            <p className="mt-1 text-xs text-slate-500">{row.student.student_no} · {groupLabel(row.operationGroup)} · {attendanceLabel(row.attendance?.status)}</p>
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-1 text-[11px] font-bold">
+                            <span className={`rounded-full px-2 py-1 ${statusPillClass(row.saveStatus)}`}>{saveStatusLabel(row.saveStatus)}</span>
+                            <span className={`rounded-full px-2 py-1 ${statusPillClass(row.publicationStatus === "published" ? "published" : row.publicationStatus === "pending" ? "pending" : "private")}`}>{publicationLabel(row.publicationStatus)}</span>
+                          </div>
+                        </div>
+                      </summary>
+                      <div className="grid gap-3 border-t border-slate-200 p-3 text-sm">
+                        <div><p className="text-xs font-bold text-slate-500">출결·결석 사유</p><p className="mt-1 text-slate-700">{attendanceLabel(row.attendance?.status)} · {row.attendance?.absenceNote || "-"}</p></div>
+                        <div><p className="text-xs font-bold text-slate-500">수업 지표</p><div className="mt-1 space-y-1 text-slate-700">{row.metrics.length ? row.metrics.map((metric) => <p key={metric.id}>{metric.name}: {value(metric.value)}{metric.value !== null && metric.value !== "" ? ` / ${metric.scaleMax}` : ""}</p>) : <p>-</p>}</div></div>
+                        <div><p className="text-xs font-bold text-slate-500">테스트 결과</p><div className="mt-1 space-y-1 text-slate-700">{row.tests.length ? row.tests.map((test) => <p key={test.id || `${row.student.id}-${test.sequenceNo}`}>{test.name}: {value(test.score ?? test.nonAttemptReason)}{test.maxScore !== null && test.maxScore !== "" ? ` / ${test.maxScore}` : ""}</p>) : <p>테스트 없음</p>}</div></div>
+                        <div><p className="text-xs font-bold text-slate-500">보충</p><p className="mt-1 whitespace-pre-wrap break-words text-slate-700">{row.supplements ? `테스트 보충: ${row.supplements.test.enabled ? `${row.supplements.test.completed ? "완료" : "미완료"} · ${row.supplements.test.scheduledDate ?? "일정 없음"}` : "없음"}\n숙제 보충: ${row.supplements.homework.enabled ? `${row.supplements.homework.completed ? "완료" : "미완료"} · ${row.supplements.homework.scheduledDate ?? "일정 없음"}` : "없음"}` : "보충 없음"}</p>{row.supplements?.homework.content ? <p className="mt-1 whitespace-pre-wrap break-words text-xs text-slate-500">기존 과제보충 내용: {row.supplements.homework.content}</p> : null}</div>
+                        <div><p className="text-xs font-bold text-slate-500">학생별 수업메모</p><p className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-slate-700">{row.memo || "등록된 수업메모 없음"}</p></div>
+                      </div>
+                    </details>
+                  ))}
                 </div>
               </div>
             </details>)}

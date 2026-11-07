@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import AdminLogoutButton from "@/components/admin/admin-logout-button";
 import StudentSearchSelect, { StudentSearchOption } from "@/components/admin/student-search-select";
+import StudentAssessmentHistoryPanel from "@/components/student-assessment-history-panel";
 import { redirectAdminOnAuthFailure } from "@/lib/admin-session";
 
 type AssignmentHistory = {
@@ -82,14 +83,14 @@ function operationGroupText(value: "A" | "B" | null) {
 }
 
 function emptyMessage(hasRows: boolean, message: string) {
-  return hasRows ? null : <p className="mt-4 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">{message}</p>;
+  return hasRows ? null : <p className="mt-3 rounded-xl bg-slate-50 px-4 py-4 text-center text-sm text-slate-500">{message}</p>;
 }
 
 function HistoryTableRegion({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="mt-4">
+    <div className="mt-3">
       <p className="mb-2 text-xs text-slate-500 sm:hidden">표는 좌우로 밀어 전체 항목을 확인할 수 있습니다.</p>
-      <div role="region" aria-label={`${label} 표`} tabIndex={0} className="overflow-x-auto rounded-xl border border-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
+      <div role="region" aria-label={`${label} 표`} tabIndex={0} className="overflow-x-auto rounded-xl border border-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 [&_td]:py-2 [&_th]:py-2">
         {children}
       </div>
     </div>
@@ -100,17 +101,17 @@ function HistoryAccordion({ title, count, open, loading, onToggle, children }: {
   const contentId = `history-section-${title}`;
   return (
     <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <button type="button" onClick={onToggle} aria-expanded={open} aria-controls={contentId} className="flex w-full items-center justify-between gap-3 p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset sm:p-6">
-        <span><span className="block text-lg font-bold text-slate-900">{title}</span><span className="mt-1 block text-xs text-slate-500">조회 전용 이력</span></span>
+      <button type="button" onClick={onToggle} aria-expanded={open} aria-controls={contentId} className="flex w-full items-center justify-between gap-3 p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset sm:p-4">
+        <span><span className="block text-base font-bold text-slate-900">{title}</span><span className="mt-1 block text-xs text-slate-500">조회 전용 이력</span></span>
         <span className="flex shrink-0 items-center gap-3 text-sm text-slate-500"><span>{count}건</span><span aria-hidden className={`text-lg transition-transform ${open ? "rotate-180" : ""}`}>⌄</span></span>
       </button>
-      {open ? <div id={contentId} className="border-t border-slate-100 px-5 pb-5 sm:px-6 sm:pb-6">{loading ? <p role="status" aria-live="polite" className="mt-4 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">이력을 불러오는 중입니다.</p> : children}</div> : null}
+      {open ? <div id={contentId} className="border-t border-slate-100 px-3 pb-3 sm:px-4 sm:pb-4">{loading ? <p role="status" aria-live="polite" className="mt-3 rounded-xl bg-slate-50 px-3 py-4 text-center text-sm text-slate-500">이력을 불러오는 중입니다.</p> : children}</div> : null}
     </section>
   );
 }
 
 function LearningTable({ rows, focus }: { rows: LearningRow[]; focus: "tests" | "homework" | "understanding" | "participation" }) {
-  if (!rows.length) return <p className="mt-4 rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">조회할 학습 기록이 없습니다.</p>;
+  if (!rows.length) return <p className="mt-3 rounded-xl bg-slate-50 px-3 py-4 text-center text-sm text-slate-500">조회할 학습 기록이 없습니다.</p>;
   return (
     <HistoryTableRegion label="학습 기록">
       <table className="min-w-[900px] w-full text-left text-sm">
@@ -233,14 +234,14 @@ export default function StudentHistoryPage() {
   const learningRows = history?.learning ?? [];
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div><p className="text-sm font-bold text-indigo-600">STUDENT HISTORY</p><h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950">학생 통합 이력 조회</h1><p className="mt-2 text-sm leading-6 text-slate-600">반 배정·출석·보충·학습·상담 이력을 조회 전용으로 확인합니다.</p></div>
         <div className="flex flex-wrap gap-2"><Link href="/admin/students" className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">학생 관리</Link><AdminLogoutButton /></div>
       </div>
 
-      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_180px_180px_180px_auto] md:items-end">
+      <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_180px_180px_auto] md:items-end">
           <label className="text-sm font-semibold text-slate-700">학생{isStudentLoading ? <span className="ml-2 text-xs font-normal text-slate-500">목록 불러오는 중</span> : null}<StudentSearchSelect students={students} value={studentId} onChange={setStudentId} required placeholder="학생 이름 또는 학생번호 검색" /></label>
           <label className="text-sm font-semibold text-slate-700">학기<select value={termId} onChange={(event) => setTermId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal focus-visible:border-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-100" disabled={!history?.terms.length}><option value="">전체 학기</option>{history?.terms.map((term) => <option key={term.id} value={term.id}>{term.name} · {term.startDate}~{term.endDate}</option>)}</select></label>
           <label className="text-sm font-semibold text-slate-700">시작일<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-slate-300 px-3 font-normal focus-visible:border-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-100" /></label>
@@ -252,16 +253,16 @@ export default function StudentHistoryPage() {
 
       {error ? <p role="alert" aria-live="assertive" className="mt-5 rounded-xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</p> : null}
       {selectedStudent ? <>
-        <section className="mt-5 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-5 sm:p-6"><div className="flex flex-wrap items-end justify-between gap-3"><div className="min-w-0"><p className="text-sm font-bold text-indigo-600">SELECTED STUDENT</p><h2 className="mt-1 break-words text-2xl font-bold text-slate-950">{selectedStudent.name}<span className="ml-2 text-sm font-normal text-slate-500">{selectedStudent.student_no}</span></h2></div><p className="break-words text-sm text-slate-600">{selectedStudent.school_name ?? "학교 미등록"} · {selectedStudent.grade ?? "학년 미등록"} · {selectedStudent.current_status ?? "상태 미등록"}</p></div></section>
-        <section className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold text-slate-500">현재 반</p><p className="mt-2 break-words text-lg font-bold text-slate-900">{currentAssignment?.className ?? "현재 배정 없음"}</p><p className="mt-1 text-xs text-slate-500">반배정일 {currentAssignment?.startDate ?? "-"}</p></div>
-          <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold text-slate-500">출석 요약</p><p className="mt-2 break-words text-lg font-bold text-slate-900">{summary?.attendancePresent ?? 0}회 출석</p><p className="mt-1 text-xs text-slate-500">결석 {summary?.attendanceAbsent ?? 0} · 무단 {summary?.attendanceUnexcused ?? 0}</p></div>
-          <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold text-slate-500">보충 현황</p><p className="mt-2 break-words text-lg font-bold text-slate-900">{summary?.incompleteSupplements ?? 0}건 미완료</p><p className="mt-1 text-xs text-slate-500">전체 {summary?.supplementsTotal ?? 0}건</p></div>
-          <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold text-slate-500">조회 기간</p><p className="mt-2 break-words text-lg font-bold text-slate-900">{history.period.startDate}</p><p className="mt-1 text-xs text-slate-500">~ {history.period.endDate}</p></div>
+        <section className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-4"><div className="flex flex-wrap items-end justify-between gap-3"><div className="min-w-0"><p className="text-xs font-bold text-indigo-600">SELECTED STUDENT</p><h2 className="mt-1 break-words text-xl font-bold text-slate-950">{selectedStudent.name}<span className="ml-2 text-sm font-normal text-slate-500">{selectedStudent.student_no}</span></h2></div><p className="break-words text-sm text-slate-600">{selectedStudent.school_name ?? "학교 미등록"} · {selectedStudent.grade ?? "학년 미등록"} · {selectedStudent.current_status ?? "상태 미등록"}</p></div></section>
+        <section className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><p className="text-xs font-bold text-slate-500">현재 반</p><p className="mt-1 break-words text-base font-bold text-slate-900">{currentAssignment?.className ?? "현재 배정 없음"}</p><p className="mt-1 text-xs text-slate-500">반배정일 {currentAssignment?.startDate ?? "-"}</p></div>
+          <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><p className="text-xs font-bold text-slate-500">출석 요약</p><p className="mt-1 break-words text-base font-bold text-slate-900">{summary?.attendancePresent ?? 0}회 출석</p><p className="mt-1 text-xs text-slate-500">결석 {summary?.attendanceAbsent ?? 0} · 무단 {summary?.attendanceUnexcused ?? 0}</p></div>
+          <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><p className="text-xs font-bold text-slate-500">보충 현황</p><p className="mt-1 break-words text-base font-bold text-slate-900">{summary?.incompleteSupplements ?? 0}건 미완료</p><p className="mt-1 text-xs text-slate-500">전체 {summary?.supplementsTotal ?? 0}건</p></div>
+          <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><p className="text-xs font-bold text-slate-500">조회 기간</p><p className="mt-1 break-words text-base font-bold text-slate-900">{history.period.startDate}</p><p className="mt-1 text-xs text-slate-500">~ {history.period.endDate}</p></div>
         </section>
       </> : null}
 
-      {history ? <div className="mt-5 space-y-4">
+      {history ? <div className="mt-4 space-y-2">
         <HistoryAccordion title="반 배정 이력" count={assignments.length} open={openSections.has("assignments")} loading={loadingSections.has("assignments")} onToggle={() => toggleSection("assignments")}>
           {assignments.length ? <HistoryTableRegion label="반 배정 이력"><table className="min-w-[1050px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">적용기간</th><th className="px-3 py-3">반</th><th className="px-3 py-3">운영구분</th><th className="px-3 py-3">수업순서</th><th className="px-3 py-3">상태</th><th className="min-w-[260px] px-3 py-3">이동사유</th></tr></thead><tbody>{assignments.map((assignment) => <tr key={assignment.id} className="border-b border-slate-100 align-top"><td className="whitespace-nowrap px-3 py-4">{assignment.startDate} ~ {assignment.endDate ?? "현재"}</td><td className="px-3 py-4 font-semibold">{assignment.className}<span className="mt-1 block text-xs font-normal text-slate-500">{assignment.termName}</span></td><td className="px-3 py-4">{assignment.operationType}</td><td className="px-3 py-4">{operationGroupText(assignment.operationGroup)}</td><td className="px-3 py-4">{assignment.isCurrent ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">현재</span> : assignment.status === "active" ? "예정·활성" : "종료"}</td><td className="whitespace-pre-wrap px-3 py-4 text-slate-600">{assignment.reason ?? "-"}</td></tr>)}</tbody></table></HistoryTableRegion> : emptyMessage(false, "반 배정 이력이 없습니다.")}
         </HistoryAccordion>
@@ -282,6 +283,8 @@ export default function StudentHistoryPage() {
         <HistoryAccordion title="상담 기록" count={summary?.consultationsTotal ?? 0} open={openSections.has("consultations")} loading={loadingSections.has("consultations")} onToggle={() => toggleSection("consultations")}>
           {history.consultations?.length ? <HistoryTableRegion label="상담 기록"><table className="min-w-[1050px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">상담일자</th><th className="px-3 py-3">상담선생님</th><th className="px-3 py-3">상태·방법</th><th className="min-w-[480px] px-3 py-3">상담내용</th><th className="px-3 py-3">퇴원 우려</th></tr></thead><tbody>{history.consultations.map((row) => <tr key={row.id} className="border-b border-slate-100 align-top"><td className="whitespace-nowrap px-3 py-4">{row.date}</td><td className="px-3 py-4">{row.teacherName}</td><td className="px-3 py-4">{[row.status, row.method].filter(Boolean).join(" · ") || "-"}</td><td className="whitespace-pre-wrap px-3 py-4">{row.content ?? "내용 없음"}</td><td className="px-3 py-4">{row.withdrawalConcern === null ? "-" : row.withdrawalConcern ? "예" : "아니오"}</td></tr>)}</tbody></table></HistoryTableRegion> : emptyMessage(false, "상담 기록이 없습니다.")}
         </HistoryAccordion>
+
+        <StudentAssessmentHistoryPanel key={history.student.id} studentId={history.student.id} />
 
         <HistoryAccordion title="내부 비공개 기록" count={history.privateRecords?.count ?? summary?.privateRecordCount ?? 0} open={openSections.has("private")} loading={loadingSections.has("private")} onToggle={() => toggleSection("private")}>
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-5 text-sm leading-6 text-amber-900">현재 권한 정책에 따라 내부 비공개 기록의 본문은 이 화면에 표시하지 않습니다. 조회 기간 내 비공개 기록 {history.privateRecords?.count ?? summary?.privateRecordCount ?? 0}건이 존재합니다.</div>

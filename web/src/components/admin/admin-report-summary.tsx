@@ -55,9 +55,8 @@ export default function AdminReportSummary({ report, startDate, endDate, dateCon
 
   return (
     <>
-      <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div><p className="text-sm font-bold text-indigo-600">집중관리 기준</p><h2 className="mt-1 text-xl font-bold text-slate-900">집중관리대상학생</h2></div>
+      <section aria-label="운영 통계 및 조회 기간" className="mt-8 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
+        <div className="flex flex-col items-end gap-3 sm:flex-row sm:justify-end">
           {dateControls}
         </div>
         {report ? <div className="mt-3"><AdminMonthlyStudentFlowSummary startDate={startDate} endDate={endDate} /></div> : null}

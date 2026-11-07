@@ -3,7 +3,8 @@ import { cookies } from "next/headers";
 
 import { AuthorizationError, requireAcademyAdminFromContext, requireAcademyMembership } from "@/lib/auth/authorization";
 import { resolveEffectiveAssignment, type AssignmentRole } from "@/lib/assignment-resolution";
-import { getRiskRuleDefinition, RISK_RULE_KEYS, type RiskRule, type RiskRuleKey } from "@/lib/risk-rules";
+import { evaluateMetricCriterion, evaluateSupplementCriterion, getRiskRuleDefinition, getRiskRuleSources, getRiskRuleStartDate, parseRiskRuleKey, RISK_RULE_KEYS, type BuiltInRiskRuleKey, type RiskRule, type RiskRuleKey, type RiskRuleSource, type SupplementRiskTask } from "@/lib/risk-rules";
+import { normalizeLessonRecordSettings } from "@/lib/lesson-record-settings";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { activeWithdrawalConcerns, type WithdrawalConcernConsultation, type WithdrawalConcernResolution } from "@/lib/withdrawal-concerns";
 
@@ -66,6 +67,7 @@ type SubjectRow = {
   homework_score: number | null;
   understanding_score: number | null;
   participation_score: number | null;
+  metric_values: Record<string, unknown> | null;
 };
 
 type DailyPublicationRow = {
@@ -138,6 +140,21 @@ type SupplementTaskRow = {
   test_completed: boolean;
   homework_completed: boolean;
   version: number;
+};
+
+type RiskSupplementTaskRow = {
+  student_id: string;
+  record_date: string;
+  is_active: boolean;
+  cancelled_at: string | null;
+  legacy_supplementary: boolean;
+  is_test_supplementary: boolean;
+  test_completed: boolean;
+  test_supplement_date: string | null;
+  is_homework_supplementary: boolean;
+  homework_completed: boolean;
+  homework_supplement_date: string | null;
+  supplement_items: unknown;
 };
 
 type SupplementTestItem = {
@@ -766,10 +783,16 @@ function calculateMonthlyStudentFlow(
 function normalizeRules(rows: Array<Record<string, unknown>>) {
   const rules: RiskRule[] = [];
   for (const row of rows) {
-    if (typeof row.item_key === "string" && RISK_RULE_KEYS.includes(row.item_key as RiskRuleKey)) {
+    const itemKey = parseRiskRuleKey(row.item_key);
+    if (itemKey) {
       rules.push({
         id: typeof row.id === "string" ? row.id : undefined,
-        item_key: row.item_key as RiskRuleKey,
+        item_key: itemKey,
+        criterion_type: row.criterion_type === "metric_low_count"
+          || row.criterion_type === "supplement_incomplete_count"
+          || row.criterion_type === "supplement_overdue_count"
+          ? row.criterion_type
+          : itemKey.startsWith("metric:") ? "metric_low_count" : itemKey.startsWith("supplement:") ? "supplement_incomplete_count" : null,
         is_enabled: row.is_enabled !== false,
         threshold_score: typeof row.threshold_score === "number" ? row.threshold_score : row.threshold_score === null ? null : Number(row.threshold_score),
         lookback_days: Number(row.lookback_days),
@@ -778,7 +801,14 @@ function normalizeRules(rows: Array<Record<string, unknown>>) {
       });
     }
   }
-  return rules.sort((left, right) => RISK_RULE_KEYS.indexOf(left.item_key) - RISK_RULE_KEYS.indexOf(right.item_key));
+  return rules.sort((left, right) => {
+    const leftIndex = RISK_RULE_KEYS.indexOf(left.item_key as BuiltInRiskRuleKey);
+    const rightIndex = RISK_RULE_KEYS.indexOf(right.item_key as BuiltInRiskRuleKey);
+    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+    if (leftIndex >= 0) return -1;
+    if (rightIndex >= 0) return 1;
+    return left.item_key.localeCompare(right.item_key);
+  });
 }
 
 function databaseError(error: { message?: string } | null, message: string): never {
@@ -834,7 +864,10 @@ function evaluateRisks(
   students: StudentRow[],
   attendance: AttendanceRow[],
   subjects: SubjectRow[],
+  supplements: RiskSupplementTaskRow[],
   rules: RiskRule[],
+  sources: RiskRuleSource[],
+  queryStartDate: string,
   endDate: string,
 ) {
   const enabledRules = new Map(rules.filter((rule) => rule.is_enabled).map((rule) => [rule.item_key, rule]));
@@ -842,6 +875,8 @@ function evaluateRisks(
   const riskStart = subtractDays(endDate, maxLookback);
   const attendanceByStudent = new Map<string, AttendanceRow[]>();
   const subjectsByStudent = new Map<string, SubjectRow[]>();
+  const supplementsByStudent = new Map<string, RiskSupplementTaskRow[]>();
+  const sourceByKey = new Map(sources.map((source) => [source.item_key, source]));
 
   for (const row of attendance) {
     if (row.record_date < riskStart || row.record_date > endDate) continue;
@@ -855,12 +890,18 @@ function evaluateRisks(
     rows.push(row);
     subjectsByStudent.set(row.student_id, rows);
   }
+  for (const row of supplements) {
+    const rows = supplementsByStudent.get(row.student_id) ?? [];
+    rows.push(row);
+    supplementsByStudent.set(row.student_id, rows);
+  }
 
   const results = students
     .filter((student) => student.current_status !== "withdrawn")
     .map((student) => {
       const studentAttendance = attendanceByStudent.get(student.id) ?? [];
       const studentSubjects = subjectsByStudent.get(student.id) ?? [];
+      const studentSupplements = supplementsByStudent.get(student.id) ?? [];
       const reasons: RiskReason[] = [];
       const absenceRule = enabledRules.get("absence_count");
       if (absenceRule) {
@@ -885,7 +926,7 @@ function evaluateRisks(
           ? scoreValues.reduce((sum, score) => sum + score, 0) / scoreValues.length
           : null;
         if (validScoreRows.length >= scoreRule.minimum_valid_sessions && scoreAverage !== null && scoreAverage <= (scoreRule.threshold_score ?? 2)) {
-          reasons.push({ rule: "low_score_average", label: "평가 평균 낮음", value: Number(scoreAverage.toFixed(2)), threshold: scoreRule.threshold_score ?? 2, lookbackDays: scoreRule.lookback_days });
+          reasons.push({ rule: "low_score_average", label: "숙제·이해도·참여도 종합 평균 낮음", value: Number(scoreAverage.toFixed(2)), threshold: scoreRule.threshold_score ?? 2, lookbackDays: scoreRule.lookback_days });
         }
       }
 
@@ -906,9 +947,80 @@ function evaluateRisks(
         if (values.length >= rule.minimum_valid_sessions && lowCount >= rule.minimum_count) {
           reasons.push({
             rule: ruleKey,
-            label: getRiskRuleDefinition(ruleKey).label,
+            label: getRiskRuleDefinition(ruleKey)?.label ?? ruleKey,
             value: lowCount,
             threshold: rule.threshold_score ?? 2,
+            lookbackDays: rule.lookback_days,
+          });
+        }
+      }
+
+      for (const rule of rules) {
+        if (!rule.is_enabled || !rule.item_key.startsWith("metric:")) continue;
+        const source = sourceByKey.get(rule.item_key);
+        if (!source?.is_active || !source.source_id) continue;
+        const threshold = rule.threshold_score ?? 2;
+        const metricResult = evaluateMetricCriterion(
+          studentSubjects.map((row) => ({ recordDate: row.record_date, metricValues: row.metric_values })),
+          source.source_id,
+          rule.is_enabled,
+          source.is_active,
+          threshold,
+          rule.minimum_count,
+          rule.lookback_days,
+          queryStartDate,
+          endDate,
+        );
+        if (metricResult.isAtRisk) {
+          reasons.push({
+            rule: rule.item_key,
+            label: `${source.name} ${threshold}점 이하 ${rule.minimum_count}회 이상`,
+            value: metricResult.lowCount,
+            threshold,
+            lookbackDays: rule.lookback_days,
+          });
+        }
+      }
+
+      for (const rule of rules) {
+        if (!rule.is_enabled || !rule.item_key.startsWith("supplement:")) continue;
+        const source = sourceByKey.get(rule.item_key);
+        if (!source?.is_active) continue;
+        const criterionType = rule.criterion_type === "supplement_overdue_count" ? "supplement_overdue_count" : "supplement_incomplete_count";
+        const selectedSources = source.source_type === "supplement_all"
+          ? sources.filter((candidate) => candidate.source_type === "supplement" && candidate.is_active)
+          : source.source_type === "supplement" ? [source] : [];
+        const supplementResult = evaluateSupplementCriterion(
+          studentSupplements.map((task): SupplementRiskTask => ({
+            studentId: task.student_id,
+            recordDate: task.record_date,
+            isActive: task.is_active,
+            cancelledAt: task.cancelled_at,
+            legacySupplementary: task.legacy_supplementary,
+            isTestSupplementary: task.is_test_supplementary,
+            testCompleted: task.test_completed,
+            testSupplementDate: task.test_supplement_date,
+            isHomeworkSupplementary: task.is_homework_supplementary,
+            homeworkCompleted: task.homework_completed,
+            homeworkSupplementDate: task.homework_supplement_date,
+            supplementItems: task.supplement_items,
+          })),
+          selectedSources,
+          criterionType,
+          rule.is_enabled,
+          rule.minimum_count,
+          rule.lookback_days,
+          queryStartDate,
+          endDate,
+        );
+        const count = criterionType === "supplement_overdue_count" ? supplementResult.overdueCount : supplementResult.incompleteCount;
+        if (supplementResult.isAtRisk) {
+          const conditionLabel = criterionType === "supplement_overdue_count" ? "예정일 초과" : "미완료";
+          reasons.push({
+            rule: rule.item_key,
+            label: `${source.name} ${conditionLabel} ${rule.minimum_count}건 이상`,
+            value: count,
+            threshold: rule.minimum_count,
             lookbackDays: rule.lookback_days,
           });
         }
@@ -997,14 +1109,28 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ data: { period: { startDate: flowStartDate, endDate: flowEndDate }, monthlyStudentFlow } });
     }
 
-    const { data: ruleRows, error: ruleError } = await admin.from("risk_rule_settings").select("id, item_key, is_enabled, threshold_score, lookback_days, minimum_count, minimum_valid_sessions").eq("academy_id", academyId);
-    if (ruleError) databaseError(ruleError, "위험군 기준을 불러오지 못했습니다.");
+    const [{ data: ruleRows, error: ruleError }, { data: recordSettingsRow, error: recordSettingsError }] = await Promise.all([
+      admin.from("risk_rule_settings").select("id, item_key, criterion_type, is_enabled, threshold_score, lookback_days, minimum_count, minimum_valid_sessions").eq("academy_id", academyId),
+      admin.from("academy_lesson_record_settings").select("metrics, supplement_types, tests_enabled, student_memo_enabled, common_record_enabled").eq("academy_id", academyId).maybeSingle(),
+    ]);
+    if (ruleError || recordSettingsError) databaseError(ruleError ?? recordSettingsError, "위험군 또는 수업기록 설정을 불러오지 못했습니다.");
     const rules = normalizeRules((ruleRows ?? []) as Array<Record<string, unknown>>);
+    const normalizedRecordSettings = normalizeLessonRecordSettings(recordSettingsRow, academyId);
+    const riskSources: RiskRuleSource[] = getRiskRuleSources(normalizedRecordSettings);
     const riskStart = subtractDays(endDate, Math.max(...rules.map((rule) => rule.lookback_days), 1));
-    const [{ data: students, error: studentsError }, { data: attendance, error: attendanceError }, { data: subjects, error: subjectsError }, { data: consultations, error: consultationsError }, { data: resolutions, error: resolutionsError }, { data: statusHistory, error: statusHistoryError }, { data: periodStatusHistory, error: periodStatusHistoryError }, { data: expectedReturnHistory, error: expectedReturnHistoryError }, { data: scheduleBlocks, error: scheduleBlocksError }, { data: scheduleBlockStudents, error: scheduleBlockStudentsError }, { data: classAssignments, error: classAssignmentsError }, { data: supplementTasks, error: supplementTasksError }, { data: publications, error: publicationsError }] = await Promise.all([
+    const sourceByKey = new Map(riskSources.map((source) => [source.item_key, source]));
+    const activeSupplementRules = rules.filter((rule) => {
+      if (!rule.is_enabled || !rule.item_key.startsWith("supplement:")) return false;
+      const source = sourceByKey.get(rule.item_key);
+      return source?.is_active === true;
+    });
+    const supplementRiskStart = activeSupplementRules.length
+      ? getRiskRuleStartDate(startDate, endDate, Math.max(...activeSupplementRules.map((rule) => rule.lookback_days)))
+      : null;
+    const [{ data: students, error: studentsError }, { data: attendance, error: attendanceError }, { data: subjects, error: subjectsError }, { data: consultations, error: consultationsError }, { data: resolutions, error: resolutionsError }, { data: statusHistory, error: statusHistoryError }, { data: periodStatusHistory, error: periodStatusHistoryError }, { data: expectedReturnHistory, error: expectedReturnHistoryError }, { data: scheduleBlocks, error: scheduleBlocksError }, { data: scheduleBlockStudents, error: scheduleBlockStudentsError }, { data: classAssignments, error: classAssignmentsError }, { data: supplementTasks, error: supplementTasksError }, { data: riskSupplementTasks, error: riskSupplementTasksError }, { data: publications, error: publicationsError }] = await Promise.all([
       admin.from("students").select("id, student_no, name, registered_at, current_status, class_start_date").eq("academy_id", academyId).order("name", { ascending: true }),
       admin.from("daily_attendance_records").select("block_id, student_id, record_date, attendance_status, absence_note").eq("academy_id", academyId).gte("record_date", riskStart).lte("record_date", endDate),
-      admin.from("daily_subject_records").select("block_id, student_id, record_date, homework_score, understanding_score, participation_score").eq("academy_id", academyId).gte("record_date", riskStart).lte("record_date", endDate),
+      admin.from("daily_subject_records").select("block_id, student_id, record_date, homework_score, understanding_score, participation_score, metric_values").eq("academy_id", academyId).gte("record_date", riskStart).lte("record_date", endDate),
       admin.from("parent_consultations").select("id, student_id, consultation_at, method, status, consultation_type, content, withdrawal_concern, created_at").eq("academy_id", academyId),
       admin.from("student_withdrawal_concern_resolutions").select("id, student_id, consultation_id, resolved_at, reason").eq("academy_id", academyId),
       admin.from("student_status_history").select("id, student_id, previous_status, next_status, effective_date, expected_return_date, created_at").eq("academy_id", academyId).lte("effective_date", endDate),
@@ -1014,10 +1140,13 @@ export async function GET(request: NextRequest) {
       admin.from("class_schedule_block_students").select("block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).lte("start_date", endDate),
       admin.from("student_class_assignments").select("id, class_id, student_id, start_date, end_date, status, assignment_role").eq("academy_id", academyId).in("status", ["active", "ended"]).lte("start_date", endDate),
       admin.from("student_supplement_tasks").select("id, class_id, subject_id, student_id, record_date, class_name_snapshot, subject_name_snapshot, classroom_name_snapshot, is_active, cancelled_at, cancel_reason, legacy_supplementary, is_test_supplementary, is_homework_supplementary, test_items, homework_content, test_completed, homework_completed, version").eq("academy_id", academyId).gte("record_date", startDate).lte("record_date", endDate),
+      supplementRiskStart
+        ? admin.from("student_supplement_tasks").select("student_id, record_date, is_active, cancelled_at, legacy_supplementary, is_test_supplementary, test_completed, test_supplement_date, is_homework_supplementary, homework_completed, homework_supplement_date, supplement_items").eq("academy_id", academyId).eq("is_active", true).gte("record_date", supplementRiskStart).lte("record_date", endDate)
+        : Promise.resolve({ data: [], error: null }),
       admin.from("daily_record_publications").select("student_id, record_date, status").eq("academy_id", academyId).gte("record_date", startDate).lte("record_date", endDate),
     ]);
-    if (studentsError || attendanceError || subjectsError || consultationsError || resolutionsError || statusHistoryError || periodStatusHistoryError || expectedReturnHistoryError || scheduleBlocksError || scheduleBlockStudentsError || classAssignmentsError || supplementTasksError || publicationsError) {
-      databaseError(studentsError ?? attendanceError ?? subjectsError ?? consultationsError ?? statusHistoryError ?? periodStatusHistoryError ?? publicationsError, "관리자 통계 자료를 불러오지 못했습니다.");
+    if (studentsError || attendanceError || subjectsError || consultationsError || resolutionsError || statusHistoryError || periodStatusHistoryError || expectedReturnHistoryError || scheduleBlocksError || scheduleBlockStudentsError || classAssignmentsError || supplementTasksError || riskSupplementTasksError || publicationsError) {
+      databaseError(studentsError ?? attendanceError ?? subjectsError ?? consultationsError ?? statusHistoryError ?? periodStatusHistoryError ?? riskSupplementTasksError ?? publicationsError, "관리자 통계 자료를 불러오지 못했습니다.");
     }
 
     if (scheduleBlocksError || scheduleBlockStudentsError || classAssignmentsError || supplementTasksError) {
@@ -1030,6 +1159,9 @@ export async function GET(request: NextRequest) {
     const scheduleBlockRows = (scheduleBlocks ?? []) as ScheduleBlockRow[];
     const scheduleBlockStudentRows = (scheduleBlockStudents ?? []) as ScheduleBlockStudentRow[];
     const classAssignmentRows = (classAssignments ?? []) as ClassAssignmentRow[];
+    const { data: reportClassRows, error: reportClassError } = await admin.from("classes").select("id, name, category").eq("academy_id", academyId).order("name", { ascending: true });
+    if (reportClassError) databaseError(reportClassError, "반 목록을 불러오지 못했습니다.");
+    const reportClassOptions = (reportClassRows ?? []) as ReportClassOption[];
     const statusHistoryRows = (statusHistory ?? []) as StatusHistoryRow[];
     const periodStatusHistoryRows = (periodStatusHistory ?? []) as StatusHistoryRow[];
     const expectedReturnHistoryRows = (expectedReturnHistory ?? []) as ExpectedReturnHistoryRow[];
@@ -1160,7 +1292,7 @@ export async function GET(request: NextRequest) {
     const presentCount = attendanceRows.filter((row) => row.attendance_status === "present").length;
     const absentCount = attendanceRows.filter((row) => row.attendance_status === "absent").length;
     const unexcusedAbsentCount = attendanceRows.filter((row) => row.attendance_status === "unexcused_absent").length;
-    const riskEvaluation = evaluateRisks(studentRows, attendanceRows, subjectRows, rules, endDate);
+    const riskEvaluation = evaluateRisks(studentRows, attendanceRows, subjectRows, (riskSupplementTasks ?? []) as RiskSupplementTaskRow[], rules, riskSources, startDate, endDate);
     const evaluatedAt = new Date().toISOString();
 
     const riskRows = riskEvaluation.results.map((result) => ({
@@ -1179,9 +1311,6 @@ export async function GET(request: NextRequest) {
     let detail: { section: ReportDetailSection; item: ReportDetailItem; rows: ReportDetailRow[]; groups?: SupplementGroup[]; withdrawalHistory?: WithdrawalConcernHistoryRow[]; classOptions?: ReportClassOption[] } | undefined;
     if (detailSection && detailItem) {
       const studentById = new Map(studentRows.map((student) => [student.id, student]));
-      const { data: reportClassRows, error: reportClassError } = await admin.from("classes").select("id, name, category").eq("academy_id", academyId).order("name", { ascending: true });
-      if (reportClassError) databaseError(reportClassError, "반 목록을 불러오지 못했습니다.");
-      const reportClassOptions = (reportClassRows ?? []) as ReportClassOption[];
       const toStudentDetail = (student: StudentRow, statusOverride?: string): ReportDetailRow => ({
         studentId: student.id,
         studentNo: student.student_no,
@@ -1266,7 +1395,7 @@ export async function GET(request: NextRequest) {
             attendanceStatus: summary.status,
             attendanceBySubject: summary.attendanceBySubject,
             classDisplay: scheduleDisplayForBlocks(scheduleBlockRows, summary.blockIds) || null,
-            classIds: [...new Set(scheduleBlockRows.filter((block) => summary.blockIds.has(block.id)).map((block) => block.class_id))],
+        classIds: [...new Set(scheduleBlockRows.filter((block) => summary.blockIds.has(block.id)).map((block) => block.class_id))],
           }];
         });
       const supplementDetails = detailItem === "supplement_target" || detailItem === "supplement_completed" || detailItem === "supplement_cancelled" || detailItem === "supplement_incomplete"
@@ -1375,9 +1504,9 @@ export async function GET(request: NextRequest) {
               ...toStudentDetail(student),
               date: assignment.start_date,
               classDisplay: scheduleDisplayForStudentDate(student.id, assignment.start_date, scheduleBlockRows, classAssignmentRows) || null,
+              previousClassDisplay: scheduleDisplayForStudentDate(student.id, previous.end_date ?? subtractDays(assignment.start_date, 1), scheduleBlockRows, classAssignmentRows) || null,
               classIds: [assignment.class_id],
               previousClassId: previous.class_id,
-              previousClassDisplay: scheduleDisplayForStudentDate(student.id, previous.end_date ?? subtractDays(assignment.start_date, 1), scheduleBlockRows, classAssignmentRows) || null,
             }];
           }),
           supplement_target: supplementDetails,
@@ -1455,6 +1584,7 @@ export async function GET(request: NextRequest) {
           lookbackStart: riskEvaluation.riskStart,
           atRiskCount: riskEvaluation.results.filter((result) => result.isAtRisk).length,
           students: riskEvaluation.results,
+          sources: riskSources,
         },
         ...(detail ? { detail } : {}),
       },

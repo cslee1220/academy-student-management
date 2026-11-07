@@ -6,8 +6,6 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const STATUS_FILTERS = ["enrolled", "paused", "withdrawn", "all"] as const;
 const STUDENT_CLASSIFICATION_ORDER: Record<string, number> = { 초등: 0, 중등: 1, 고등: 2, 미지정: 3 };
-const QUERY_CHUNK_SIZE = 40;
-const MAX_CONCURRENT_QUERIES = 4;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 type StudentRow = {
@@ -52,10 +50,64 @@ type ScheduleBlockRow = {
   effective_end: string;
   is_active: boolean;
 };
-type BlockStudentRow = { block_id: string; student_id: string; start_date: string; end_date: string | null; is_active: boolean };
-type ClassAssignmentRow = { class_id: string; student_id: string; start_date: string; end_date: string | null; status: string };
-type TeacherAssignmentRow = { class_id: string; subject_id: string; teacher_id: string; effective_start: string; effective_end: string | null; is_active: boolean };
-type ClassroomAssignmentRow = { class_id: string; subject_id: string; classroom_id: string; effective_start: string; effective_end: string | null; is_active: boolean; updated_at: string };
+type BlockStudentRow = { id: string; block_id: string; student_id: string; start_date: string; end_date: string | null; is_active: boolean };
+type ClassAssignmentRow = { id: string; class_id: string; student_id: string; start_date: string; end_date: string | null; status: string };
+type TeacherAssignmentRow = { id: string; class_id: string; subject_id: string; teacher_id: string; effective_start: string; effective_end: string | null; is_active: boolean };
+type ClassroomAssignmentRow = { id: string; class_id: string; subject_id: string; classroom_id: string; effective_start: string; effective_end: string | null; is_active: boolean; updated_at: string };
+
+type QueryResult<Row> = { data: Row[] | null; error: { message: string } | null };
+type QueryScheduler = { run<Result>(request: () => PromiseLike<Result>): Promise<Result> };
+
+const QUERY_CHUNK_SIZE = 40;
+const QUERY_CONCURRENCY_LIMIT = 4;
+
+function createQueryScheduler(maxConcurrent: number): QueryScheduler {
+  let activeRequests = 0;
+  const waitingRequests: Array<() => void> = [];
+
+  return {
+    async run<Result>(request: () => PromiseLike<Result>) {
+      if (activeRequests >= maxConcurrent) {
+        await new Promise<void>((resolve) => waitingRequests.push(resolve));
+      } else {
+        activeRequests += 1;
+      }
+
+      try {
+        return await request();
+      } finally {
+        const nextRequest = waitingRequests.shift();
+        if (nextRequest) nextRequest();
+        else activeRequests -= 1;
+      }
+    },
+  };
+}
+
+async function queryByIdChunks<Row extends { id: string }>(
+  ids: string[],
+  scheduler: QueryScheduler,
+  query: (chunk: string[]) => PromiseLike<QueryResult<Row>>,
+  errorMessage: string,
+): Promise<Row[]> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return [];
+
+  const chunks: string[][] = [];
+  for (let index = 0; index < uniqueIds.length; index += QUERY_CHUNK_SIZE) {
+    chunks.push(uniqueIds.slice(index, index + QUERY_CHUNK_SIZE));
+  }
+
+  const results = await Promise.all(chunks.map((chunk) => scheduler.run(() => query(chunk))));
+  const rowsById = new Map<string, Row>();
+  for (const result of results) {
+    if (result.error) throw new HttpError(500, "database_error", errorMessage);
+    for (const row of result.data ?? []) {
+      if (!rowsById.has(row.id)) rowsById.set(row.id, row);
+    }
+  }
+  return [...rowsById.values()];
+}
 
 type OverviewStudent = {
   id: string;
@@ -84,47 +136,6 @@ class HttpError extends Error {
     super(message);
     this.name = "HttpError";
   }
-}
-
-type QueryResult<T> = { data: T[] | null; error: unknown | null };
-
-function createQueryScheduler(limit: number) {
-  let active = 0;
-  const queue: Array<() => void> = [];
-
-  function pump() {
-    while (active < limit && queue.length) queue.shift()?.();
-  }
-
-  return function schedule<T>(task: () => Promise<T>) {
-    return new Promise<T>((resolve, reject) => {
-      queue.push(() => {
-        active += 1;
-        void task()
-          .then(resolve, reject)
-          .finally(() => {
-            active -= 1;
-            pump();
-          });
-      });
-      pump();
-    });
-  };
-}
-
-async function queryInChunks<T>(
-  ids: string[],
-  schedule: <T>(task: () => Promise<T>) => Promise<T>,
-  query: (chunk: string[]) => PromiseLike<QueryResult<T>>,
-  errorMessage: string,
-) {
-  const uniqueIds = [...new Set(ids)].filter(Boolean);
-  const chunks = Array.from({ length: Math.ceil(uniqueIds.length / QUERY_CHUNK_SIZE) }, (_, index) =>
-    uniqueIds.slice(index * QUERY_CHUNK_SIZE, (index + 1) * QUERY_CHUNK_SIZE),
-  );
-  const results = await Promise.all(chunks.map((chunk) => schedule(() => Promise.resolve(query(chunk)))));
-  if (results.some((result) => result.error)) throw new HttpError(500, "database_error", errorMessage);
-  return results.flatMap((result) => result.data ?? []);
 }
 
 function today() {
@@ -290,14 +301,15 @@ export async function GET(request: NextRequest) {
     const asOfDate = parseDate(request.nextUrl.searchParams.get("asOfDate"));
     const statusFilter = parseStatusFilter(request.nextUrl.searchParams.get("status"));
     const admin = createSupabaseAdminClient();
+    const queryScheduler = createQueryScheduler(QUERY_CONCURRENCY_LIMIT);
 
     const [studentsResult, schoolsResult, vehiclesResult, classroomsResult, classesResult, subjectsResult] = await Promise.all([
-      admin.from("students").select("id, student_no, name, current_status, school_name, school_level, school_id, grade, level, classroom_id, vehicle_id").eq("academy_id", academyId).order("name", { ascending: true }),
-      admin.from("schools").select("id, school_level, name, is_active").eq("academy_id", academyId),
-      admin.from("vehicles").select("id, name, is_active").eq("academy_id", academyId),
-      admin.from("classrooms").select("id, name, is_active").eq("academy_id", academyId),
-      admin.from("classes").select("id, name, operation_schedule_id, is_active").eq("academy_id", academyId).eq("is_active", true),
-      admin.from("subjects").select("id, name, is_active").eq("academy_id", academyId),
+      queryScheduler.run(() => admin.from("students").select("id, student_no, name, current_status, school_name, school_level, school_id, grade, level, classroom_id, vehicle_id").eq("academy_id", academyId).order("name", { ascending: true })),
+      queryScheduler.run(() => admin.from("schools").select("id, school_level, name, is_active").eq("academy_id", academyId)),
+      queryScheduler.run(() => admin.from("vehicles").select("id, name, is_active").eq("academy_id", academyId)),
+      queryScheduler.run(() => admin.from("classrooms").select("id, name, is_active").eq("academy_id", academyId)),
+      queryScheduler.run(() => admin.from("classes").select("id, name, operation_schedule_id, is_active").eq("academy_id", academyId).eq("is_active", true)),
+      queryScheduler.run(() => admin.from("subjects").select("id, name, is_active").eq("academy_id", academyId)),
     ]);
     if (studentsResult.error || schoolsResult.error || vehiclesResult.error || classroomsResult.error || classesResult.error || subjectsResult.error) {
       throw new HttpError(500, "database_error", "학생 현황 기준자료를 불러오지 못했습니다.");
@@ -337,16 +349,15 @@ export async function GET(request: NextRequest) {
 
     const classIds = [...classById.keys()];
     const operationScheduleIds = [...new Set((classesResult.data ?? []).map((row) => row.operation_schedule_id).filter((id): id is string => Boolean(id)))];
-    const scheduleQuery = createQueryScheduler(MAX_CONCURRENT_QUERIES);
     const [blocks, classAssignments, classroomAssignments, schedules, teacherAssignments] = await Promise.all([
-      queryInChunks<ScheduleBlockRow>(classIds, scheduleQuery, (chunk) => admin.from("class_schedule_blocks").select("id, class_id, subject_id, teacher_id, classroom_id, subject_name_snapshot, weekday, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate).gte("effective_end", asOfDate), "현재 수업묶음 현황을 불러오지 못했습니다."),
-      queryInChunks<ClassAssignmentRow>(classIds, scheduleQuery, (chunk) => admin.from("student_class_assignments").select("class_id, student_id, start_date, end_date, status").eq("academy_id", academyId).in("class_id", chunk).lte("start_date", asOfDate), "현재 학생 반 배정 현황을 불러오지 못했습니다."),
-      queryInChunks<ClassroomAssignmentRow>(classIds, scheduleQuery, (chunk) => admin.from("class_subject_classroom_assignments").select("class_id, subject_id, classroom_id, effective_start, effective_end, is_active, updated_at").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate), "현재 강의실 배정 현황을 불러오지 못했습니다."),
-      queryInChunks<OperationScheduleRow>(operationScheduleIds, scheduleQuery, (chunk) => admin.from("academy_operation_schedules").select("id, weekdays, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("id", chunk).eq("is_active", true), "운영 시간표를 불러오지 못했습니다."),
-      queryInChunks<TeacherAssignmentRow>(classIds, scheduleQuery, (chunk) => admin.from("class_subject_teacher_assignments").select("class_id, subject_id, teacher_id, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate), "현재 담당 교사 배정 현황을 불러오지 못했습니다."),
+      queryByIdChunks(classIds, queryScheduler, (chunk) => admin.from("class_schedule_blocks").select("id, class_id, subject_id, teacher_id, classroom_id, subject_name_snapshot, weekday, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate).gte("effective_end", asOfDate), "현재 반·수업묶음 배정 현황을 불러오지 못했습니다."),
+      queryByIdChunks(classIds, queryScheduler, (chunk) => admin.from("student_class_assignments").select("id, class_id, student_id, start_date, end_date, status").eq("academy_id", academyId).in("class_id", chunk).lte("start_date", asOfDate), "현재 반·수업묶음 배정 현황을 불러오지 못했습니다."),
+      queryByIdChunks(classIds, queryScheduler, (chunk) => admin.from("class_subject_classroom_assignments").select("id, class_id, subject_id, classroom_id, effective_start, effective_end, is_active, updated_at").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate), "현재 반·수업묶음 배정 현황을 불러오지 못했습니다."),
+      queryByIdChunks(operationScheduleIds, queryScheduler, (chunk) => admin.from("academy_operation_schedules").select("id, weekdays, start_time, end_time, effective_start, effective_end, is_active").eq("academy_id", academyId).in("id", chunk).eq("is_active", true), "현재 반·수업묶음 배정 현황을 불러오지 못했습니다."),
+      queryByIdChunks(classIds, queryScheduler, (chunk) => admin.from("class_subject_teacher_assignments").select("id, class_id, subject_id, teacher_id, effective_start, effective_end, is_active").eq("academy_id", academyId).in("class_id", chunk).eq("is_active", true).lte("effective_start", asOfDate), "현재 반·수업묶음 배정 현황을 불러오지 못했습니다."),
     ]);
-    const blockIds = blocks.map((block) => block.id);
-    const blockStudents = await queryInChunks<BlockStudentRow>(blockIds, scheduleQuery, (chunk) => admin.from("class_schedule_block_students").select("block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).in("block_id", chunk).lte("start_date", asOfDate), "현재 수업 학생 배정 현황을 불러오지 못했습니다.");
+    const blockIds = [...new Set(blocks.map((block) => block.id))];
+    const blockStudents = await queryByIdChunks(blockIds, queryScheduler, (chunk) => admin.from("class_schedule_block_students").select("id, block_id, student_id, start_date, end_date, is_active").eq("academy_id", academyId).in("block_id", chunk).lte("start_date", asOfDate), "현재 반·수업묶음 배정 현황을 불러오지 못했습니다.");
     const scheduleById = new Map(schedules.map((schedule) => [schedule.id, schedule]));
     const currentClassStudentKeys = new Set(
       classAssignments

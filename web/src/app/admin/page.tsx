@@ -16,6 +16,7 @@ const primaryAdminMenus: AdminMenu[] = [
   { href: "/admin/students", title: "학생 관리", description: "학생 정보, 반 배정, 보호자 접속을 관리합니다.", tone: "indigo" },
   { href: "/admin/students/history", title: "학생 학습이력", description: "특정 학생의 학습 기록을 조회 전용으로 확인합니다.", tone: "slate" },
   { href: "/admin/teacher-records", title: "선생님 기록현황", description: "수업일·선생님·수업묶음별 학생 수업기록을 조회하고 확인 표시를 남깁니다.", tone: "indigo" },
+  { href: "/admin/assessment-records", title: "평가·성적관리", description: "내신·레벨테스트·모의고사 등 내부 평가 결과를 입력하고 조건별 현황을 조회합니다.", tone: "indigo" },
   { href: "/admin/reports", title: "집중관리대상학생", description: "집중관리 대상으로 판정된 학생과 관련 기준을 확인합니다.", tone: "rose" },
   { href: "/admin/academic", title: "학사 기초 설정", description: "반, 과목, 강의실, 교사 계정을 관리합니다.", tone: "indigo" },
   { href: "/admin/announcements", title: "공지사항", description: "교사·보호자에게 게시할 공지를 작성하고 관리합니다.", tone: "indigo" },

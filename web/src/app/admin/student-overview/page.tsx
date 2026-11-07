@@ -286,7 +286,7 @@ export default function StudentOverviewPage() {
               <h2 className="mt-1 text-xl font-bold text-slate-950">학생 현황 분류</h2>
               <p className="mt-1 text-sm text-slate-500">제목을 선택하면 해당 분류의 세부 현황이 아래에 표시됩니다.</p>
             </div>
-            <p className="text-sm text-slate-500">기준일 {overview.asOfDate} · {overview.totals.visibleStudentCount}명</p>
+            <div className="flex flex-wrap items-center gap-3"><p className="text-sm text-slate-500">기준일 {overview.asOfDate} · {overview.totals.visibleStudentCount}명</p></div>
           </div>
           <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {overview.sections.map((section) => {

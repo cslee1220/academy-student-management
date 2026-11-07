@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
 import { AuthorizationError, requireAcademyMembership } from "@/lib/auth/authorization";
+import { LEGACY_SUPPLEMENT_IDS } from "@/lib/lesson-record-settings";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const BUILT_IN_SUPPLEMENT_TYPE_IDS = new Set(Object.values(LEGACY_SUPPLEMENT_IDS));
 
 class HttpError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) {
@@ -71,7 +73,11 @@ function completedFor(task: Record<string, unknown>) {
 function normalizeSupplementItems(value: unknown, startDate: string, endDate: string) {
   if (!Array.isArray(value)) return [] as Array<Record<string, unknown>>;
   return value
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item) && item.enabled === true)
+    .filter((item): item is Record<string, unknown> => {
+      if (!item || typeof item !== "object" || Array.isArray(item) || item.enabled !== true) return false;
+      const typeId = typeof item.typeId === "string" ? item.typeId : "";
+      return !BUILT_IN_SUPPLEMENT_TYPE_IDS.has(typeId);
+    })
     .map((item) => ({
       typeId: typeof item.typeId === "string" ? item.typeId : "",
       name: typeof item.name === "string" ? item.name : "보충",
@@ -81,12 +87,6 @@ function normalizeSupplementItems(value: unknown, startDate: string, endDate: st
     }))
     .filter((item) => item.inRange)
     .map((item) => ({ typeId: item.typeId, name: item.name, scheduledDate: item.scheduledDate, completed: item.completed }));
-}
-
-function scheduledWithin(task: Record<string, unknown>, kind: "test" | "homework", startDate: string, endDate: string) {
-  const scheduledDate = kind === "test" ? task.test_supplement_date : task.homework_supplement_date;
-  const date = typeof scheduledDate === "string" && scheduledDate ? scheduledDate : task.record_date;
-  return typeof date === "string" && date >= startDate && date <= endDate;
 }
 
 function errorResponse(error: unknown) {
@@ -109,6 +109,8 @@ export async function GET(request: NextRequest) {
       .select("id, source_subject_record_id, block_id, class_id, subject_id, teacher_id, student_id, record_date, test_supplement_date, class_name_snapshot, subject_name_snapshot, classroom_name_snapshot, legacy_supplementary, is_test_supplementary, test_items, test_completed, test_completed_by_profile_id, test_completed_at, homework_supplement_date, is_homework_supplementary, homework_content, homework_completed, homework_completed_by_profile_id, homework_completed_at, supplement_items, version, updated_at")
       .eq("academy_id", academyId)
       .eq("is_active", true)
+      .gte("record_date", startDate)
+      .lte("record_date", endDate)
       .order("classroom_name_snapshot", { ascending: true })
       .order("subject_name_snapshot", { ascending: true })
       .order("student_id", { ascending: true });
@@ -117,17 +119,22 @@ export async function GET(request: NextRequest) {
     if (taskError) throw taskError;
     const studentIds = [...new Set((tasks ?? []).map((task) => task.student_id))];
     const sourceRecordIds = [...new Set((tasks ?? []).map((task) => task.source_subject_record_id).filter((id): id is string => typeof id === "string" && Boolean(id)))];
-    const [{ data: students, error: studentError }, { data: sourceRecords, error: sourceRecordError }] = await Promise.all([
+    const attendanceKeys = [...new Set((tasks ?? []).map((task) => `${task.block_id}|${task.record_date}`))];
+    const [{ data: students, error: studentError }, { data: sourceRecords, error: sourceRecordError }, { data: attendance, error: attendanceError }] = await Promise.all([
       studentIds.length
-        ? admin.from("students").select("id, student_no, name").eq("academy_id", academyId).in("id", studentIds)
+        ? admin.from("students").select("id, student_no, name, current_status").eq("academy_id", academyId).in("id", studentIds)
         : Promise.resolve({ data: [], error: null }),
       sourceRecordIds.length
         ? admin.from("daily_subject_records").select("id, student_id, block_id, subject_id, record_date, public_note").eq("academy_id", academyId).in("id", sourceRecordIds)
         : Promise.resolve({ data: [], error: null }),
+      attendanceKeys.length
+        ? admin.from("daily_attendance_records").select("block_id, student_id, record_date, attendance_status, absence_note").eq("academy_id", academyId).in("block_id", [...new Set((tasks ?? []).map((task) => task.block_id))]).in("record_date", [...new Set((tasks ?? []).map((task) => task.record_date))]).in("student_id", studentIds)
+        : Promise.resolve({ data: [], error: null }),
     ]);
-    if (studentError || sourceRecordError) throw studentError ?? sourceRecordError;
+    if (studentError || sourceRecordError || attendanceError) throw studentError ?? sourceRecordError ?? attendanceError;
     const studentById = new Map((students ?? []).map((student) => [student.id, student]));
     const sourceRecordById = new Map((sourceRecords ?? []).map((record) => [record.id, record]));
+    const attendanceByKey = new Map((attendance ?? []).map((record) => [`${record.block_id}|${record.student_id}|${record.record_date}`, record]));
     const rows = (tasks ?? []).map((task) => {
       const sourceRecord = task.source_subject_record_id ? sourceRecordById.get(task.source_subject_record_id) : null;
       const sourceMatchesTask = sourceRecord
@@ -139,16 +146,19 @@ export async function GET(request: NextRequest) {
       const supplementItems = normalizeSupplementItems(task.supplement_items, startDate, endDate);
       const normalized = {
         ...task,
+        supplement_type: (task.is_test_supplementary || (task.legacy_supplementary && supplementItems.length === 0)) && task.is_homework_supplementary ? "테스트·과제" : (task.is_test_supplementary || (task.legacy_supplementary && supplementItems.length === 0)) ? "테스트" : "과제",
         student_note: sourceMatchesTask && typeof sourceRecord?.public_note === "string" ? sourceRecord.public_note : null,
-        has_test_supplementary: (task.is_test_supplementary || (task.legacy_supplementary && supplementItems.length === 0)) && scheduledWithin(task as Record<string, unknown>, "test", startDate, endDate),
-        has_homework_supplementary: task.is_homework_supplementary && scheduledWithin(task as Record<string, unknown>, "homework", startDate, endDate),
+        attendance_status: attendanceByKey.get(`${task.block_id}|${task.student_id}|${task.record_date}`)?.attendance_status ?? null,
+        absence_note: attendanceByKey.get(`${task.block_id}|${task.student_id}|${task.record_date}`)?.absence_note ?? null,
+        has_test_supplementary: task.is_test_supplementary || (task.legacy_supplementary && supplementItems.length === 0),
+        has_homework_supplementary: task.is_homework_supplementary,
         supplement_items: supplementItems,
         test_items: normalizeTestItems(task.test_items),
         completed: completedFor({
           ...task,
-          is_test_supplementary: (task.is_test_supplementary || (task.legacy_supplementary && supplementItems.length === 0)) && scheduledWithin(task as Record<string, unknown>, "test", startDate, endDate),
+          is_test_supplementary: task.is_test_supplementary || (task.legacy_supplementary && supplementItems.length === 0),
           legacy_supplementary: false,
-          is_homework_supplementary: task.is_homework_supplementary && scheduledWithin(task as Record<string, unknown>, "homework", startDate, endDate),
+          is_homework_supplementary: task.is_homework_supplementary,
           supplement_items: supplementItems,
         }),
         student: studentById.get(task.student_id) ?? null,

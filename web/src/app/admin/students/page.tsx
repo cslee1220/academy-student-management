@@ -1491,7 +1491,8 @@ function StudentsPageContent() {
 
       {error ? <p className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-700">{error}</p> : null}
       {message ? <p className="mt-4 rounded-xl bg-indigo-50 px-4 py-3 text-sm leading-6 text-indigo-700">{message}</p> : null}
-      {studentId && !currentActiveAssignment ? <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">기준일 현재 유효한 정규반 배정이 없어 반 이동·수업 순서 변경 기능이 표시되지 않습니다. 정규반을 선택한 뒤 학생 정보 수정 저장을 완료해 주세요.</p> : null}
+      {studentId && !currentActiveAssignment && upcomingAssignment ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">정규반 배정 정보는 저장되었습니다. 반배정 시작일이 {upcomingAssignment.start_date}로 설정되어 현재 기준일에는 예정 배정으로 표시됩니다. 시작일 이후 반 이동·수업 순서 변경 기능을 사용할 수 있습니다.</p> : null}
+      {studentId && !currentActiveAssignment && !upcomingAssignment ? <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">기준일 현재 유효한 정규반 배정이 없어 반 이동·수업 순서 변경 기능이 표시되지 않습니다. 정규반을 선택한 뒤 학생 정보 수정 저장을 완료해 주세요.</p> : null}
 
       {isExamBatch ? <ExamBatchAssignmentPanel /> : null}
       {isClassBatch ? <ClassBatchAssignmentPanel /> : null}
@@ -1499,10 +1500,13 @@ function StudentsPageContent() {
       <div className={isExamBatch || isClassBatch ? "hidden" : "flex flex-col"}>
 
       <form onSubmit={saveStudent} onKeyDown={(event) => { if (event.key === "Enter" && event.target !== studentSubmitButtonRef.current) event.preventDefault(); }} className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-        <div className="flex items-center justify-between gap-4"><div><h2 className="text-xl font-bold">{studentId ? "학생 정보 수정" : "학생 등록"}</h2><p className="mt-1 text-sm text-slate-500">학생 상태를 변경하면 서버가 상태 이력을 자동으로 남깁니다.</p></div>{studentId ? <button type="button" onClick={() => startNewStudentRegistration()} className="text-sm font-semibold text-slate-500 hover:text-slate-800">새 학생 등록</button> : null}</div>
+        <div><h2 className="text-xl font-bold">{studentId ? "학생 정보 수정" : "학생 등록"}</h2><p className="mt-1 text-sm text-slate-500">학생 상태를 변경하면 서버가 상태 이력을 자동으로 남깁니다.</p></div>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div className="relative text-sm font-semibold text-slate-700">
-            <label htmlFor="student-name-search">이름</label>
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="student-name-search">이름</label>
+              {studentId ? <button type="button" onClick={() => startNewStudentRegistration()} className="text-sm font-semibold text-slate-500 hover:text-slate-800">새 학생 등록</button> : null}
+            </div>
             <input
               id="student-name-search"
               value={studentName}
@@ -1688,7 +1692,7 @@ function StudentsPageContent() {
       {guardianInviteNotice ? <section className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4"><h2 className="font-bold text-amber-900">보호자 연결 결과</h2><p className="mt-2 text-sm leading-6 text-amber-800">{guardianInviteNotice}</p><p className="mt-3 text-xs leading-5 text-amber-700">이미 연결된 보호자는 아래 학생별 보호자 연결 영역에서 접속 링크를 재발급해 주세요.</p></section> : null}
 
       <section className="order-last mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-xl font-bold">전체 학생목록</h2><p className="mt-1 text-sm text-slate-500">기본 화면에서는 숨겨져 있습니다. 이름 검색을 사용해 필요한 학생만 선택하세요.</p></div><button type="button" onClick={() => setIsStudentListOpen((open) => !open)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-50">{isStudentListOpen ? "목록 숨기기" : `전체 목록 보기 (${data.students.length}명)`}</button></div>
+        <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-xl font-bold">전체 학생목록</h2><p className="mt-1 text-sm text-slate-500">기본 화면에서는 숨겨져 있습니다. 이름 검색을 사용해 필요한 학생만 선택하세요.</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setIsStudentListOpen((open) => !open)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-50">{isStudentListOpen ? "목록 숨기기" : `전체 목록 보기 (${data.students.length}명)`}</button></div></div>
         {isStudentListOpen ? <div className="mt-4 max-h-[520px] overflow-auto"><table className="w-full min-w-[950px] text-left text-sm"><thead className="border-b border-slate-200 text-slate-500"><tr><th className="px-3 py-2.5 font-semibold">학생 ID</th><th className="px-3 py-2.5 font-semibold">이름·수업시작일</th><th className="px-3 py-2.5 font-semibold">학교·학년</th><th className="px-3 py-2.5 font-semibold">차량</th><th className="px-3 py-2.5 font-semibold">재원 상태</th><th className="px-3 py-2.5 font-semibold">작업</th></tr></thead><tbody>{data.students.length ? data.students.map((student) => <tr key={student.id} className="border-b border-slate-100"><td className="px-3 py-3 font-mono text-xs">{student.student_no}</td><td className="px-3 py-3 font-semibold"><span>{student.name}</span><span className="mt-1 block text-xs font-normal text-slate-500">수업시작일: {student.class_start_date ?? "-"}</span></td><td className="px-3 py-3">{student.school_name ?? "-"} · {student.grade ?? "학년 없음"}</td><td className="px-3 py-3">{student.vehicle_id ? vehicleNameById.get(student.vehicle_id) ?? "등록 차량 없음" : "차량 없음"}</td><td className="px-3 py-3">{statusLabel(student.current_status)}</td><td className="px-3 py-3"><button type="button" onClick={() => editStudent(student)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold hover:bg-slate-50">선택·수정</button></td></tr>) : <tr><td colSpan={6} className="px-3 py-12 text-center text-slate-500">등록된 학생이 없습니다.</td></tr>}</tbody></table></div> : null}
       </section>
 

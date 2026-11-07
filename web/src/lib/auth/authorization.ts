@@ -108,6 +108,16 @@ export async function requireAcademyAdminFromContext(requestedAcademyId?: string
   return { ...admin, academyId };
 }
 
+export async function requireAcademyStaffFromContext() {
+  const cookieStore = await cookies();
+  const academyId = cookieStore.get(ACADEMY_CONTEXT_COOKIE)?.value?.trim();
+  if (!academyId) {
+    throw new AuthorizationError("unauthorized", "濡쒓렇?몄씠 ?꾩슂?⑸땲??");
+  }
+  const membership = await requireAcademyMembership(academyId, ["academy_admin", "teacher"]);
+  return { academyId, membership };
+}
+
 export async function requireTeacherRouteFromContext() {
   const cookieStore = await cookies();
   const academyId = cookieStore.get(ACADEMY_CONTEXT_COOKIE)?.value?.trim();

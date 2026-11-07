@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import StudentAssessmentHistoryPanel from "@/components/student-assessment-history-panel";
 
 type Term = {
   id: string;
@@ -209,6 +210,11 @@ export default function TeacherStudentHistoryPanel() {
   const [isLoadingStudents, setIsLoadingStudents] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [error, setError] = useState("");
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
+  const autocompleteRef = useRef<HTMLDivElement>(null);
+  const suggestionId = "teacher-history-student-options";
+  const suggestions = studentNameQuery.trim() ? students.filter((student) => student.name.trim().startsWith(studentNameQuery.trim())).slice(0, 10) : [];
 
   const loadStudents = useCallback(async () => {
     setIsLoadingStudents(true);
@@ -249,37 +255,40 @@ export default function TeacherStudentHistoryPanel() {
   }, []);
 
   useEffect(() => {
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (event.target instanceof Node && !autocompleteRef.current?.contains(event.target)) setSuggestionsOpen(false);
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadStudents();
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadStudents]);
 
+  function chooseStudent(student: CurrentStudent) {
+    setStudentNameQuery(student.name);
+    setSelectedStudentId(student.id);
+    setSuggestionsOpen(false);
+    setActiveSuggestionIndex(-1);
+    setError("");
+    void loadHistory(student.id, selectedTermId);
+  }
+
   function searchStudent() {
     const query = studentNameQuery.trim();
-    if (!query) {
-      setError("조회할 학생 이름을 입력해 주세요.");
-      return;
-    }
-
+    if (!query) return;
     const exactMatches = students.filter((student) => student.name.trim() === query);
-    const matches = exactMatches.length ? exactMatches : students.filter((student) => student.name.includes(query));
-    if (!matches.length) {
-      setSelectedStudentId("");
-      setHistory(null);
-      setError("현재 담당 학생 중 일치하는 학생을 찾지 못했습니다.");
-      return;
-    }
-    if (matches.length > 1) {
-      setSelectedStudentId("");
-      setHistory(null);
-      setError("동명이인 학생이 여러 명입니다. 학생 이름을 더 정확히 입력해 주세요.");
-      return;
-    }
-
-    const [student] = matches;
-    setSelectedStudentId(student.id);
-    void loadHistory(student.id, selectedTermId);
+    if (exactMatches.length === 1) chooseStudent(exactMatches[0]);
+    else if (exactMatches.length > 1) {
+      setSelectedStudentId(""); setHistory(null);
+      setError("동명이인 학생이 여러 명입니다. 자동완성 목록에서 학번을 확인해 선택하세요."); setSuggestionsOpen(true);
+    } else if (!students.some((student) => student.name.trim().startsWith(query))) {
+      setSelectedStudentId(""); setHistory(null); setError("일치하는 담당학생이 없습니다.");
+    } else setSuggestionsOpen(true);
   }
 
   function selectTerm(value: string) {
@@ -304,7 +313,18 @@ export default function TeacherStudentHistoryPanel() {
         <div className="text-sm font-semibold text-slate-700">
           <label htmlFor="teacher-history-student-name">담당 학생 이름</label>
           <form onSubmit={(event) => { event.preventDefault(); searchStudent(); }} className="mt-2 flex gap-2">
-            <input id="teacher-history-student-name" value={studentNameQuery} onChange={(event) => setStudentNameQuery(event.target.value)} disabled={isLoadingStudents} placeholder="학생 이름을 입력하세요" className="h-11 min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-violet-500" />
+            <div ref={autocompleteRef} className="relative min-w-0 flex-1">
+              <span id="teacher-history-autocomplete-help" className="sr-only">Search by the start of a student name. Use arrow keys and Enter to select; press Escape to close.</span>
+              <input id="teacher-history-student-name" role="combobox" aria-label="담당 학생 이름" aria-describedby="teacher-history-autocomplete-help" aria-autocomplete="list" aria-expanded={suggestionsOpen} aria-controls={suggestionId} aria-activedescendant={suggestionsOpen && activeSuggestionIndex >= 0 ? `teacher-history-student-option-${activeSuggestionIndex}` : undefined} autoComplete="off" value={studentNameQuery} onChange={(event) => { const value = event.target.value; setStudentNameQuery(value); setSelectedStudentId(""); setHistory(null); setError(""); setActiveSuggestionIndex(-1); setSuggestionsOpen(Boolean(value.trim())); }} onFocus={() => { if (studentNameQuery.trim()) setSuggestionsOpen(true); }} onKeyDown={(event) => {
+                if (event.key === "Escape") { setSuggestionsOpen(false); setActiveSuggestionIndex(-1); }
+                else if (event.key === "ArrowDown" && suggestionsOpen && suggestions.length) { event.preventDefault(); setActiveSuggestionIndex((current) => Math.min(current + 1, suggestions.length - 1)); }
+                else if (event.key === "ArrowUp" && suggestionsOpen && suggestions.length) { event.preventDefault(); setActiveSuggestionIndex((current) => Math.max(current - 1, 0)); }
+                else if (event.key === "Enter" && suggestionsOpen && activeSuggestionIndex >= 0 && suggestions[activeSuggestionIndex]) { event.preventDefault(); chooseStudent(suggestions[activeSuggestionIndex]); }
+              }} disabled={isLoadingStudents} placeholder="학생 이름을 입력하세요" className="h-11 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 font-normal outline-none focus:border-violet-500" />
+              {suggestionsOpen && studentNameQuery.trim() ? <ul id={suggestionId} role="listbox" aria-label="담당학생 검색 결과" className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
+                {suggestions.length ? suggestions.map((student, index) => <li id={`teacher-history-student-option-${index}`} key={student.id} role="option" aria-selected={index === activeSuggestionIndex} onPointerDown={(event) => event.preventDefault()} onClick={() => chooseStudent(student)} className={`cursor-pointer px-3 py-2 text-sm ${index === activeSuggestionIndex ? "bg-violet-100" : "hover:bg-slate-50"}`}><span className="font-semibold">{student.name}</span><span className="ml-2 text-xs text-slate-500">{student.studentNo}</span></li>) : <li role="option" aria-selected="false" className="px-3 py-2 text-sm text-slate-500">일치하는 담당학생이 없습니다.</li>}
+              </ul> : null}
+            </div>
             <button type="submit" disabled={isLoadingStudents || !students.length} className="h-11 shrink-0 rounded-xl bg-violet-600 px-4 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">찾기</button>
           </form>
         </div>
@@ -322,6 +342,7 @@ export default function TeacherStudentHistoryPanel() {
       {isLoadingHistory ? <p className="mt-4 rounded-xl bg-white px-4 py-8 text-center text-sm text-slate-500">학생 이력을 불러오는 중입니다.</p> : null}
 
       {history && !isLoadingHistory ? (
+        <>
         <div className="mt-5 flex flex-col gap-4">
           <div className="rounded-xl border border-violet-100 bg-white p-4">
             <div className="flex flex-wrap items-center gap-2">
@@ -367,6 +388,8 @@ export default function TeacherStudentHistoryPanel() {
             {history.history.consultations.length ? <div className="mt-4 space-y-3">{history.history.consultations.map((row) => <article key={row.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><div className="flex flex-wrap gap-2 text-xs text-slate-500"><span>{dateText(row.recordDate)}</span><span>{row.status ?? "상태 미지정"}</span><span>{row.method ?? "방법 미지정"}</span>{row.withdrawalConcern ? <span className="font-bold text-rose-700">퇴원 우려</span> : null}</div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{row.content ?? "내용 없음"}</p></article>)}</div> : <p className="mt-4 text-sm text-slate-500">조회할 상담 이력이 없습니다.</p>}
           </details>
         </div>
+        <StudentAssessmentHistoryPanel key={selectedStudentId} studentId={selectedStudentId} />
+        </>
       ) : null}
     </section>
   );

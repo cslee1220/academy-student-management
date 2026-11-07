@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import AdminLogoutButton from "@/components/admin/admin-logout-button";
+import AssessmentOptionsPanel from "@/components/admin/assessment-options-panel";
 import ClassOperationsPanel from "@/components/admin/class-operations-panel";
 import ExamClassSetupPanel from "@/components/admin/exam-class-setup-panel";
 import TeacherAccountsPanel from "@/components/admin/teacher-accounts-panel";
@@ -131,7 +132,7 @@ type AcademicData = {
 };
 
 type Resource = "school_years" | "terms" | "academic_periods" | "classes" | "classrooms" | "vehicles" | "subjects" | "schools" | "academy_levels" | "operation_types" | "teachers" | "publication_settings" | "operation_settings" | "grade_promotion_settings" | "grade_promotions";
-type SettingKey = Resource | "class_operations" | "exam_classes" | "record_settings";
+type SettingKey = Resource | "assessment_settings" | "class_operations" | "exam_classes" | "record_settings";
 
 const focusRingClass = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2";
 const inputFocusClass = "focus-visible:border-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-100";
@@ -156,6 +157,7 @@ const settingItems: Array<{ key: SettingKey; title: string; description: string 
   { key: "schools", title: "학교", description: "학생 등록에서 선택할 학교를 관리합니다." },
   { key: "academy_levels", title: "레벨", description: "학생 등록에서 선택할 레벨과 표시순서를 관리합니다." },
   { key: "teachers", title: "교사 계정", description: "교사 계정 등록, 활성화 코드 발급과 계정 상태를 관리합니다." },
+  { key: "assessment_settings", title: "평가·성적 설정", description: "평가관리에서 사용할 평가유형·평가과목·평가명을 관리합니다." },
   { key: "record_settings", title: "수업기록 설정", description: "학원별 테스트·수업지표·보충 유형과 메모·공통기록 사용 여부를 관리합니다." },
 ];
 
@@ -210,7 +212,7 @@ const academicMenuGroups: AcademicMenuGroup[] = [
     step: 2,
     eyebrow: "MASTER DATA",
     title: "기초 정보 등록",
-    description: "학생과 수업 구성에서 선택할 학교·과목·레벨·교사·강의실·차량을 준비합니다.",
+    description: "학생 신규 등록과 수업 구성에서 선택할 기본 정보를 준비합니다.",
     items: [
       settingMenuCard("schools"),
       settingMenuCard("subjects"),
@@ -229,6 +231,7 @@ const academicMenuGroups: AcademicMenuGroup[] = [
       settingMenuCard("classes"),
       settingMenuCard("class_operations"),
       settingMenuCard("exam_classes"),
+      settingMenuCard("assessment_settings"),
       settingMenuCard("record_settings"),
     ],
   },
@@ -236,7 +239,7 @@ const academicMenuGroups: AcademicMenuGroup[] = [
     step: 4,
     eyebrow: "TRANSITION",
     title: "학년도 전환 및 학생 배정",
-    description: "최초 설정의 필수 단계가 아니라 새 학년도 전환 또는 내신 운영 시 사용하는 작업입니다.",
+    description: "새 학년도 전환 또는 내신 운영 시 사용하는 작업입니다.",
     items: [
       settingMenuCard("grade_promotions"),
       batchMenuCard("/admin/students?section=class_batch"),
@@ -492,7 +495,7 @@ function AcademicSettingsPageContent() {
       void loadAcademic(false);
     }, 0);
     return () => window.clearTimeout(timeoutId);
-  }, [loadAcademic, selectedSection]);
+  }, [loadAcademic, router, selectedSection]);
 
   async function saveResource(resource: Resource, payload: Record<string, unknown>, editingId: string | null, onError?: (message: string) => void) {
     setError("");
@@ -1031,7 +1034,7 @@ function AcademicSettingsPageContent() {
             <p className="text-sm font-bold text-indigo-600">SETTINGS MENU</p>
             <h2 className="mt-2 text-2xl font-bold">학사 설정 순서</h2>
             <p className="mt-2 text-sm leading-6 text-slate-500">
-              처음 설정할 때는 1단계부터 진행하고, 학년도 전환이나 내신 운영에 필요한 작업은 4단계에서 실행합니다. 각 카드를 누르면 기존 설정 화면으로 이동합니다.
+              처음 설정은 1~4단계 순서로 진행하고, 학년도 전환이나 내신 운영은 마지막 단계에서 실행합니다. 각 카드를 누르면 해당 설정 화면으로 이동합니다.
             </p>
           </div>
           <div className="mt-8 grid gap-6 xl:grid-cols-2">
@@ -1091,8 +1094,7 @@ function AcademicSettingsPageContent() {
       {selectedSection && isLoading && !isSaving ? <p role="status" aria-live="polite" className="mt-5 rounded-xl bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-500">학사 설정을 불러오는 중입니다.</p> : null}
 
       {selectedSection === "exam_classes" ? <div className="mt-8"><ExamClassSetupPanel /></div> : null}
-
-      <div className={selectedSection === "classes" ? "mt-8" : selectedSection && selectedSection !== "class_operations" && selectedSection !== "exam_classes" ? "mt-8 grid gap-6 lg:grid-cols-2" : "hidden"}>
+      <div className={selectedSection === "classes" ? "mt-8" : selectedSection && selectedSection !== "class_operations" && selectedSection !== "exam_classes" && selectedSection !== "assessment_settings" ? "mt-8 grid gap-6 lg:grid-cols-2" : "hidden"}>
         <section className={selectedSection === "legacy_school_years" ? "rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" : "hidden"}>
           <div className="flex items-center justify-between gap-4">
             <div>
@@ -1563,6 +1565,7 @@ function AcademicSettingsPageContent() {
         <div className="mt-6 rounded-xl border border-slate-200 p-4"><h3 className="font-bold text-slate-900">변경 이력</h3>{data.gradePromotion.history.length ? <div className="mt-3 overflow-x-auto"><table className="min-w-[720px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs text-slate-500"><tr><th className="px-3 py-3">학년도</th><th className="px-3 py-3">적용 기준일</th><th className="px-3 py-3">상태</th><th className="px-3 py-3">적용 시각</th></tr></thead><tbody>{data.gradePromotion.history.map((batch) => <tr key={batch.id} className="border-b border-slate-100"><td className="px-3 py-3 font-semibold">{batch.promotion_year}학년도</td><td className="px-3 py-3">{batch.effective_date}</td><td className="px-3 py-3">{gradePromotionStatusLabel(batch.status)}</td><td className="px-3 py-3">{batch.applied_at ? new Date(batch.applied_at).toLocaleString("ko-KR") : "-"}</td></tr>)}</tbody></table></div> : <p className="mt-3 text-sm text-slate-500">아직 학년 승급 변경 이력이 없습니다.</p>}</div>
       </section>
 
+      {selectedSection === "assessment_settings" ? <AssessmentOptionsPanel /> : null}
 
       <section id="record-settings" className={selectedSection === "record_settings" ? "mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8" : "hidden"}>
         <div>

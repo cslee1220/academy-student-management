@@ -414,7 +414,7 @@ async function loadBatchData(academyId: string, filters: { schoolName?: string; 
   let studentsQuery = admin.from("students").select("id, student_no, name, school_name, grade, current_status").eq("academy_id", academyId).eq("current_status", "enrolled").order("name", { ascending: true });
   if (filters.schoolName) studentsQuery = studentsQuery.ilike("school_name", `%${filters.schoolName}%`);
   if (filters.grade) studentsQuery = studentsQuery.eq("grade", filters.grade);
-  const filterOptionsPromise = admin.from("students").select("school_name, grade").eq("academy_id", academyId).eq("current_status", "enrolled");
+  const filterOptionsPromise = admin.from("students").select("id, student_no, name, school_name, grade").eq("academy_id", academyId).eq("current_status", "enrolled");
   const [studentsResult, assignmentsResult, classesResult, termsResult, schedulesResult, subjectsResult, membershipsResult, classroomsResult, teacherAssignmentsResult, classroomAssignmentsResult, operationsResult, filterOptionsResult] = await Promise.all([
     studentsQuery,
     admin.from("student_class_assignments").select("id, student_id, class_id, term_id, operation_type_id, start_date, end_date, status, assignment_role, exam_operation_id, source_assignment_id").eq("academy_id", academyId).order("start_date", { ascending: false }),
@@ -454,6 +454,7 @@ async function loadBatchData(academyId: string, filters: { schoolName?: string; 
     academyId,
     subject: subject ?? null,
     students,
+    changeStudents: filterOptionsResult.data ?? [],
     assignments,
     classes: classesResult.data ?? [],
     terms: termsResult.data ?? [],

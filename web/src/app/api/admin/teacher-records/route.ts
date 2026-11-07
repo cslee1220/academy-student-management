@@ -6,6 +6,8 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const WEEKDAY_LABELS: Record<string, string> = { mon: "월", tue: "화", wed: "수", thu: "목", fri: "금", sat: "토", sun: "일" };
+const POSTGREST_IN_CHUNK_SIZE = 40;
+const POSTGREST_IN_QUERY_CONCURRENCY = 4;
 
 type JsonRecord = Record<string, unknown>;
 type BlockRow = {
@@ -57,11 +59,61 @@ type TeacherReviewRow = { teacher_id: string; record_date: string; is_checked: b
 type BlockGroup = { members: BlockRow[]; preferred: BlockRow };
 type TeacherReviewView = { isChecked: boolean; checkedByProfileId: string | null; checkedAt: string | null; version: number } | null;
 type TeacherGroupData = { teacherId: string; teacherName: string; review: TeacherReviewView; blocks: Array<Record<string, unknown>> };
-type StudentStatusRow = { id: string; current_status: string | null };
+type StudentStatusRow = { id: string; student_no: string; name: string; current_status: string | null };
 type StatusHistoryRow = { student_id: string; next_status: string; effective_date: string; created_at: string };
 type CompositionStatus = "missing" | "in_progress" | "complete";
 type AggregateSaveStatus = "missing" | "draft" | "final";
 type AggregatePublicationStatus = "private" | "pending" | "published";
+
+type InQueryResult<T> = { data: T[] | null; error: { message: string } | null };
+type QueryScheduler = <T>(operation: () => PromiseLike<T>) => Promise<T>;
+
+function createQueryScheduler(concurrency: number): QueryScheduler {
+  let activeCount = 0;
+  const waiting: Array<() => void> = [];
+  return async function runQuery<T>(operation: () => PromiseLike<T>) {
+    if (activeCount >= concurrency) {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    } else {
+      activeCount += 1;
+    }
+    try {
+      return await operation();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else activeCount -= 1;
+    }
+  };
+}
+
+async function selectInChunks<T>(
+  values: string[],
+  selectChunk: (chunk: string[]) => PromiseLike<InQueryResult<T>>,
+  keyOf: (row: T) => string,
+  scheduleQuery: QueryScheduler,
+  compareRows?: (left: T, right: T) => number,
+) {
+  const uniqueValues = [...new Set(values)].sort();
+  const chunks: string[][] = [];
+  for (let offset = 0; offset < uniqueValues.length; offset += POSTGREST_IN_CHUNK_SIZE) {
+    chunks.push(uniqueValues.slice(offset, offset + POSTGREST_IN_CHUNK_SIZE));
+  }
+
+  const results = await Promise.all(chunks.map((chunk) => scheduleQuery(() => selectChunk(chunk))));
+  const error = results.find((result) => result.error)?.error ?? null;
+  if (error) return { data: [] as T[], error };
+
+  const rowsByKey = new Map<string, T>();
+  for (const result of results) {
+    for (const row of result.data ?? []) {
+      const key = keyOf(row);
+      if (!rowsByKey.has(key)) rowsByKey.set(key, row);
+    }
+  }
+  const data = [...rowsByKey.values()].sort(compareRows ?? ((left, right) => keyOf(left).localeCompare(keyOf(right))));
+  return { data, error: null };
+}
 
 class HttpError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) {
@@ -259,6 +311,7 @@ export async function GET(request: NextRequest) {
     const blockId = parseOptionalUuid(request.nextUrl.searchParams.get("blockId"), "수업묶음");
     const { academyId } = await requireAcademyAdminFromContext(requestedAcademyId ?? undefined);
     const admin = createSupabaseAdminClient();
+    const scheduleQuery = createQueryScheduler(POSTGREST_IN_QUERY_CONCURRENCY);
     const blockResult = await admin
       .from("class_schedule_blocks")
       .select("id, class_id, subject_id, teacher_id, classroom_id, classroom_name_snapshot, class_name_snapshot, subject_name_snapshot, teacher_name_snapshot, weekday, start_time, end_time, effective_start, effective_end")
@@ -290,9 +343,12 @@ export async function GET(request: NextRequest) {
     const selectedBlockIds = blockId
       ? [blockId]
       : [...new Set(selectedGroups.flatMap((group) => group.members.map((block) => block.id)))];
-    const rosterResult = selectedBlockIds.length
-      ? await admin.from("class_schedule_block_students").select("block_id, student_id, operation_group, start_date, end_date").eq("academy_id", academyId).in("block_id", selectedBlockIds)
-      : { data: [], error: null };
+    const rosterResult = await selectInChunks<RosterRow>(
+      selectedBlockIds,
+      (chunk) => admin.from("class_schedule_block_students").select("block_id, student_id, operation_group, start_date, end_date").eq("academy_id", academyId).in("block_id", chunk),
+      (row) => `${row.block_id}:${row.student_id}:${row.operation_group ?? ""}:${row.start_date}:${row.end_date ?? ""}`,
+      scheduleQuery,
+    );
     if (rosterResult.error) throw rosterResult.error;
     const rosterRows = (rosterResult.data ?? []) as RosterRow[];
     const validRosterRows = rosterRows.filter((row) => activeOnDate(row, recordDate));
@@ -309,9 +365,24 @@ export async function GET(request: NextRequest) {
       : [...new Set(queryGroups.flatMap((group) => group.members.map((block) => block.id)))];
     const classIds = [...new Set(queryGroups.flatMap((group) => group.members.map((block) => block.class_id)))];
     const [subjectResult, attendanceResult, homeworkResult] = await Promise.all([
-      blockIds.length ? admin.from("daily_subject_records").select("id, block_id, student_id, record_date, subject_id, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, public_note, test_definitions, test_results, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, save_state, record_form_snapshot, metric_values, version, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("block_id", blockIds) : Promise.resolve({ data: [], error: null }),
-      blockIds.length ? admin.from("daily_attendance_records").select("block_id, student_id, record_date, attendance_status, absence_note, save_state, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("block_id", blockIds) : Promise.resolve({ data: [], error: null }),
-      classIds.length ? admin.from("daily_common_homework").select("id, class_id, subject_id, operation_group, lesson_content, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("class_id", classIds) : Promise.resolve({ data: [], error: null }),
+      selectInChunks<SubjectRecordRow>(
+        blockIds,
+        (chunk) => admin.from("daily_subject_records").select("id, block_id, student_id, record_date, subject_id, subject_name_snapshot, teacher_name_snapshot, homework_score, understanding_score, participation_score, public_note, test_definitions, test_results, is_test_supplementary, test_supplement_date, is_homework_supplementary, homework_supplement_date, homework_supplement_content, save_state, record_form_snapshot, metric_values, version, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("block_id", chunk),
+        (row) => row.id,
+        scheduleQuery,
+      ),
+      selectInChunks<AttendanceRow>(
+        blockIds,
+        (chunk) => admin.from("daily_attendance_records").select("block_id, student_id, record_date, attendance_status, absence_note, save_state, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("block_id", chunk),
+        (row) => `${row.block_id}:${row.student_id}:${row.record_date}`,
+        scheduleQuery,
+      ),
+      selectInChunks<HomeworkRow>(
+        classIds,
+        (chunk) => admin.from("daily_common_homework").select("id, class_id, subject_id, operation_group, lesson_content, content, no_homework, save_state, version, updated_at").eq("academy_id", academyId).eq("record_date", recordDate).in("class_id", chunk),
+        (row) => row.id,
+        scheduleQuery,
+      ),
     ]);
     if (subjectResult.error || attendanceResult.error || homeworkResult.error) throw subjectResult.error ?? attendanceResult.error ?? homeworkResult.error;
     const blockById = new Map(allBlocks.map((block) => [block.id, block]));
@@ -338,11 +409,37 @@ export async function GET(request: NextRequest) {
       })
       : rosteredGroups;
     const [studentsResult, statusHistoryResult, publicationResult, taskResult, reviewResult] = await Promise.all([
-      studentIds.length ? admin.from("students").select("id, student_no, name, current_status").eq("academy_id", academyId).in("id", studentIds) : Promise.resolve({ data: [], error: null }),
-      studentIds.length ? admin.from("student_status_history").select("student_id, next_status, effective_date, created_at").eq("academy_id", academyId).in("student_id", studentIds).lte("effective_date", recordDate).order("effective_date", { ascending: false }).order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null }),
-      studentIds.length ? admin.from("daily_record_publications").select("student_id, status").eq("academy_id", academyId).eq("record_date", recordDate).in("student_id", studentIds) : Promise.resolve({ data: [], error: null }),
-      sourceRecordIds.length ? admin.from("student_supplement_tasks").select("source_subject_record_id, is_active, cancelled_at, test_supplement_date, is_test_supplementary, test_completed, homework_supplement_date, is_homework_supplementary, homework_content, homework_completed, version").eq("academy_id", academyId).in("source_subject_record_id", sourceRecordIds) : Promise.resolve({ data: [], error: null }),
-      groupsWithRoster.length ? admin.from("daily_teacher_record_admin_reviews").select("teacher_id, record_date, is_checked, checked_by_profile_id, checked_at, version").eq("academy_id", academyId).eq("record_date", recordDate).in("teacher_id", [...new Set(groupsWithRoster.map((group) => displayBlock(group).teacher_id))]) : Promise.resolve({ data: [], error: null }),
+      selectInChunks<StudentStatusRow>(
+        studentIds,
+        (chunk) => admin.from("students").select("id, student_no, name, current_status").eq("academy_id", academyId).in("id", chunk),
+        (row) => row.id,
+        scheduleQuery,
+      ),
+      selectInChunks<StatusHistoryRow>(
+        studentIds,
+        (chunk) => admin.from("student_status_history").select("student_id, next_status, effective_date, created_at").eq("academy_id", academyId).in("student_id", chunk).lte("effective_date", recordDate).order("effective_date", { ascending: false }).order("created_at", { ascending: false }),
+        (row) => `${row.student_id}:${row.effective_date}:${row.created_at}:${row.next_status}`,
+        scheduleQuery,
+        (left, right) => right.effective_date.localeCompare(left.effective_date) || right.created_at.localeCompare(left.created_at),
+      ),
+      selectInChunks<{ student_id: string; status: string }>(
+        studentIds,
+        (chunk) => admin.from("daily_record_publications").select("student_id, status").eq("academy_id", academyId).eq("record_date", recordDate).in("student_id", chunk),
+        (row) => row.student_id,
+        scheduleQuery,
+      ),
+      selectInChunks<SupplementTaskRow>(
+        sourceRecordIds,
+        (chunk) => admin.from("student_supplement_tasks").select("source_subject_record_id, is_active, cancelled_at, test_supplement_date, is_test_supplementary, test_completed, homework_supplement_date, is_homework_supplementary, homework_content, homework_completed, version").eq("academy_id", academyId).in("source_subject_record_id", chunk),
+        (row) => row.source_subject_record_id,
+        scheduleQuery,
+      ),
+      selectInChunks<TeacherReviewRow>(
+        groupsWithRoster.map((group) => displayBlock(group).teacher_id),
+        (chunk) => admin.from("daily_teacher_record_admin_reviews").select("teacher_id, record_date, is_checked, checked_by_profile_id, checked_at, version").eq("academy_id", academyId).eq("record_date", recordDate).in("teacher_id", chunk),
+        (row) => row.teacher_id,
+        scheduleQuery,
+      ),
     ]);
     if (studentsResult.error || statusHistoryResult.error || publicationResult.error || taskResult.error || reviewResult.error) throw studentsResult.error ?? statusHistoryResult.error ?? publicationResult.error ?? taskResult.error ?? reviewResult.error;
     const studentById = new Map((studentsResult.data ?? []).map((student) => [student.id, student]));

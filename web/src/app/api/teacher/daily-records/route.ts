@@ -663,7 +663,7 @@ export async function GET(request: NextRequest) {
         commonHomeworkByGroup: mapGroupedHomework(homeworkResult.data ?? [], block.subject_id),
         students: (studentsResult.data ?? []).map((student) => ({
           ...student,
-          student_status: statusByStudent.get(student.id)?.next_status ?? student.current_status,
+          student_status: student.current_status,
           status_effective_date: statusByStudent.get(student.id)?.effective_date ?? null,
           expected_return_date: statusByStudent.get(student.id)?.expected_return_date ?? null,
           operation_group: operationGroupByStudent.get(student.id) ?? null,
